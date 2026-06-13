@@ -6,10 +6,20 @@ zenodo_biceps/self_perceived_fatigue_index/**/*.zip
 
 # Raw OpenBCI recordings
 data/
+dataset/
+datasets/
+raw_data/
+processed_data/
+external_data/
 OpenBCI-RAW-*.txt
 
 # Archives
 *.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
 *.mp4
 
 # Python
