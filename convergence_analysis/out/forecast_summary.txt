@@ -1,0 +1,21 @@
+FREQUENCY FORECAST - LONG CLEAN SEGMENTS
+============================================================
+Source     : ../data/OpenBCI-RAW-2026-03-21_15-37-11.txt
+Method     : OLS linear regression of MDF(t) per segment,
+             95% confidence + prediction bands, projected +20s.
+Segments   : 4 long ones (>= 30s) of 8 clean.
+Sample rate: 250 Hz (Sample-Index-proven).
+Caveat     : UNFILTERED -> MDF is the raw-signal median (~0.7-4
+             Hz, baseline drift), not muscle-band fatigue freq.
+             Add a 20-120 Hz bandpass in mdf_trend for the
+             muscle-band marker. The regression itself is sound.
+============================================================
+
+  Seg 1 (122.1s): slope +0.021 Hz/s [+0.018, +0.024], R²=0.233, p=0.0
+        forecast +20s: 2.354 Hz (95% PI -0.285..4.992)
+  Seg 5 (38.3s): slope +0.001 Hz/s [-0.027, +0.028], R²=0.0, p=0.9673
+        forecast +20s: 3.597 Hz (95% PI -0.952..8.146)
+  Seg 7 (81.8s): slope +0.015 Hz/s [+0.010, +0.021], R²=0.048, p=0.0
+        forecast +20s: 3.605 Hz (95% PI 0.574..6.637)
+  Seg 8 (74.9s): slope +0.016 Hz/s [+0.007, +0.025], R²=0.021, p=0.0004
+        forecast +20s: 4.428 Hz (95% PI -0.255..9.111)

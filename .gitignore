@@ -1,0 +1,38 @@
+# Raw dataset - download from Zenodo 10.5281/zenodo.14182446
+zenodo_biceps/sEMG_data/
+zenodo_biceps/sEMG_data.zip
+zenodo_biceps/labels.zip
+zenodo_biceps/self_perceived_fatigue_index/**/*.zip
+
+# Raw OpenBCI recordings
+data/
+OpenBCI-RAW-*.txt
+
+# Archives
+*.zip
+*.mp4
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Personal / draft files
+generate_supervisor_letter.py
+generate_team_options.py
+supervisor_proof.py
+supervisor_proof.png
+supervisor_zenodo_proof.py
+supervisor_zenodo_proof.png
+supervisor_update_letter.pdf
+team_options_brief.pdf
+CLAUDE_REVIEW_OpenBCI_LSTM.md
+progress_report_rayyan.md
+S1.3 - Progress Report*.docx
+
+# Claude internal
+WORKLOG.md
+
+# macOS
+.DS_Store
