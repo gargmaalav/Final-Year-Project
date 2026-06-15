@@ -31,8 +31,10 @@ Agree these signatures before building — a mismatch here breaks the whole syst
 ### viz/render_window.py
 
 ```python
-def render_window(subject: int, t_start: float, side: str = "R") -> bytes:
-    """Return PNG bytes for the EMG/MDF panel at the given window."""
+def render_window(subject: int, t_start: float, side: str = "R") -> str:
+    """Return interactive Plotly chart as an HTML string (no full_html wrapper).
+    Embed via innerHTML in JS or st.components.html() in Streamlit.
+    If Maalav uses React + plotly.js, switch return to fig.to_json() instead."""
 ```
 
 Produced by: Rayyan. Consumed by: Maalav.
