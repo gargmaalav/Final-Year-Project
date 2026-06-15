@@ -1,0 +1,36 @@
+@startuml
+title EMG Chatbot — System Process Flow
+
+|User|
+start
+:Type question\ne.g. "Is subject 3 fatigued at 120s?";
+
+|Maalav — Frontend|
+:Parse subject + time\nfrom query;
+
+fork
+  |Aryan — Models|
+  :classify(subject, t_start)\nEMG window -> pipeline;
+  :Return features\n{mdf_hz, fatigue_label, confidence};
+
+fork again
+  |Rayyan — Viz|
+  :render_window(subject, t_start)\nLoad EMG segment;
+  :Apply bandpass filter\n20-450 Hz Butterworth;
+  :Compute MDF sliding window;
+  :Build Plotly chart\n(EMG + MDF + fatigue label);
+  :Return HTML string;
+
+end fork
+
+|Maalav — Frontend|
+:build_prompt(features, user_query)\nInject structured features into LLM prompt\n(constrain to provided numbers only);
+:Call stock LLM\n(Ollama / API);
+:Receive text answer;
+:Render chat answer\n+ embed Plotly panel side-by-side;
+
+|User|
+:Read answer + interact\nwith EMG chart;
+stop
+
+@enduml
