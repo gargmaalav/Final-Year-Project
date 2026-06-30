@@ -43,6 +43,7 @@ S1.3 - Progress Report*.docx
 
 # Claude internal
 WORKLOG.md
+.claude/
 
 # macOS
 .DS_Store
