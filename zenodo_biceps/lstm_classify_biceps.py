@@ -399,9 +399,7 @@ def main():
             },
             "subjects": subs,
             "dropped_windows": dropped,
-            "results": {k: {kk: vv for kk, vv in v.items()
-                           if kk not in ("all_true", "all_pred")}
-                       for k, v in results.items()},
+            "results": results,
         }
         os.makedirs(os.path.dirname(args.json_out), exist_ok=True)
         with open(args.json_out, "w", encoding="utf-8") as f:
