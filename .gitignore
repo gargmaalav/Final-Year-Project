@@ -47,3 +47,5 @@ WORKLOG.md
 
 # macOS
 .DS_Store
+
+models/fatigue_model.pt
