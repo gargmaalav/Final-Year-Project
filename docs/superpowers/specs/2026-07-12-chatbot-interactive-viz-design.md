@@ -99,10 +99,19 @@ def render_window(subject: int | None, t_start: float, side: str = "R") -> str:
     overview (one figure, one trace per subject, hover + legend-toggle)."""
 ```
 
-- `subject=N`: reuses the same per-subject data loading `signal_viewer.py`
-  already does (raw EMG window, MDF-over-time, FFT of the current window),
-  same three panels, rebuilt with `plotly.graph_objects` instead of
-  matplotlib, so it's interactive (hover, zoom, pan) instead of static.
+- `subject=N`: matches `viz/signal_viewer.py`'s single-subject mode
+  (`build_viewer`, `--subject N`) panel-for-panel: raw EMG window colored by
+  fatigue label, MDF-over-time, live FFT of the current window. This is a
+  deliberate match, not just reuse of convenient code: confirmed with Ray
+  (2026-07-12) that `signal_viewer.py`'s single-subject mode is the actual
+  tool his supervisor previewed and liked (not `convergence_analysis/gui.py`,
+  which is a different pipeline entirely: OpenBCI self-collected data,
+  FS=250Hz, no filtering, drift/convergence-detection, unrelated to the
+  Zenodo biceps fatigue classification this chatbot runs on). `render_window()`
+  is meant to read as that same tool now embedded in the chatbot, not a
+  divergent new feature, so all three panels carry over unchanged. Rebuilt
+  with `plotly.graph_objects` instead of matplotlib so it's interactive
+  (hover, zoom, pan) instead of requiring a local GUI window.
 - `subject=None`: one interactive figure with 13 MDF-over-time traces
   (one per subject, distinct colors, toggle via legend, hover for exact
   value), the interactive replacement for the static
