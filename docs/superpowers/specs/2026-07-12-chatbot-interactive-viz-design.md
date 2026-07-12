@@ -99,19 +99,28 @@ def render_window(subject: int | None, t_start: float, side: str = "R") -> str:
     overview (one figure, one trace per subject, hover + legend-toggle)."""
 ```
 
-- `subject=N`: matches `viz/signal_viewer.py`'s single-subject mode
-  (`build_viewer`, `--subject N`) panel-for-panel: raw EMG window colored by
-  fatigue label, MDF-over-time, live FFT of the current window. This is a
-  deliberate match, not just reuse of convenient code: confirmed with Ray
-  (2026-07-12) that `signal_viewer.py`'s single-subject mode is the actual
-  tool his supervisor previewed and liked (not `convergence_analysis/gui.py`,
-  which is a different pipeline entirely: OpenBCI self-collected data,
-  FS=250Hz, no filtering, drift/convergence-detection, unrelated to the
-  Zenodo biceps fatigue classification this chatbot runs on). `render_window()`
-  is meant to read as that same tool now embedded in the chatbot, not a
-  divergent new feature, so all three panels carry over unchanged. Rebuilt
-  with `plotly.graph_objects` instead of matplotlib so it's interactive
-  (hover, zoom, pan) instead of requiring a local GUI window.
+- `subject=N`: takes inspiration from `viz/signal_viewer.py`'s single-subject
+  mode (`build_viewer`, `--subject N`), confirmed with Ray (2026-07-12) as the
+  actual tool his supervisor previewed and liked (not
+  `convergence_analysis/gui.py`, which is a different pipeline entirely:
+  OpenBCI self-collected data, FS=250Hz, no filtering, drift/convergence-
+  detection, unrelated to the Zenodo biceps fatigue classification this
+  chatbot runs on). See [[supervisor-liked-tool-signal-viewer]].
+  **Content carries over, interaction model does not, by default:** the same
+  three panels (raw EMG window colored by fatigue label, MDF-over-time, FFT
+  of the current window) render at the query's single `t_start`, giving
+  Plotly's native hover/zoom/pan. `signal_viewer.py`'s scrub slider + Play
+  button is a *different* interaction (recompute-per-frame, live playback)
+  that a static-at-`t_start` Plotly chart does not reproduce for free -
+  true scrub/playback needs Plotly's frame/slider animation API, built over
+  the whole recording, which is real additional work.
+  **Open decision, not yet resolved:** is hover/zoom/pan on a single window
+  enough to "read as a continuation" of the tool the supervisor liked, or
+  does reproducing scrub/playback matter enough to build the Plotly
+  frames/slider version for v1? Default recommendation: ship static-at-
+  `t_start` first (panels match, cheap), note scrub/playback as an explicit
+  fast-follow rather than silently substituting a lesser interaction and
+  calling it equivalent.
 - `subject=None`: one interactive figure with 13 MDF-over-time traces
   (one per subject, distinct colors, toggle via legend, hover for exact
   value), the interactive replacement for the static
@@ -139,17 +148,34 @@ def render_endpoint(subject: int | None = None, t_start: float = 0, side: str = 
 
 ### 3. `models/openwebui_tool_reference.py` (extend, Aryan's file)
 
-Fold the visualization into the existing `get_fatigue` method rather than
-adding a second one; every subject-level query gets a chart, per the
-requirement that all outputs have an interactable visualization:
+**Revised after review:** the existing `get_fatigue(self, subject: int, ...)`
+has `subject` as a required int. In Legacy mode the tool schema the LLM sees
+comes straight from that signature, so there is no tool call that can ever
+produce "no subject / all subjects." As specced with one method, the all-13
+overview is unreachable from chat entirely (only hittable by calling `/render`
+directly over HTTP) even though it's a named deliverable. Two tool methods
+instead of one, so a small local model (`llama3.2:3b`) has an unambiguous
+name to match intent to, rather than an optional param it has to know to omit:
 
 ```python
 def get_fatigue(self, subject: int, t_start: float, side: str = "R") -> str | tuple:
-    # existing: call /classify, build grounding text
-    # new: call /render, wrap in HTMLResponse(headers={"Content-Disposition": "inline"})
+    # existing behavior, extended:
+    # call /classify, build grounding text
+    # call /render?subject=<N>, wrap in HTMLResponse(headers={"Content-Disposition": "inline"})
     # return (html_response, grounding_text) on success
     # on any /render failure: return grounding_text alone (str), same as today
+
+def get_fatigue_overview(self, side: str = "R") -> tuple:
+    """Call when the user asks about all subjects / the whole dataset, not one
+    subject. Returns the interactive all-13-subjects MDF chart."""
+    # call /render (no subject param), wrap in HTMLResponse(inline)
+    # return (html_response, short_grounding_text)
+    # on failure: return a plain error string, no silent partial chart
 ```
+
+`GET /render` itself stays a single route with `subject: int | None = None`
+(component 2) since the HTTP layer has no schema-matching problem; only the
+tool layer needed splitting.
 
 ## Error handling
 
@@ -163,16 +189,19 @@ blocks the existing text answer.
 Live Open WebUI session (already running, tool already registered, Legacy
 mode already set): re-ask the same test question ("Is subject 13 fatigued at
 60 seconds on the right side?") after the change and confirm the chart
-renders inline alongside the text. Before that, a throwaway single-method
-test (`return HTMLResponse("<b>test</b>", headers=...)`, ask for it in the
-live Legacy-mode chat) is the fast way to confirm the embed mechanism fires
-before wiring up the real Plotly logic.
+renders inline alongside the text. Then a second question that should route
+to `get_fatigue_overview` instead ("show me all 13 subjects") and confirm the
+LLM picks the right tool, not `get_fatigue` with a guessed subject number.
+Before either, a throwaway single-method test (`return HTMLResponse("<b>test
+</b>", headers=...)`, ask for it in the live Legacy-mode chat) is the fast
+way to confirm the embed mechanism fires before wiring up the real Plotly
+logic.
 
 ## Ownership / branch handling
 
 `viz/render_window.py` is a new file, no conflict with Aryan's work. The
-edits to `models/serve.py` and `models/openwebui_tool_reference.py` are
-additive (new route, new return shape on the existing method) but they are
+edits to `models/serve.py` (new route) and `models/openwebui_tool_reference.py`
+(extend `get_fatigue`, add `get_fatigue_overview`) are additive but they are
 Aryan's files: branch off `feat/aryan-classify` as `feat/rayyan-chatbot-viz`,
 and flag the change to Aryan before merging.
 
