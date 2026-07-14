@@ -49,3 +49,7 @@ WORKLOG.md
 .DS_Store
 
 models/fatigue_model.pt
+
+# Open WebUI local secret (never commit) + local signal_viewer run dir
+.webui_secret_key
+.sigview_run/
