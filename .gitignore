@@ -44,6 +44,8 @@ S1.3 - Progress Report*.docx
 # Claude internal
 WORKLOG.md
 .claude/
+CLAUDE.md
+**/CLAUDE.md
 
 # macOS
 .DS_Store
