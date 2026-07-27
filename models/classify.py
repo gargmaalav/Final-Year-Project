@@ -11,6 +11,11 @@ first). See train_model.py for the LSTM-now / Transformer-later rationale.
 
 This file is a thin wrapper: it reuses classify_biceps.window_features and the
 LSTM model class -- no new modelling logic.
+
+Also implements the "uncalibrated athlete" TODO: classify_upload() classifies
+a recording that has no pre-stored per-subject baseline (e.g. a user-uploaded
+EMG file) by computing a fresh baseline from the recording's own early
+window(s) instead of from ground-truth fatigue labels.
 """
 from __future__ import annotations
 
@@ -53,43 +58,21 @@ def _load():
     return _BUNDLE, _MODEL
 
 
-def classify(subject: int, t_start: float, side: str = "R") -> dict:
-    """Classify the EMG window starting at `t_start` for one subject.
-
-    Args:
-        subject: subject id (1-13 in the Zenodo dataset).
-        t_start: window start time in seconds.
-        side: "R" or "L".
-
-    Returns:
-        {"mdf_hz": float, "fatigue_label": int, "confidence": float}
-        fatigue_label: 0 = non-fatigue, 1 = fatigue (see bundle["label_meaning"]).
-    """
-    bundle, model = _load()
-    cfg = bundle["config"]
-    base_feats = bundle["base_feats"]
-    seq_len = cfg["seq_len"]
-
-    # subject fresh-baseline (the SAME transform training used)
-    bl = bundle["baselines"].get(subject) or bundle["baselines"].get(str(subject))
-    if bl is None:
-        # TODO: a real, uncalibrated athlete has no fresh baseline yet. Needs a
-        #       short "fresh" calibration recording before classify() can
-        #       normalise their windows. For now only trained subjects are valid.
-        raise KeyError(f"no fresh-baseline calibration stored for subject {subject}")
-    mu, sd = np.array(bl["mu"], float), np.array(bl["sd"], float)
-
-    # load this subject's (downsampled, band-passed) signal
-    seg = loader.load_biceps_segment(DATA_ROOT, subject, side,
-                                     target_fs=cfg["target_fs"], bandpass=True)
-    fs = int(getattr(seg, "eff_fs", loader.FS_NATIVE))
+def _classify_window(seg, fs: int, t_start: float, mu: np.ndarray, sd: np.ndarray,
+                     cfg: dict, base_feats: list[str], model) -> dict:
+    """Shared inference body: build the causal window sequence at `t_start`,
+    normalise with the given (mu, sd), and run the LSTM. Used by both the
+    dataset path (classify()) and the upload path (classify_upload())."""
     x = seg.data[:, 0]
     t = np.asarray(seg.t, float)
     win = max(2, int(round(cfg["win_sec"] * fs)))
     step = max(1, int(round(cfg["step_sec"] * fs)))
+    seq_len = cfg["seq_len"]
 
     if x.size < win:
-        raise ValueError(f"subject {subject} recording shorter than one window")
+        raise ValueError(
+            f"recording ({x.size / fs:.1f}s) is shorter than one "
+            f"{cfg['win_sec']:.0f}s window")
 
     # index of the window starting at t_start (clamped into range)
     cur = int(np.searchsorted(t, t_start))
@@ -119,6 +102,97 @@ def classify(subject: int, t_start: float, side: str = "R") -> dict:
         "fatigue_label": label,
         "confidence": float(prob[label]),
     }
+
+
+def classify(subject: int, t_start: float, side: str = "R") -> dict:
+    """Classify the EMG window starting at `t_start` for one subject.
+
+    Args:
+        subject: subject id (1-13 in the Zenodo dataset).
+        t_start: window start time in seconds.
+        side: "R" or "L".
+
+    Returns:
+        {"mdf_hz": float, "fatigue_label": int, "confidence": float}
+        fatigue_label: 0 = non-fatigue, 1 = fatigue (see bundle["label_meaning"]).
+    """
+    bundle, model = _load()
+    cfg = bundle["config"]
+    base_feats = bundle["base_feats"]
+
+    # subject fresh-baseline (the SAME transform training used)
+    bl = bundle["baselines"].get(subject) or bundle["baselines"].get(str(subject))
+    if bl is None:
+        # a real, uncalibrated athlete has no fresh baseline yet -- see
+        # classify_upload() below, which computes one from a fresh recording.
+        raise KeyError(f"no fresh-baseline calibration stored for subject {subject}")
+    mu, sd = np.array(bl["mu"], float), np.array(bl["sd"], float)
+
+    # load this subject's (downsampled, band-passed) signal
+    seg = loader.load_biceps_segment(DATA_ROOT, subject, side,
+                                     target_fs=cfg["target_fs"], bandpass=True)
+    fs = int(getattr(seg, "eff_fs", loader.FS_NATIVE))
+    return _classify_window(seg, fs, t_start, mu, sd, cfg, base_feats, model)
+
+
+def compute_fresh_baseline(seg, fs: int, cfg: dict, base_feats: list[str],
+                           fresh_sec: float = 15.0) -> dict:
+    """Baseline mu/sd for a recording with no ground-truth fatigue labels.
+
+    Mirrors train_model.py's `base = X[y==0]; mu, sd = base.mean(0),
+    base.std(0)`, but since an uploaded recording has no per-window fatigue
+    labels, "fresh" is approximated as every window whose center falls in
+    the recording's first `fresh_sec` seconds -- true of all 13 training
+    subjects too, since every trial starts unfatigued.
+    """
+    x = seg.data[:, 0]
+    t = np.asarray(seg.t, float)
+    win = max(2, int(round(cfg["win_sec"] * fs)))
+    step = max(1, int(round(cfg["step_sec"] * fs)))
+    n_fresh_samples = int(np.searchsorted(t, fresh_sec))
+
+    feats = []
+    start = 0
+    while start + win <= min(n_fresh_samples, x.size):
+        feat = cb.window_features(x[start:start + win], fs)
+        feats.append([feat[k] for k in base_feats])
+        start += step
+
+    if len(feats) < 3:
+        raise ValueError(
+            f"only {len(feats)} fresh window(s) found in the first "
+            f"{fresh_sec:.0f}s -- need at least 3; upload a longer recording "
+            "or lower the fresh-baseline duration")
+
+    X = np.array(feats, float)
+    mu, sd = X.mean(0), X.std(0)
+    sd[sd == 0] = 1.0
+    return {"mu": mu.tolist(), "sd": sd.tolist()}
+
+
+def classify_upload(seg, fs: int, t_start: float, fresh_sec: float = 15.0,
+                    baseline: dict | None = None) -> tuple[dict, dict]:
+    """Classify a window in a recording that has no stored per-subject
+    baseline (e.g. a user-uploaded EMG file) -- implements the "uncalibrated
+    athlete" TODO by computing a fresh baseline from the recording's own
+    early window(s) instead of ground-truth fatigue labels.
+
+    Pass a previously-returned `baseline` back in on follow-up questions
+    about the same recording to skip recomputing it.
+
+    Returns (result, baseline): `result` is the same shape classify() returns,
+    `baseline` is {"mu": [...], "sd": [...]} for reuse.
+    """
+    bundle, model = _load()
+    cfg = bundle["config"]
+    base_feats = bundle["base_feats"]
+
+    if baseline is None:
+        baseline = compute_fresh_baseline(seg, fs, cfg, base_feats, fresh_sec)
+    mu, sd = np.array(baseline["mu"], float), np.array(baseline["sd"], float)
+
+    result = _classify_window(seg, fs, t_start, mu, sd, cfg, base_feats, model)
+    return result, baseline
 
 
 if __name__ == "__main__":
