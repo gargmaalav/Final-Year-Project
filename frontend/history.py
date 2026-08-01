@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 
 HISTORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".chat_history")
-_PERSISTED_MESSAGE_KEYS = ("role", "content", "recommendation", "timestamp")
+_PERSISTED_MESSAGE_KEYS = ("role", "content", "recommendation", "provenance")
 
 
 def _now_iso() -> str:

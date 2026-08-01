@@ -42,7 +42,7 @@ import charts                                    # noqa: E402
 import extract                                   # noqa: E402
 import history                                   # noqa: E402
 from llm import LLMError, chat, list_models      # noqa: E402
-from prompt import build_prompt                  # noqa: E402
+from prompt import build_prompt, describe_window  # noqa: E402
 from recommend import build_recommendation_prompt, wants_recommendation  # noqa: E402
 from upload import UploadError, load_uploaded_segment, parse_uploaded_csv  # noqa: E402
 
@@ -63,7 +63,7 @@ if "chat" not in st.session_state:
 if "model" not in st.session_state:
     st.session_state.model = "llama3.2:3b"
 if "sample_rate" not in st.session_state:
-    st.session_state.sample_rate = 1000.0
+    st.session_state.sample_rate = None   # blank until the user states it
 if "athlete_note" not in st.session_state:
     st.session_state.athlete_note = ""
 if "uploads" not in st.session_state:
@@ -72,13 +72,29 @@ if "confirm_clear" not in st.session_state:
     st.session_state.confirm_clear = False
 if "last_turn_context" not in st.session_state:
     st.session_state.last_turn_context = None
+if "last_params" not in st.session_state:
+    st.session_state.last_params = None   # last resolved {subject, t_start, side}
 
 
 # ---------------------------------------------------------------------------
 # pipeline helpers
 # ---------------------------------------------------------------------------
-def _dataset_turn(user_text: str) -> dict:
-    params = extract.parse_query(user_text)
+@st.cache_data(show_spinner=False, max_entries=8)
+def _load_subject_segment(subject: int, side: str):
+    """Cached segment load.
+
+    Streamlit re-runs this whole script on every interaction, and one turn
+    otherwise re-read and re-resampled the same multi-MB CSV three times
+    (classify() internally, the forecast, and render_window()) -- about 3.4 s
+    of duplicate I/O per question.
+    """
+    seg = data_loader.load_biceps_segment(DATA_ROOT, subject, side,
+                                          target_fs=250, bandpass=True)
+    return seg, int(getattr(seg, "eff_fs", 250))
+
+
+def _dataset_turn(user_text: str, previous: dict | None) -> dict:
+    params = extract.parse_query(user_text, previous)
     if params is None:
         return {"content": (
             "I couldn't tell which subject (1-13), time (seconds), and side "
@@ -86,6 +102,8 @@ def _dataset_turn(user_text: str) -> dict:
             "\"subject 13 at 60 seconds, right side\"?")}
 
     subject, t_start, side = params["subject"], params["t_start"], params["side"]
+    window = {"subject": subject, "t_start": t_start, "side": side,
+              "source": "dataset", "carried_over": params.get("carried_over", [])}
     try:
         result = classify(subject, t_start, side)
     except KeyError:
@@ -102,13 +120,12 @@ def _dataset_turn(user_text: str) -> dict:
     except Exception:
         pass  # chart is additive; never block the text answer
 
-    seg = data_loader.load_biceps_segment(DATA_ROOT, subject, side,
-                                          target_fs=250, bandpass=True)
-    fs = int(getattr(seg, "eff_fs", 250))
-    forecast, forecast_chart_html = _forecast(seg, fs, user_text)
+    seg, fs = _load_subject_segment(subject, side)
+    forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
 
     return {"features": result, "chart_html": chart_html, "forecast": forecast,
-            "forecast_chart_html": forecast_chart_html, "user_text": user_text}
+            "forecast_chart_html": forecast_chart_html, "user_text": user_text,
+            "window": window}
 
 
 def _upload_key(f) -> str:
@@ -124,6 +141,8 @@ def _upload_turn(user_text: str, uploaded_file) -> dict:
             seg = load_uploaded_segment(t, x, fs_native)
         except UploadError as e:
             return {"content": f"Couldn't read that file: {e}"}
+        except Exception as e:      # malformed CSVs must not crash the app
+            return {"content": f"Couldn't read that file ({type(e).__name__}: {e})"}
         fs = int(getattr(seg, "eff_fs", 250))
         cache = {"seg": seg, "fs": fs, "baseline": None}
         st.session_state.uploads[key] = cache
@@ -137,7 +156,8 @@ def _upload_turn(user_text: str, uploaded_file) -> dict:
     try:
         result, baseline = classify_upload(seg, fs, t_start, baseline=cache["baseline"])
     except ValueError as e:
-        return {"content": f"Couldn't classify that recording: {e}"}
+        # the calibration guards live here -- their messages are user-facing
+        return {"content": f"I can't give you a reliable reading for that file: {e}"}
     cache["baseline"] = baseline
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
@@ -146,21 +166,35 @@ def _upload_turn(user_text: str, uploaded_file) -> dict:
     chart_html = charts.raw_and_mdf_figure(
         seg, mdf_t, mdf_v, title=f"Uploaded: {uploaded_file.name}")
 
-    forecast, forecast_chart_html = _forecast(seg, fs, user_text)
+    forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
 
     return {"features": result, "chart_html": chart_html, "forecast": forecast,
-            "forecast_chart_html": forecast_chart_html, "user_text": user_text}
+            "forecast_chart_html": forecast_chart_html, "user_text": user_text,
+            "window": {"t_start": t_start, "source": "upload",
+                       "name": uploaded_file.name}}
 
 
-def _forecast(seg, fs: int, user_text: str):
-    horizon = extract.extract_horizon_seconds(user_text)
+def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
+    """Forecast only when the question actually asks about the future.
+
+    It used to run on every turn (the horizon defaulted to 20 s), so a plain
+    "is subject 13 fatigued?" got an unrequested projection chart. It is also
+    anchored at `t_start` now, so the trend is fitted on history up to the
+    moment being asked about rather than the whole recording.
+    """
+    horizon = extract.extract_horizon_seconds(user_text, default=None)
+    if horizon is None:
+        return None, None
     try:
-        forecast = forecast_fatigue(seg, fs, horizon_sec=horizon)
+        forecast = forecast_fatigue(seg, fs, horizon_sec=horizon, t_end=t_start)
     except Exception:
         return None, None
     if not forecast.get("ok"):
         return forecast, None
-    return forecast, charts.forecast_figure(forecast)
+    try:
+        return forecast, charts.forecast_figure(forecast)
+    except Exception:
+        return forecast, None   # chart is additive; keep the text answer
 
 
 def _finalize(turn: dict) -> dict:
@@ -169,9 +203,11 @@ def _finalize(turn: dict) -> dict:
                 "forecast_chart_html": None, "recommendation": None}
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
+    window = turn.get("window")
 
     try:
-        content = chat([{"role": "user", "content": build_prompt(features, user_text, forecast)}],
+        content = chat([{"role": "user",
+                        "content": build_prompt(features, user_text, forecast, window)}],
                        model=st.session_state.model)
     except LLMError as e:
         content = (f"{features['fatigue_state']} "
@@ -190,8 +226,29 @@ def _finalize(turn: dict) -> dict:
 
     return {"content": content, "chart_html": turn.get("chart_html"),
             "forecast_chart_html": turn.get("forecast_chart_html"),
-            "recommendation": recommendation,
-            "features": features, "forecast": forecast, "user_text": user_text}
+            "recommendation": recommendation, "provenance": _provenance(window, features),
+            "features": features, "forecast": forecast, "user_text": user_text,
+            "window": window}
+
+
+def _provenance(window: dict | None, features: dict) -> str | None:
+    """One line naming exactly what was measured, shown under every answer.
+
+    Without it the reader cannot tell which window the model actually scored,
+    so a mis-resolved follow-up looks identical to a correct one.
+    """
+    if not window:
+        return None
+    parts = [f"Reading: {describe_window(window)}"]
+    carried = window.get("carried_over") or []
+    if carried:
+        parts.append(f"({' and '.join(carried)} carried over from your previous question)")
+    if features.get("calibration"):
+        cal = features["calibration"]
+        parts.append(f"· self-calibrated from the first {cal['fresh_sec']:.0f}s "
+                    f"({cal['n_windows']} baseline windows) — less reliable than "
+                    "a stored calibration")
+    return " ".join(parts)
 
 
 def _handle_turn(user_text: str, uploaded_file) -> None:
@@ -201,11 +258,17 @@ def _handle_turn(user_text: str, uploaded_file) -> None:
 
     with st.spinner("Working on it..."):
         turn = (_upload_turn(user_text, uploaded_file) if uploaded_file is not None
-               else _dataset_turn(user_text))
+               else _dataset_turn(user_text, st.session_state.last_params))
         final = _finalize(turn)
 
     chat_obj["messages"].append({"role": "assistant", **final})
     st.session_state.last_turn_context = final if "features" in final else None
+    # remember the resolved window so the next turn can say "and at 90 seconds?"
+    window = final.get("window")
+    if window and window.get("source") == "dataset":
+        st.session_state.last_params = {"subject": window["subject"],
+                                        "t_start": window["t_start"],
+                                        "side": window["side"]}
     history.save_chat(chat_obj)
 
 
@@ -219,7 +282,8 @@ def _regenerate() -> None:
 
     turn = {"features": ctx["features"], "forecast": ctx.get("forecast"),
            "user_text": ctx["user_text"], "chart_html": ctx.get("chart_html"),
-           "forecast_chart_html": ctx.get("forecast_chart_html")}
+           "forecast_chart_html": ctx.get("forecast_chart_html"),
+           "window": ctx.get("window")}
     final = _finalize(turn)
     chat_obj["messages"].append({"role": "assistant", **final})
     st.session_state.last_turn_context = final if "features" in final else None
@@ -235,6 +299,7 @@ with st.sidebar:
     if st.button("+ New chat", use_container_width=True):
         st.session_state.chat = history.new_chat()
         st.session_state.last_turn_context = None
+        st.session_state.last_params = None
         st.rerun()
 
     st.caption("Chats")
@@ -246,6 +311,7 @@ with st.sidebar:
                            key=f"open_{c['id']}", use_container_width=True):
             st.session_state.chat = c
             st.session_state.last_turn_context = None
+            st.session_state.last_params = None
             st.rerun()
         if col_del.button("🗑", key=f"del_{c['id']}"):
             history.delete_chat(c["id"])
@@ -259,9 +325,14 @@ with st.sidebar:
     model_index = (model_options.index(st.session_state.model)
                   if st.session_state.model in model_options else 0)
     st.session_state.model = st.selectbox("Model", options=model_options, index=model_index)
+    # left blank on purpose: a non-empty default silently assumed every
+    # single-column upload was 1000 Hz, which quietly rescales the whole
+    # recording and makes the "I need a sample rate" error unreachable
     st.session_state.sample_rate = st.number_input(
         "Sample rate for single-column uploads (Hz)",
-        min_value=1.0, value=st.session_state.sample_rate, step=1.0)
+        min_value=1.0, value=st.session_state.sample_rate, step=1.0,
+        placeholder="required for 1-column files",
+        help="Two-column files (time_s, signal) infer this automatically.")
     st.session_state.athlete_note = st.text_input(
         "Sport/goal (optional, for recommendations)",
         value=st.session_state.athlete_note,
@@ -298,6 +369,8 @@ st.title("EMG Fatigue Chatbot")
 for msg in st.session_state.chat["messages"]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if msg.get("provenance"):
+            st.caption(msg["provenance"])
         if msg.get("chart_html"):
             st.iframe(msg["chart_html"], height=600)
         if msg.get("forecast_chart_html"):

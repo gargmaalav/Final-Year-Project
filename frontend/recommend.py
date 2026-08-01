@@ -6,7 +6,7 @@ There is no labeled data anywhere in this project connecting fatigue
 patterns to sport suitability, so a trained classifier for "what sport
 should this person play" would have no ground truth to learn from. The
 defensible version of this feature: the pipeline (models/classify.py,
-models/forecast.py) supplies the objective numbers, and the LLM's own
+models/fatigue_forecast.py) supplies the objective numbers, and the LLM's own
 general fitness/sports knowledge turns those into suggestions -- same
 "ground the LLM in real numbers, no invented ones" principle prompt.py
 already applies to plain fatigue answers, extended to a richer prompt that's

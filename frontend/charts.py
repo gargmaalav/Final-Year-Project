@@ -12,6 +12,25 @@ from __future__ import annotations
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+try:
+    # Reuse Rayyan's vendored plotly.js bundle rather than pulling from a CDN.
+    # render_window.py deliberately vendors it so a chart needs no network;
+    # loading these two figures from a CDN would have made them the only part
+    # of the app that breaks when the demo machine is offline.
+    from render_window import _plotly_basic_js
+except Exception:                                   # viz/ not on sys.path
+    _plotly_basic_js = None
+
+
+def _to_html(fig) -> str:
+    """Figure -> self-contained HTML, vendored plotly.js when available."""
+    if _plotly_basic_js is None:
+        return fig.to_html(full_html=False, include_plotlyjs="cdn",
+                           config={"responsive": True})
+    chart = fig.to_html(full_html=False, include_plotlyjs=False,
+                        config={"responsive": True})
+    return f"<script>{_plotly_basic_js()}</script>" + chart
+
 
 def raw_and_mdf_figure(seg, mdf_t, mdf_v, title: str = "Uploaded recording") -> str:
     fig = make_subplots(
@@ -29,8 +48,7 @@ def raw_and_mdf_figure(seg, mdf_t, mdf_v, title: str = "Uploaded recording") -> 
     fig.update_yaxes(title_text="MDF (Hz)", row=2, col=1)
     fig.update_layout(template="plotly_dark", height=560, title=title,
                       showlegend=False, margin=dict(t=60, b=40))
-    return fig.to_html(full_html=False, include_plotlyjs="cdn",
-                       config={"responsive": True})
+    return _to_html(fig)
 
 
 def forecast_figure(forecast: dict, title: str = "Fatigue trend forecast") -> str:
@@ -56,5 +74,4 @@ def forecast_figure(forecast: dict, title: str = "Fatigue trend forecast") -> st
                       xaxis_title="Time (s)", yaxis_title="MDF (Hz)",
                       margin=dict(t=50, b=30),
                       legend=dict(orientation="h", y=1.15))
-    return fig.to_html(full_html=False, include_plotlyjs="cdn",
-                       config={"responsive": True})
+    return _to_html(fig)
