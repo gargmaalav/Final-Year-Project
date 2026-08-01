@@ -49,3 +49,9 @@ WORKLOG.md
 .DS_Store
 
 models/fatigue_model.pt
+
+# Chatbot chat history (local, per-machine)
+frontend/.chat_history/
+
+# Open WebUI local session secret (auto-generated per machine)
+.webui_secret_key
