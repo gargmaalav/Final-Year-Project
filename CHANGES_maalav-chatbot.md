@@ -1,5 +1,14 @@
 # Changes on branch `maalav-chatbot`
 
+> **Superseded in places.** This describes the branch as originally written.
+> The upload/calibration path has since been re-measured against the labelled
+> subjects and changed — in particular the fresh-baseline window is now 60 s,
+> not 15 s, and short recordings are refused rather than classified. Two claims
+> below no longer hold: an 8 s recording was *not* actually rejected, and the
+> "verified" upload smoke test used a synthetic CSV, which cannot detect an
+> accuracy regression. See `models/CALIBRATION_VALIDATION.md` for the numbers
+> and `models/test_classify.py` for the guard that now enforces them.
+
 This document is written for an AI assistant (or a teammate) reviewing this
 branch's diff against `feat/aryan-classify` / `main`. It explains **why**
 each change exists, not just what changed — the code comments do the "what."

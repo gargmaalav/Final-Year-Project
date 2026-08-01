@@ -1,0 +1,27 @@
+# EMG fatigue chatbot -- full dependency set.
+#     python -m pip install -r requirements.txt
+#
+# Python 3.11+ (the code uses `X | None` annotations at runtime via
+# `from __future__ import annotations`, and 3.13 is what the team runs).
+
+# --- signal pipeline + models (zenodo_biceps/, models/) --------------------
+numpy>=1.26
+scipy>=1.11            # resample_poly, butter/filtfilt, linregress
+pandas>=2.0            # dataset CSV loading, uploaded-file parsing
+torch>=2.2             # the deployed LSTM (models/train_model.py, classify.py)
+
+# --- chatbot frontend (frontend/) ------------------------------------------
+streamlit>=1.60        # st.chat_input(accept_file=...) and st.iframe()
+plotly>=6.9            # 6.9 bundles plotly.js 3.7.0, matching viz/vendor/
+requests>=2.31         # Ollama HTTP calls (frontend/llm.py)
+
+# --- Open WebUI function-calling bridge (models/serve.py) ------------------
+# Kept alongside the Streamlit app: the supervisor asked for Open WebUI +
+# function calling, and that path still works. See README.
+fastapi>=0.110
+uvicorn>=0.27
+
+# Not pip-installable, needed at runtime:
+#   - Ollama running locally with a chat model pulled (default llama3.2:3b)
+#   - the Zenodo 14182446 dataset at zenodo_biceps/sEMG_data/ (gitignored)
+#   - models/fatigue_model.pt (produced by `python models/train_model.py`)
