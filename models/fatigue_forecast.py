@@ -25,6 +25,14 @@ from __future__ import annotations
 import os
 import sys
 
+import numpy as np
+
+# A straight-line MDF trend stops being meaningful long before this, but the
+# cap is what stops "will I be tired in an hour?" returning a negative
+# frequency. 180 s is roughly the longest projection the observed trends
+# support without the prediction band swallowing the whole plausible range.
+MAX_HORIZON_SEC = 180.0
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (os.path.join(_REPO_ROOT, "zenodo_biceps"),
            os.path.join(_REPO_ROOT, "convergence_analysis")):
@@ -43,6 +51,14 @@ def _trend_summary(fit: dict, horizon_sec: float) -> str:
            else "not statistically significant")
     end_val = float(fit["y_future"][-1])
     lo, hi = float(fit["pi_lo"][-1]), float(fit["pi_hi"][-1])
+    # An insignificant slope means the trend is indistinguishable from flat --
+    # projecting a number off it would present noise as a prediction.
+    if fit["p_value"] >= 0.05:
+        return (
+            f"Median frequency (the fatigue marker) shows no statistically "
+            f"significant trend over this recording "
+            f"(slope {slope_per_min:+.2f} Hz/min, R^2={fit['r2']:.2f}, "
+            f"p={fit['p_value']:.3f}), so no reliable projection can be made.")
     return (
         f"Median frequency (the fatigue marker) is {direction} at "
         f"{slope_per_min:+.2f} Hz/min ({sig}, R^2={fit['r2']:.2f}, "
@@ -52,19 +68,46 @@ def _trend_summary(fit: dict, horizon_sec: float) -> str:
 
 
 def forecast_fatigue(seg, fs: int, horizon_sec: float = 20.0,
-                     win_sec: float = 4.0, step_sec: float = 2.0) -> dict:
-    """Project the recording's MDF trend `horizon_sec` beyond its current end.
+                     win_sec: float = 4.0, step_sec: float = 2.0,
+                     t_end: float | None = None) -> dict:
+    """Project the MDF trend `horizon_sec` forward from `t_end`.
+
+    t_end: fit the trend using only MDF history up to this time, and project
+        forward from it. Defaults to the end of the recording. Pass the window
+        the user actually asked about, otherwise the "forecast" is fitted on
+        data from AFTER that moment and projected from the recording's end --
+        two different points in time reported as if they were one.
+
+    The horizon is capped at MAX_HORIZON_SEC and the projection is floored at
+    0 Hz. This is an OLS straight line, so left unbounded it happily predicts
+    negative median frequency (-106 Hz at a 1 hour horizon, measured). MDF is
+    a spectral quantity and cannot go below zero; extrapolating a linear
+    fatigue trend for many minutes is not physiologically meaningful anyway.
 
     Returns core.forecast_regression()'s dict (slope, r2, p_value, y_future,
     ci_lo/hi, pi_lo/hi, t_fit, t_future, ...) plus a "summary" plain-language
-    sentence, or {"ok": False} if there isn't enough MDF history yet
-    (fewer than 3 windows) to fit a trend.
+    sentence and "horizon_sec"/"clipped" fields, or {"ok": False} if there
+    isn't enough MDF history (fewer than 3 windows) to fit a trend.
     """
+    horizon_sec = float(max(0.0, min(horizon_sec, MAX_HORIZON_SEC)))
+
     t_centers, mean_mdf, _ = loader.mdf_trend(seg, fs=fs, win_sec=win_sec,
                                               step_sec=step_sec)
+    if t_end is not None and t_centers.size:
+        keep = t_centers <= float(t_end)
+        t_centers, mean_mdf = t_centers[keep], mean_mdf[keep]
+
     fit = core.forecast_regression(t_centers, mean_mdf, horizon_sec)
     if not fit.get("ok"):
         return {"ok": False}
+
+    # MDF is a frequency: clamp the line and both bands at the physical floor
+    clipped = bool(np.min(fit["y_future"]) < 0.0)
+    for key in ("y_future", "ci_lo", "ci_hi", "pi_lo", "pi_hi"):
+        fit[key] = np.maximum(fit[key], 0.0)
+
+    fit["horizon_sec"] = horizon_sec
+    fit["clipped_at_zero"] = clipped
     fit["summary"] = _trend_summary(fit, horizon_sec)
     return fit
 
