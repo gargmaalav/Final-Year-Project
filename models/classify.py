@@ -135,22 +135,56 @@ def classify(subject: int, t_start: float, side: str = "R") -> dict:
     return _classify_window(seg, fs, t_start, mu, sd, cfg, base_feats, model)
 
 
+# Calibration constants for the uncalibrated-athlete path. These are not
+# arbitrary -- see CALIBRATION_VALIDATION.md for the sweep that set them.
+FRESH_SEC = 60.0        # baseline window; 15 s cost ~9pp accuracy, 60 s costs ~2pp
+MIN_FRESH_WINDOWS = 12  # a 15 s baseline gives 6 windows -- far too few for a stable sd
+MIN_BASELINE_FRACTION = 2.5   # recording must be >= this x the baseline span
+                              # (2.5 scores 12/13 subjects; 3.0 needlessly
+                              #  refused two 178 s recordings for no gain)
+
+
 def compute_fresh_baseline(seg, fs: int, cfg: dict, base_feats: list[str],
-                           fresh_sec: float = 15.0) -> dict:
+                           fresh_sec: float = FRESH_SEC) -> dict:
     """Baseline mu/sd for a recording with no ground-truth fatigue labels.
 
     Mirrors train_model.py's `base = X[y==0]; mu, sd = base.mean(0),
     base.std(0)`, but since an uploaded recording has no per-window fatigue
-    labels, "fresh" is approximated as every window whose center falls in
-    the recording's first `fresh_sec` seconds -- true of all 13 training
-    subjects too, since every trial starts unfatigued.
+    labels, "fresh" is approximated as every window falling entirely within
+    the recording's first `fresh_sec` seconds -- reasonable for this protocol,
+    since every trial starts unfatigued.
+
+    Two guards, both added after measuring the failure modes on all 13 labelled
+    subjects (CALIBRATION_VALIDATION.md):
+
+    1. sd is a variance estimate, so it needs samples. A 15 s baseline yields
+       6 windows and systematically UNDER-estimates sd, which inflates every
+       z-score and makes the LSTM read "extreme" -> it over-predicts fatigue
+       (66% of windows vs a true rate of 52%) at undiminished confidence.
+    2. If the baseline spans most of the recording, the recording is being
+       normalised against itself: mu lands on the recording's own mean, so
+       every window looks "average" and the answer is meaningless regardless
+       of the athlete's true state. Refusing is the only honest option -- a
+       short clip genuinely does not contain the information needed.
+
+    Raises ValueError with a user-facing message when either guard trips.
     """
     x = seg.data[:, 0]
     t = np.asarray(seg.t, float)
     win = max(2, int(round(cfg["win_sec"] * fs)))
     step = max(1, int(round(cfg["step_sec"] * fs)))
-    n_fresh_samples = int(np.searchsorted(t, fresh_sec))
+    duration = float(t[-1]) if t.size else 0.0
 
+    # guard 2 first: it gives the clearer error when the recording is just short
+    if duration < fresh_sec * MIN_BASELINE_FRACTION:
+        raise ValueError(
+            f"this recording is {duration:.0f}s long, but a trustworthy fresh "
+            f"baseline needs the first {fresh_sec:.0f}s to be a small part of "
+            f"it (at least {fresh_sec * MIN_BASELINE_FRACTION:.0f}s total). "
+            "Below that the recording is normalised against itself and the "
+            "fatigue reading is meaningless -- please upload a longer recording.")
+
+    n_fresh_samples = int(np.searchsorted(t, fresh_sec))
     feats = []
     start = 0
     while start + win <= min(n_fresh_samples, x.size):
@@ -158,30 +192,35 @@ def compute_fresh_baseline(seg, fs: int, cfg: dict, base_feats: list[str],
         feats.append([feat[k] for k in base_feats])
         start += step
 
-    if len(feats) < 3:
+    if len(feats) < MIN_FRESH_WINDOWS:
         raise ValueError(
-            f"only {len(feats)} fresh window(s) found in the first "
-            f"{fresh_sec:.0f}s -- need at least 3; upload a longer recording "
-            "or lower the fresh-baseline duration")
+            f"only {len(feats)} baseline window(s) in the first {fresh_sec:.0f}s "
+            f"-- need at least {MIN_FRESH_WINDOWS} for a stable estimate of the "
+            "athlete's fresh spread. Please upload a longer recording.")
 
     X = np.array(feats, float)
     mu, sd = X.mean(0), X.std(0)
     sd[sd == 0] = 1.0
-    return {"mu": mu.tolist(), "sd": sd.tolist()}
+    return {"mu": mu.tolist(), "sd": sd.tolist(),
+            "fresh_sec": float(fresh_sec), "n_windows": int(len(feats)),
+            "source": "computed-from-recording"}
 
 
-def classify_upload(seg, fs: int, t_start: float, fresh_sec: float = 15.0,
+def classify_upload(seg, fs: int, t_start: float, fresh_sec: float = FRESH_SEC,
                     baseline: dict | None = None) -> tuple[dict, dict]:
     """Classify a window in a recording that has no stored per-subject
     baseline (e.g. a user-uploaded EMG file) -- implements the "uncalibrated
     athlete" TODO by computing a fresh baseline from the recording's own
-    early window(s) instead of ground-truth fatigue labels.
+    early windows instead of ground-truth fatigue labels.
 
     Pass a previously-returned `baseline` back in on follow-up questions
     about the same recording to skip recomputing it.
 
-    Returns (result, baseline): `result` is the same shape classify() returns,
-    `baseline` is {"mu": [...], "sd": [...]} for reuse.
+    Returns (result, baseline). `result` has classify()'s three contract keys
+    plus "calibration", which flags that this reading used a self-computed
+    baseline rather than a stored one -- callers should surface that, because
+    it is measurably less accurate than the calibrated path (see
+    CALIBRATION_VALIDATION.md: 81% vs 84% on the labelled subjects).
     """
     bundle, model = _load()
     cfg = bundle["config"]
@@ -192,6 +231,14 @@ def classify_upload(seg, fs: int, t_start: float, fresh_sec: float = 15.0,
     mu, sd = np.array(baseline["mu"], float), np.array(baseline["sd"], float)
 
     result = _classify_window(seg, fs, t_start, mu, sd, cfg, base_feats, model)
+    result["calibration"] = {
+        "kind": "self-calibrated",
+        "fresh_sec": baseline.get("fresh_sec", fresh_sec),
+        "n_windows": baseline.get("n_windows"),
+        "note": ("baseline computed from this recording's own first "
+                 f"{baseline.get('fresh_sec', fresh_sec):.0f}s, not from a "
+                 "stored per-athlete calibration"),
+    }
     return result, baseline
 
 
