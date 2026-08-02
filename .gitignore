@@ -48,7 +48,9 @@ WORKLOG.md
 # macOS
 .DS_Store
 
+# trained weights -- regenerate with train_model.py / forecast_lstm.py
 models/fatigue_model.pt
+models/forecast_model.pt
 
 # Chatbot chat history (local, per-machine)
 frontend/.chat_history/

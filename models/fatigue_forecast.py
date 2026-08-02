@@ -42,8 +42,36 @@ for _p in (os.path.join(_REPO_ROOT, "zenodo_biceps"),
 import loader  # noqa: E402  mdf_trend
 import core    # noqa: E402  forecast_regression
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import forecast_lstm  # noqa: E402  predict_delta
+
+# Measured leave-one-subject-out MAE of the LSTM forecaster, in Hz, at the
+# horizons it was validated on (models/FORECAST_VALIDATION.md). Used as the
+# prediction band, because an empirical out-of-subject error is a far better
+# statement of uncertainty than an OLS band computed from residuals about a
+# line that does not actually extrapolate.
+_LSTM_MAE_HZ = {10.0: 2.91, 30.0: 3.32, 60.0: 4.08}
+# MAE -> sd assuming roughly normal errors, then a 95% interval.
+_MAE_TO_95PC = 1.2533 * 1.96
+
+
+def _lstm_mae(h: np.ndarray) -> np.ndarray:
+    """Expected absolute error at each horizon, linearly extrapolated past 60 s
+    so uncertainty keeps growing where the model was never validated."""
+    xs = np.array(sorted(_LSTM_MAE_HZ))
+    ys = np.array([_LSTM_MAE_HZ[x] for x in xs])
+    slope = (ys[-1] - ys[0]) / (xs[-1] - xs[0])
+    return np.where(h <= xs[-1], np.interp(h, xs, ys),
+                    ys[-1] + slope * (h - xs[-1]))
+
 
 def _trend_summary(fit: dict, horizon_sec: float) -> str:
+    """Describe the observed trend, then the projection.
+
+    The two come from different places and the sentence keeps them separate:
+    the slope/R^2/p describe what the MDF actually did (OLS, valid), while the
+    projected number comes from the trained forecaster where one is loaded.
+    """
     slope_per_min = fit["slope"] * 60.0
     direction = ("rising" if fit["slope"] > 0.001 else
                 "falling" if fit["slope"] < -0.001 else "flat")
@@ -51,20 +79,29 @@ def _trend_summary(fit: dict, horizon_sec: float) -> str:
            else "not statistically significant")
     end_val = float(fit["y_future"][-1])
     lo, hi = float(fit["pi_lo"][-1]), float(fit["pi_hi"][-1])
-    # An insignificant slope means the trend is indistinguishable from flat --
-    # projecting a number off it would present noise as a prediction.
-    if fit["p_value"] >= 0.05:
-        return (
-            f"Median frequency (the fatigue marker) shows no statistically "
-            f"significant trend over this recording "
-            f"(slope {slope_per_min:+.2f} Hz/min, R^2={fit['r2']:.2f}, "
-            f"p={fit['p_value']:.3f}), so no reliable projection can be made.")
-    return (
+
+    observed = (
         f"Median frequency (the fatigue marker) is {direction} at "
-        f"{slope_per_min:+.2f} Hz/min ({sig}, R^2={fit['r2']:.2f}, "
-        f"p={fit['p_value']:.3f}). Projected to be about {end_val:.1f} Hz "
-        f"in {horizon_sec:.0f}s (95% range {lo:.1f}-{hi:.1f} Hz)."
-    )
+        f"{slope_per_min:+.2f} Hz/min over this recording ({sig}, "
+        f"R^2={fit['r2']:.2f}, p={fit['p_value']:.3f}).")
+
+    if fit.get("method") == "lstm":
+        change = end_val - float(fit["lstm"]["mdf_now"])
+        return (
+            f"{observed} A sequence model trained on the other subjects "
+            f"projects about {end_val:.1f} Hz in {horizon_sec:.0f}s "
+            f"({change:+.1f} Hz from now, 95% range {lo:.1f}-{hi:.1f} Hz).")
+
+    # No trained forecaster available, so this falls back to extrapolating the
+    # OLS line -- which is only defensible when the slope is real, and even
+    # then it is measurably worse than assuming no change beyond ~10 s.
+    if fit["p_value"] >= 0.05:
+        return (f"{observed} No reliable projection can be made from a trend "
+                "indistinguishable from flat.")
+    return (
+        f"{observed} Extrapolating that line gives about {end_val:.1f} Hz "
+        f"in {horizon_sec:.0f}s (95% range {lo:.1f}-{hi:.1f} Hz), but a "
+        "straight-line projection is unreliable beyond about 10s.")
 
 
 def forecast_fatigue(seg, fs: int, horizon_sec: float = 20.0,
@@ -101,10 +138,45 @@ def forecast_fatigue(seg, fs: int, horizon_sec: float = 20.0,
     if not fit.get("ok"):
         return {"ok": False}
 
+    # The OLS slope/R^2/p above are a valid DESCRIPTION of the observed trend
+    # and are kept. Its extrapolation is not: measured leave-one-subject-out,
+    # projecting that line is 28% worse than assuming no change at a 30 s
+    # horizon and 51% worse at 60 s (both p < 0.01). So where the trained
+    # forecaster is available, it replaces the projected values only.
+    fit["method"] = "ols"
+    pred = forecast_lstm.predict_delta(seg, fs, t_end=t_end)
+    if pred is not None:
+        t_now, mdf_now = pred["t_now"], pred["mdf_now"]
+        # anchor delta = 0 at h = 0; np.interp holds the last trained horizon
+        # flat beyond 60 s, which is deliberate -- nothing beat "no further
+        # change" at long range, so the model should not invent one.
+        hs = np.array([0.0] + list(pred["horizons_sec"]))
+        ds = np.array([0.0] + list(pred["delta_hz"]))
+        t_future = np.linspace(t_now, t_now + horizon_sec, fit["t_future"].size)
+        h = t_future - t_now
+        y_future = mdf_now + np.interp(h, hs, ds)
+        # Both bands are the measured out-of-subject error, not an OLS residual
+        # band: the inner one is the typical (mean absolute) error, the outer
+        # one the 95% interval implied by it.
+        mae = _lstm_mae(h)
+        fit["t_future"] = t_future
+        fit["y_future"] = y_future
+        fit["ci_lo"], fit["ci_hi"] = y_future - mae, y_future + mae
+        fit["pi_lo"] = y_future - mae * _MAE_TO_95PC
+        fit["pi_hi"] = y_future + mae * _MAE_TO_95PC
+        fit["method"] = "lstm"
+        fit["lstm"] = pred
+
     # MDF is a frequency: clamp the line and both bands at the physical floor
     clipped = bool(np.min(fit["y_future"]) < 0.0)
     for key in ("y_future", "ci_lo", "ci_hi", "pi_lo", "pi_hi"):
         fit[key] = np.maximum(fit[key], 0.0)
+
+    # the actual measured MDF, so a chart can show the data the trend line was
+    # fitted to and the point the forecast is anchored at, rather than only two
+    # lines that now come from two different models and need not meet
+    fit["t_observed"] = t_centers
+    fit["y_observed"] = mean_mdf
 
     fit["horizon_sec"] = horizon_sec
     fit["clipped_at_zero"] = clipped

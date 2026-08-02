@@ -12,6 +12,7 @@ to get past test_upload_tracks_calibrated_path().
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 
@@ -24,6 +25,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "zenodo_biceps"))
 
 import classify as C           # noqa: E402
 import fatigue_forecast as F   # noqa: E402
+import forecast_lstm as FL     # noqa: E402
 import loader                  # noqa: E402
 
 DATA_ROOT = os.path.join(REPO_ROOT, "zenodo_biceps", "sEMG_data")
@@ -123,6 +125,55 @@ def test_forecast_is_anchored_to_t_start():
           float(late["t_future"][0]) > float(early["t_future"][0]) + 60.0)
 
 
+def test_forecaster_cannot_see_the_future():
+    """The single most damaging bug a forecaster can have.
+
+    Asking for a forecast at t=90s must give the same answer whether or not
+    the recording happens to continue past 90s. If truncating the input
+    changes the prediction, the model is reading future windows and every
+    accuracy number it produces is fiction.
+    """
+    if FL.load_deployed() is None:
+        check("forecaster is causal", True, "no model trained, skipped")
+        return
+    seg = loader.load_biceps_segment(DATA_ROOT, 13, "R", target_fs=250, bandpass=True)
+    fs = int(getattr(seg, "eff_fs", 250))
+    t_end = 90.0
+
+    full = FL.predict_delta(seg, fs, t_end=t_end)
+    # Slice the Segment directly rather than rebuilding it through
+    # to_segment(): re-interpolating onto a fresh grid can shift the last
+    # window by a sample and would make this test fail on an artifact of its
+    # own setup rather than on real leakage.
+    n = int(round((t_end + 2.0) * fs))
+    trunc = dataclasses.replace(seg, data=seg.data[:n], t=seg.t[:n],
+                                gap_mask=seg.gap_mask[:n])
+    cut = FL.predict_delta(trunc, fs, t_end=t_end)
+
+    check("forecaster runs on truncated input", full is not None and cut is not None)
+    if full is None or cut is None:
+        return
+    gap = float(np.max(np.abs(np.array(full["delta_hz"]) - np.array(cut["delta_hz"]))))
+    check("forecast is unchanged by removing the future", gap < 0.01,
+          f"max difference {gap:.4f} Hz")
+
+
+def test_forecast_uses_the_trained_model():
+    seg = loader.load_biceps_segment(DATA_ROOT, 13, "R", target_fs=250, bandpass=True)
+    fs = int(getattr(seg, "eff_fs", 250))
+    fit = F.forecast_fatigue(seg, fs, horizon_sec=30.0, t_end=120.0)
+    expected = "lstm" if FL.load_deployed() is not None else "ols"
+    check("forecast reports which method produced it",
+          fit.get("method") == expected, f"method={fit.get('method')}")
+    if fit.get("method") != "lstm":
+        return
+    # A 30 s projection that moves MDF by more than the whole observed spread
+    # is not a forecast, it is an extrapolation blowing up.
+    move = abs(float(fit["y_future"][-1]) - float(fit["lstm"]["mdf_now"]))
+    check("30s projection stays physically plausible", move < 15.0,
+          f"{move:.1f} Hz of change")
+
+
 def test_upload_tracks_calibrated_path():
     """The self-calibrated path must stay close to the calibrated one.
 
@@ -172,6 +223,8 @@ def main() -> int:
         print("\ndataset-backed:")
         test_classify_contract()
         test_forecast_is_anchored_to_t_start()
+        test_forecaster_cannot_see_the_future()
+        test_forecast_uses_the_trained_model()
         test_upload_tracks_calibrated_path()
 
     print()

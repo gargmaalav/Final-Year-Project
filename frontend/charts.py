@@ -63,7 +63,15 @@ def forecast_figure(forecast: dict, title: str = "Fatigue trend forecast") -> st
         x=t_future + t_future[::-1],
         y=list(forecast["ci_hi"]) + list(forecast["ci_lo"])[::-1],
         fill="toself", fillcolor="rgba(167,139,250,0.35)", line=dict(width=0),
-        name="95% confidence band", hoverinfo="skip"))
+        name="typical error", hoverinfo="skip"))
+    # the measured MDF itself. Without it the chart is two lines from two
+    # different models (OLS trend, LSTM forecast) which need not meet, and the
+    # step between them reads as a glitch rather than as the real data.
+    if forecast.get("t_observed") is not None:
+        fig.add_trace(go.Scatter(x=list(forecast["t_observed"]),
+                                 y=list(forecast["y_observed"]),
+                                 mode="markers", name="measured MDF",
+                                 marker=dict(color="#8b949e", size=4, opacity=0.7)))
     fig.add_trace(go.Scatter(x=list(forecast["t_fit"]), y=list(forecast["y_fit"]),
                              mode="lines", name="observed trend",
                              line=dict(color="#58a6ff", width=2)))

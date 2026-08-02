@@ -20,7 +20,12 @@ LLM reads structured features, not images. No model training required.
 ```bash
 python -m pip install -r requirements.txt
 python models/train_model.py          # once, produces models/fatigue_model.pt
+python models/forecast_lstm.py --skip-loso --horizons 10 20 30 45 60 \
+    --save-model models/forecast_model.pt   # once, for the fatigue forecast
 ```
+
+The forecaster is optional — without `forecast_model.pt` the app falls back to
+an OLS trend line, which is measurably worse (see below).
 
 Also needed: Ollama running locally with a chat model pulled (default
 `llama3.2:3b`), and the Zenodo dataset at `zenodo_biceps/sEMG_data/`.
@@ -44,7 +49,8 @@ consume the same contract function.
 ```
 zenodo_biceps/   existing EMG pipeline (loader, classifier, core) — do not reorganise
 viz/             Rayyan: render_window() + grounding bridge
-models/          Aryan: LSTM classifier, classify()/classify_upload(), serve.py
+models/          Aryan: LSTM classifier, classify()/classify_upload(),
+                 LSTM fatigue forecaster, serve.py
 frontend/        Maalav: Streamlit chat UI + LLM wiring
 ```
 
@@ -58,6 +64,12 @@ python viz/test_render_window.py      # chart rendering
 `models/CALIBRATION_VALIDATION.md` documents how an athlete with no stored
 baseline is calibrated, and the measurements behind the constants that control
 it. Read it before changing anything in `compute_fresh_baseline()`.
+
+`models/FORECAST_VALIDATION.md` covers the fatigue forecaster: why "predict the
+next signal value" is not a solvable task on sEMG, the leave-one-subject-out
+benchmark against persistence and OLS baselines, and the finding that the
+straight-line forecast previously used was significantly *worse* than assuming
+no change (−28% at 30 s, −51% at 60 s).
 
 ## Integration contract
 
