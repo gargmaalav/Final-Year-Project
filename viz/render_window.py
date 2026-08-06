@@ -442,7 +442,7 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
     fig = make_subplots(
         rows=3, cols=1,
         subplot_titles=(
-            f"{chart_label}: the muscle's raw signal right now (raw EMG, a 4-second close-up)",
+            f"{chart_label}: the muscle's signal right now (a 4-second close-up)",
             "Is the muscle tiring? Median frequency (MDF) over the whole session - lower means more tired",
             "The mix of frequencies in the signal right now (FFT spectrum)",
         ),
@@ -497,8 +497,10 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
         _slope_hz_s, _mdf_icpt = np.polyfit(mdf_t, mdf_v, 1)
         _slope_hz_min = _slope_hz_s * 60.0
         # guard |slope| < 0.05 so {:+.1f} never renders a bare "-0.0 Hz/min"
-        _trend_lbl = ("Overall trend: roughly flat" if abs(_slope_hz_min) < 0.05
-                      else f"Overall trend: {_slope_hz_min:+.1f} Hz/min")
+        _direction = ("staying about the same" if abs(_slope_hz_min) < 0.05
+                      else "slowing down over time" if _slope_hz_min < 0
+                      else "speeding up over time")
+        _trend_lbl = f"Overall: the signal is {_direction}"
         fig.add_trace(go.Scatter(
             x=mdf_t, y=_slope_hz_s * mdf_t + _mdf_icpt, mode="lines",
             name=_trend_lbl,

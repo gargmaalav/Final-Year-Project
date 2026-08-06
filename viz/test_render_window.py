@@ -71,16 +71,16 @@ class HappyPath(unittest.TestCase):
         self.assertGreater(len(self.html), 100_000)
 
     def test_has_three_panels(self):
-        for marker in ("raw EMG", "Median frequency (MDF)", "FFT spectrum"):
+        for marker in ("the muscle's signal right now", "Median frequency (MDF)", "FFT spectrum"):
             self.assertIn(marker, self.html, f"panel marker missing: {marker}")
 
     def test_asked_marker_pins_queried_time(self):
         self.assertIn("asked: 120s", self.html)
 
     def test_trend_line_present_and_declines(self):
-        # S13's MDF declines with fatigue, so the fitted slope must be negative;
-        # the legend label reads "Overall trend: -X.X Hz/min".
-        self.assertIn("Overall trend: -", self.html)
+        # S13's MDF declines with fatigue, so the direction-worded legend
+        # label must read "slowing down", not the flat/speeding-up wording.
+        self.assertIn("Overall: the signal is slowing down over time", self.html)
 
     def test_payload_stays_optimized(self):
         # guards the frame-trim + basic-bundle optimization (was ~9.4MB, now
@@ -142,6 +142,20 @@ class ReliabilityInTitle(unittest.TestCase):
     def test_training_subject_shows_disclaimer_in_title(self):
         html = render_window(5, 120.0, "R")
         self.assertIn("Not independently tested for this person", html)
+
+
+@_needs_data
+class PlainLanguageCopy(unittest.TestCase):
+    """Task 5: no Hz/min or raw-EMG jargon in headline chart text (numbers may
+    still live in hover tooltips/legend colours, just not the legend text)."""
+
+    def test_no_hz_per_min_jargon_in_output(self):
+        html = render_window(13, 120.0, "R")
+        self.assertNotIn("Hz/min", html)
+
+    def test_no_raw_emg_jargon_in_panel_title(self):
+        html = render_window(13, 120.0, "R")
+        self.assertNotIn("raw EMG", html)
 
 
 if __name__ == "__main__":
