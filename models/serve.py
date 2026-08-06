@@ -40,8 +40,8 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "viz"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "zenodo_biceps"))
 from classify import classify, classify_upload       # noqa: E402  contract fns
 from render_window import (                          # noqa: E402
-    render_window, render_segment, TARGET_FS)
-import loader                                         # noqa: E402  to_segment
+    render_window, render_segment, TARGET_FS, WIN_SEC, STEP_SEC, _load_subject)
+import loader                                         # noqa: E402  to_segment, mdf_trend
 
 app = FastAPI(title="EMG Fatigue classify() API")
 
@@ -144,22 +144,27 @@ async def classify_upload_endpoint(file: UploadFile = File(...),
 def render_endpoint(subject: int, t_start: float = 0, side: str = "R"):
     """Return {"html": ...} interactive Plotly chart for one subject's window.
 
-    We also run classify() for the asked window and pass the model's prediction
-    to the chart, so the rendered figure shows the model output (the number the
-    chatbot grounds its answer in) next to the dataset's ground-truth label --
-    the same classify() the chatbot reads, so they agree.
+    Also runs classify() once per MDF window (same WIN_SEC/STEP_SEC grid
+    render_window() plots) so the chart can overlay the model's OWN
+    prediction at every window, not just the single asked-about point --
+    see viz.render_window's model_preds param (honesty/explainability plan
+    Task 2: ground-truth dots alone read, to a non-technical viewer, as if
+    they were the model's call).
     """
     try:
-        c = classify(subject, t_start, side)
-        model_pred = {
-            "label": c["fatigue_label"],
-            "state": _STATE.get(c["fatigue_label"], str(c["fatigue_label"])),
-            "confidence": c.get("confidence"),
-        }
+        seg, fs, _, _ = _load_subject(subject, side)
+        mdf_t, _, _ = loader.mdf_trend(seg, fs=fs, win_sec=WIN_SEC, step_sec=STEP_SEC)
+        model_preds = {}
+        for tc in mdf_t:
+            try:
+                r = classify(subject, float(tc), side)
+                model_preds[float(tc)] = r["fatigue_label"]
+            except Exception:
+                pass  # a single window's failure must not blank the whole overlay
     except Exception:
-        model_pred = None   # overlay is additive: chart still renders without it
+        model_preds = None   # overlay is additive: chart still renders without it
     try:
-        html = render_window(subject, t_start, side, model_pred=model_pred)
+        html = render_window(subject, t_start, side, model_preds=model_preds)
     except (KeyError, FileNotFoundError) as e:  # no data for that subject/side
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:                       # bad subject/side/time, etc.
