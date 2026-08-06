@@ -40,6 +40,7 @@ for _p in (os.path.join(_REPO_ROOT, "zenodo_biceps"),
 
 import loader  # noqa: E402  load_biceps_segment, load_fatigue_labels, mdf_trend
 import core    # noqa: E402  median_frequency
+from reliability_tiers import reliability_tier  # noqa: E402
 
 DATA_ROOT = os.path.join(_REPO_ROOT, "zenodo_biceps", "sEMG_data")
 
@@ -218,6 +219,17 @@ _SELECT_INSPECT = """
     for (var k in cnt) if (cnt[k] > bestN) { bestN = cnt[k]; dom = k; }
     var name = (D.names[dom] !== undefined) ? D.names[dom] : ('label ' + dom);
     var col = D.colors[dom] || '#888';
+    var disagreeN = 0;
+    for (var m = 0; m < idx.length; m++) {
+      var mv = D.model[idx[m]];
+      if (mv !== -1 && mv !== D.lab[idx[m]]) disagreeN++;
+    }
+    var disagreeMsg = '';
+    if (disagreeN > 0) {
+      disagreeMsg = ' &nbsp;|&nbsp; <span style="color:#e0a030">the tool\'s own '
+        + 'guess disagreed with what the person reported for ' + disagreeN
+        + ' of ' + idx.length + ' moments here</span>';
+    }
     box.innerHTML =
       '<b>' + lo.toFixed(0) + '-' + hi.toFixed(0) + ' s</b> &nbsp; '
       + '<span style="background:' + col + ';color:#111;padding:1px 7px;'
@@ -225,7 +237,8 @@ _SELECT_INSPECT = """
       + '<span style="color:#888">(' + bestN + '/' + idx.length + ' moments)</span>'
       + ' &nbsp;|&nbsp; frequency '
       + '<b>' + mn.toFixed(1) + '</b> / <b>' + mean.toFixed(1) + '</b> / '
-      + '<b>' + mx.toFixed(1) + '</b> Hz <span style="color:#888">(lowest / average / highest)</span>';
+      + '<b>' + mx.toFixed(1) + '</b> Hz <span style="color:#888">(lowest / average / highest)</span>'
+      + disagreeMsg;
   }
 
   function onSelect(ev) {
@@ -261,11 +274,15 @@ _SELECT_INSPECT = """
 """
 
 
-def _select_inspect_html(mdf_t, mdf_v, mdf_labels) -> str:
+def _select_inspect_html(mdf_t, mdf_v, mdf_labels, model_lab=None) -> str:
     data = {
         "t": [round(float(v), 2) for v in mdf_t],
         "v": [round(float(v), 2) for v in mdf_v],
         "lab": [int(l) for l in mdf_labels],
+        # -1 sentinel = no model prediction for that window (same convention
+        # as the ground-truth labels-absent fallback, see _dominant_label).
+        "model": [int(l) if l is not None else -1
+                  for l in (model_lab if model_lab is not None else [None] * len(mdf_t))],
         "names": {str(k): v for k, v in LABEL_NAME.items()},
         "colors": {str(k): v for k, v in LABEL_COLOR.items()},
     }
@@ -315,7 +332,7 @@ def _rgba(hex_color: str, alpha: float) -> str:
 
 def _chart_html(seg, fs: int, t_start: float, chart_label: str,
                 length_tag: str, title_prefix: str,
-                lab_t=None, lab_v=None) -> str:
+                lab_t=None, lab_v=None, model_preds=None, subject=None) -> str:
     """Interactive 3-panel chart with scrub + playback, over any core.Segment.
 
     Deliberately reproduces viz/signal_viewer.py's supervisor-liked layout
@@ -337,6 +354,14 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
     chart_label/length_tag/title_prefix carry the caller-specific wording
     ("Subject 13 (R biceps)" vs "your uploaded recording") into error
     messages and panel titles without duplicating this ~250-line function.
+
+    model_preds: optional {window_centre_time: predicted_label} from the
+    DEPLOYED model (models/classify.py), one entry per MDF window. When
+    given, renders as a second series ("Tool's own guess") distinct from
+    the ground-truth dots -- the chart previously only ever showed ground
+    truth, which a non-technical reader could mistake for the model's own
+    call. subject: used only to look up reliability_tier() for the title;
+    None (the uploaded-recording path) omits the tier.
     """
     x = seg.data[:, 0].astype(float)
     t = seg.t.astype(float)
@@ -438,6 +463,29 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
                     name=LABEL_NAME[lbl],
                     marker=dict(size=6, color=LABEL_COLOR[lbl])), row=2, col=1)
 
+    # --- model's own prediction, as a distinct series from ground truth ---
+    # Small X markers (not filled dots) so it reads visually as "a guess",
+    # never mistaken for the same kind of mark as the ground-truth dots.
+    # Also builds model_lab, aligned 1:1 with mdf_t, for the select-inspect
+    # disagreement callout (-1 sentinel = no matching prediction).
+    model_lab = [-1] * len(mdf_t)
+    if model_preds:
+        mp_t, mp_v, mp_lab = [], [], []
+        for i, tc in enumerate(mdf_t):
+            key = min(model_preds.keys(), key=lambda k: abs(k - float(tc)))
+            if abs(key - float(tc)) <= STEP_SEC:  # only plot a genuine match
+                mp_t.append(float(tc)); mp_v.append(float(mdf_v[i]))
+                lbl = int(model_preds[key])
+                mp_lab.append(lbl)
+                model_lab[i] = lbl
+        if mp_t:
+            mp_colors = ["#e74c3c" if l else "#2ecc71" for l in mp_lab]
+            fig.add_trace(go.Scatter(
+                x=mp_t, y=mp_v, mode="markers", name="Tool's own guess",
+                marker=dict(size=9, symbol="x", color=mp_colors,
+                            line=dict(width=1.5, color=mp_colors))),
+                row=2, col=1)
+
     # --- static: fitted MDF decline line + slope (panel 2) ---
     # A least-squares line through the whole MDF trend; the slope in Hz/min is
     # the quantitative fatigue signature (median frequency falls as the muscle
@@ -485,8 +533,10 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
         # No per-window fatigue-state label here -- the fatigue stage is shown by
         # the dot colours (Fresh/Transition/Fatigued), and the model's own verdict
         # is delivered in the chatbot's text answer, not on the chart.
+        tier_txt = f"  |  {reliability_tier(subject)}" if subject is not None else ""
         return (f"Muscle Fatigue - {title_prefix}  |  "
-                f"at {mdf_t[k]:.0f}s into the session, signal frequency {frame_mdf[k]:.1f} Hz")
+                f"at {mdf_t[k]:.0f}s into the session, signal frequency {frame_mdf[k]:.1f} Hz"
+                f"{tier_txt}")
 
     if animate:
         frames = []
@@ -575,22 +625,26 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
     # .animate() on load and scrolls the chart away from t_start immediately.
     chart = fig.to_html(full_html=False, auto_play=False, include_plotlyjs=False,
                         config={"responsive": True, "scrollZoom": True})
-    return _wrap_for_iframe(chart) + _select_inspect_html(mdf_t, mdf_v, mdf_labels)
+    return _wrap_for_iframe(chart) + _select_inspect_html(mdf_t, mdf_v, mdf_labels, model_lab)
 
 
 def render_window(subject: int, t_start: float, side: str = "R",
-                  model_pred: dict | None = None) -> str:
+                  model_pred: dict | None = None,
+                  model_preds: dict[float, int] | None = None) -> str:
     """Return an interactive Plotly chart as an HTML fragment (no full_html wrapper).
 
     3-panel single-subject view (raw EMG / MDF / FFT) at t_start, the same
     content as viz/signal_viewer.py's build_viewer single-subject mode.
 
-    model_pred: accepted for backward compatibility with models/serve.py, which
-    still passes the classify() result, but no longer drawn. The on-chart model
-    chip was removed 2026-07-13 (it duplicated the chatbot's text answer and the
-    model-vs-ground-truth wording clashed at transition windows); the model's
-    verdict is delivered in the chatbot text, and the chart shows the signal plus
-    the ground-truth fatigue colours.
+    model_pred: unused, kept only so existing callers passing it don't break.
+    model_preds: optional {window_centre_time: predicted_label} from the
+    DEPLOYED model (models/classify.py), one entry per MDF window. When given,
+    renders as a second series ("Tool's own guess") distinct from the
+    ground-truth dots, so the chart shows where the model agrees/disagrees
+    with the subject's self-report instead of only ever showing ground truth
+    (an earlier on-chart model chip was removed 2026-07-13 for duplicating the
+    chatbot's text answer -- this is a different, per-window design that
+    surfaces disagreement explicitly rather than repeating a single verdict).
     """
     side = _validate_side(side)
     if subject is None:
@@ -605,11 +659,12 @@ def render_window(subject: int, t_start: float, side: str = "R",
         chart_label=f"S{subject} {side} biceps",
         length_tag=f"subject {subject} recording",
         title_prefix=f"Subject {subject} ({side} biceps)",
-        lab_t=lab_t, lab_v=lab_v)
+        lab_t=lab_t, lab_v=lab_v, model_preds=model_preds, subject=subject)
 
 
 def render_segment(seg, fs: int, t_start: float,
-                   model_pred: dict | None = None) -> str:
+                   model_pred: dict | None = None,
+                   model_preds: dict[float, int] | None = None) -> str:
     """Same 3-panel chart as render_window(), for an UPLOADED recording.
 
     No ground-truth fatigue labels exist for an upload, so panel 2's dots
@@ -617,16 +672,18 @@ def render_segment(seg, fs: int, t_start: float,
     already existed for dataset trials missing a labels CSV -- this is not a
     new code path, just the existing lab_t=None branch reached from a new
     caller. `seg`/`fs` come from loader.to_segment() on the uploaded CSV
-    (models/serve.py's /classify_upload, /render_upload).
+    (models/serve.py's /classify_upload, /render_upload). No subject id
+    exists for an upload, so the title carries no reliability tier.
 
-    model_pred: see render_window() -- accepted, currently unused on-chart.
+    model_pred: unused, kept for callers passing it.
+    model_preds: see render_window().
     """
     t_start = min(max(float(t_start), 0.0), float(seg.t[-1]))
     return _chart_html(
         seg, fs, t_start,
         chart_label="your uploaded recording",
         length_tag="the uploaded recording",
-        title_prefix="uploaded recording")
+        title_prefix="uploaded recording", model_preds=model_preds)
 
 
 if __name__ == "__main__":

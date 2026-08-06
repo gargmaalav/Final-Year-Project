@@ -100,5 +100,49 @@ class LabelsAbsentFallback(unittest.TestCase):
         self.assertIn("no fatigue labels for this trial", html)
 
 
+@_needs_data
+class ModelPredictionOverlay(unittest.TestCase):
+    """Task 2 (honesty/explainability plan): the model's own prediction renders
+    as a distinct series from the ground-truth dots, so a viewer can see where
+    the tool agreed/disagreed instead of only ever seeing ground truth."""
+
+    def test_model_preds_add_a_named_trace(self):
+        # two windows' worth of predictions, keyed by MDF window-centre time
+        preds = {2.0: 0, 122.0: 1}
+        html = render_window(13, 120.0, "R", model_preds=preds)
+        self.assertIn("Tool's own guess", html)
+
+    def test_no_model_preds_is_backward_compatible(self):
+        # existing callers (no model_preds arg) must keep working unchanged
+        html = render_window(13, 120.0, "R")
+        self.assertIsInstance(html, str)
+        self.assertGreater(len(html), 0)
+
+
+@_needs_data
+class DisagreementCallout(unittest.TestCase):
+    """Task 3: model_preds reach the JS payload so the select-inspect readout
+    can flag a disagreement between the model's guess and ground truth."""
+
+    def test_model_preds_embedded_in_js_payload(self):
+        preds = {2.0: 1}
+        html = render_window(13, 0.0, "R", model_preds=preds)
+        self.assertIn('"model"', html)
+
+
+@_needs_data
+class ReliabilityInTitle(unittest.TestCase):
+    """Task 4: the chart title states the deployed model's reliability tier
+    for the subject being viewed."""
+
+    def test_held_out_subject_shows_tier_in_title(self):
+        html = render_window(13, 120.0, "R")
+        self.assertIn("Highly reliable", html)
+
+    def test_training_subject_shows_disclaimer_in_title(self):
+        html = render_window(5, 120.0, "R")
+        self.assertIn("Not independently tested for this person", html)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
