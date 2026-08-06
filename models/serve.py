@@ -97,6 +97,12 @@ def _load_upload_segment(raw: bytes, sample_rate_hz: float | None):
 @app.get("/classify")
 def classify_endpoint(subject: int, t_start: float, side: str = "R"):
     """Return {mdf_hz, fatigue_label, confidence, fatigue_state} for one window."""
+    if not (1 <= subject <= 13):
+        raise HTTPException(status_code=400,
+                            detail=f"subject must be 1-13, got {subject}. Try subject 13.")
+    if side.upper() not in ("R", "L"):
+        raise HTTPException(status_code=400,
+                            detail=f"side must be 'R' or 'L', got {side!r}.")
     try:
         result = classify(subject, t_start, side)
     except KeyError as e:                     # e.g. no baseline for that subject
@@ -151,6 +157,12 @@ def render_endpoint(subject: int, t_start: float = 0, side: str = "R"):
     Task 2: ground-truth dots alone read, to a non-technical viewer, as if
     they were the model's call).
     """
+    if not (1 <= subject <= 13):
+        raise HTTPException(status_code=400,
+                            detail=f"subject must be 1-13, got {subject}. Try subject 13.")
+    if side.upper() not in ("R", "L"):
+        raise HTTPException(status_code=400,
+                            detail=f"side must be 'R' or 'L', got {side!r}.")
     try:
         seg, fs, _, _ = _load_subject(subject, side)
         mdf_t, _, _ = loader.mdf_trend(seg, fs=fs, win_sec=WIN_SEC, step_sec=STEP_SEC)

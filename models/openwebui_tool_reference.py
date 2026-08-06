@@ -39,7 +39,7 @@ class Tools:
     def __init__(self):
         pass
 
-    def get_fatigue(self, subject: int, t_start: float, side: str = "R"):
+    def get_fatigue(self, subject: int = 13, t_start: float = 0.0, side: str = "R"):
         """
         Get the muscle-fatigue state predicted by the EMG deep-learning model for
         a subject at a given time in their recording, with an interactive chart
@@ -47,8 +47,16 @@ class Tools:
         fatigued, or about the fatigue state / median frequency at a specific
         time point.
 
-        :param subject: subject id (1-13 in the dataset)
-        :param t_start: time in seconds into the recording (e.g. 120)
+        Every param has a default so a partial extraction from the small local
+        model (Legacy function-calling) still produces a valid call instead of
+        erroring outright.
+
+        Examples:
+        - "is subject 13 fatigued at 2 minutes?" -> get_fatigue(13, 120, "R")
+        - "check subject 5's left arm at the start" -> get_fatigue(5, 0, "L")
+
+        :param subject: subject id (1-13 in the dataset). Default 13 if unclear.
+        :param t_start: time in seconds into the recording (e.g. 120). Default 0 if unclear.
         :param side: which arm, "R" or "L" (default "R")
         :return: (chart, summary) if the chart renders, else summary alone
         """
