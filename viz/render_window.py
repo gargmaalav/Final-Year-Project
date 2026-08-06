@@ -8,12 +8,14 @@ The team integration contract (README.md / docs/superpowers/specs/
   (models/openwebui_tool_reference.py), embedded via Open WebUI's
   (HTMLResponse, result_context) tuple mechanism.
 
-Content matches viz/signal_viewer.py's single-subject panels (the tool the
-supervisor previewed and liked): raw EMG window coloured by fatigue label,
-MDF-over-time, FFT of the current window. Interaction model does NOT carry
-over -- this renders one static Plotly figure at the query's t_start (native
-hover/zoom/pan only), not signal_viewer.py's scrub slider + Play button.
-Scrub/playback is an explicit fast-follow, not silently substituted.
+Two panels, simplified for a non-technical chatbot audience (2026-08-06
+redesign): (1) fatigue over the whole session - the hero chart, ground-truth
+dots + the deployed model's own guess, (2) a small "signal right now"
+snapshot. Originally matched viz/signal_viewer.py's 3-panel layout (raw EMG /
+MDF-over-time / FFT); the FFT panel was dropped as too technical to read at a
+glance, and the remaining two got a plain-language static header/legend
+instead of Plotly's own in-canvas title/legend (which had no room in a
+narrow chat embed and reliably overlapped itself).
 
 Single-subject only. An all-13-subjects overview existed but was dropped
 2026-07-13 (13 overlaid MDF lines were an unreadable spaghetti plot); the
@@ -144,40 +146,38 @@ def _wrap_for_iframe(plotly_html: str) -> str:
     return f"<script>{_plotly_basic_js()}</script>" + plotly_html + _IFRAME_CHROME
 
 
-# Select-to-inspect + linked navigator on the MDF panel (the only whole-
+# Select-to-inspect + linked navigator on the fatigue panel (the only whole-
 # recording-time axis). Box-select a time span there and the chart (a) reads
-# out the dominant fatigue state + MDF min/mean/max for the span, (b) shades
-# the span so it stays visible, and (c) jumps the EMG/FFT detail panels + scrub
-# cursor to that span's centre - the detail view "reflects" the selection.
-# Clicking a single MDF point jumps the detail there too. The detail panels
-# show ONE 4 s window by construction, so they navigate TO a point in the
-# selection; they do not stretch to span it.
+# out the dominant fatigue state + frequency min/mean/max for the span, (b)
+# shades the span so it stays visible, and (c) jumps the small signal-snapshot
+# panel + scrub cursor to that span's centre. Clicking a single point jumps
+# there too. The snapshot panel shows ONE 4 s window by construction, so it
+# navigates TO a point in the selection; it does not stretch to span it.
 #
-# The MDF panel is subplot row 2, x-axis 'x2', so plotly_selected's range is
-# keyed 'x2' and clicked MDF points carry data.xaxis === 'x2'. Selections on
-# the EMG window (row 1, 'x', a 0-4 s axis) or the FFT (row 3, 'x3', frequency)
-# are NOT recording-time and are never mis-mapped - they show a hint instead.
-# Navigation drives Plotly.animate to the nearest baked frame (same mechanism
-# as the slider); the asked-marker + span rect are layout shapes (indices 0/1)
-# that frames never rewrite, so they survive playback. (Verified in the sandbox.)
+# The fatigue panel is subplot row 1, x-axis 'x', so plotly_selected's range
+# is keyed 'x' and clicked points carry data.xaxis === 'x'. Selections on the
+# signal-snapshot panel (row 2, 'x2', a 0-4 s axis) are NOT recording-time and
+# are never mis-mapped - they show a hint instead. Navigation drives
+# Plotly.animate to the nearest baked frame (same mechanism as the slider);
+# the asked-marker + span rect are layout shapes (indices 0/1) that frames
+# never rewrite, so they survive playback. (Verified in the sandbox.)
 _SELECT_INSPECT = """
 <div id="__viz_readout" style="font:13px/1.5 -apple-system,sans-serif;
   color:#ddd;background:#161616;border-top:1px solid #333;padding:10px 14px;">
-  <span style="color:#888">Tip: to inspect part of the session, pick the
-  <b>Box Select</b> tool (top-right) and drag across the middle chart. You get
-  the fatigue state and frequency range for that stretch, and the close-up
-  charts jump to it. Click any dot to jump there.</span>
+  <span style="color:#888">Tip: to look closer at part of the session, pick the
+  <b>Box Select</b> tool (top-right) and drag across the big chart above. You
+  get the fatigue state for that stretch, and the small chart below jumps to
+  it. Click any dot to jump there too.</span>
 </div>
 <script>
 (function () {
   var D = __VIZ_DATA__;
   var SEL_SHAPE = 1;                 // layout.shapes[1] = the select-span rect
   var box = document.getElementById('__viz_readout');
-  var TIP = '<span style="color:#888">Tip: to inspect part of the session, pick '
-          + 'the <b>Box Select</b> tool (top-right) and drag across the middle '
-          + 'chart. You get the fatigue state and frequency range for that '
-          + 'stretch, and the close-up charts jump to it. Click any dot to jump '
-          + 'there.</span>';
+  var TIP = '<span style="color:#888">Tip: to look closer at part of the session, '
+          + 'pick the <b>Box Select</b> tool (top-right) and drag across the big '
+          + 'chart above. You get the fatigue state for that stretch, and the '
+          + 'small chart below jumps to it. Click any dot to jump there too.</span>';
   var gd = null;
   function hint(msg) { box.innerHTML = '<span style="color:#e0a030">' + msg + '</span>'; }
 
@@ -226,9 +226,9 @@ _SELECT_INSPECT = """
     }
     var disagreeMsg = '';
     if (disagreeN > 0) {
-      disagreeMsg = ' &nbsp;|&nbsp; <span style="color:#e0a030">the tool\'s own '
-        + 'guess disagreed with what the person reported for ' + disagreeN
-        + ' of ' + idx.length + ' moments here</span>';
+      disagreeMsg = " &nbsp;|&nbsp; <span style='color:#e0a030'>the tool's own "
+        + "guess disagreed with what the person reported for " + disagreeN
+        + " of " + idx.length + " moments here</span>";
     }
     box.innerHTML =
       '<b>' + lo.toFixed(0) + '-' + hi.toFixed(0) + ' s</b> &nbsp; '
@@ -244,21 +244,21 @@ _SELECT_INSPECT = """
   function onSelect(ev) {
     if (!ev || !ev.range) return;
     var r = ev.range;
-    if (r.x2) {
-      var lo = Math.min(r.x2[0], r.x2[1]), hi = Math.max(r.x2[0], r.x2[1]);
+    if (r.x) {
+      var lo = Math.min(r.x[0], r.x[1]), hi = Math.max(r.x[0], r.x[1]);
       inspect(lo, hi);           // stats for the span
       shadeSpan(lo, hi);         // keep the span visible on the timeline
-      jumpTo((lo + hi) / 2);     // detail panels reflect the selection (its centre)
+      jumpTo((lo + hi) / 2);     // detail panel reflects the selection (its centre)
     } else {
-      hint('Time spans are read off the middle chart (the whole session). That '
-         + 'box was on the top or bottom close-up chart, which is not the '
-         + 'session timeline - try dragging across the middle chart instead.');
+      hint('Time spans are read off the big chart above (the whole session). '
+         + 'That box was on the small close-up chart below, which is not the '
+         + 'session timeline - try dragging across the big chart instead.');
     }
   }
   function onClick(ev) {
     if (!ev || !ev.points || !ev.points.length) return;
     var pt = ev.points[0];
-    if (pt.data && pt.data.xaxis === 'x2') jumpTo(pt.x);   // click a timeline point
+    if (pt.data && pt.data.xaxis === 'x') jumpTo(pt.x);   // click a timeline point
   }
   function wire() {
     gd = document.getElementsByClassName('plotly-graph-div')[0];
@@ -330,7 +330,54 @@ def _rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
-def _chart_html(seg, fs: int, t_start: float, chart_label: str,
+def _meta_header_html(title_prefix: str, tier_line: str | None, trend_sentence: str) -> str:
+    """Plain static HTML above the chart: subject + reliability tier + trend.
+
+    Kept OUT of the Plotly canvas on purpose -- a Plotly title/legend has a
+    fixed narrow width to fight in the chat embed and reliably overlapped
+    itself there. Plain HTML wraps normally at any container width instead.
+    """
+    tier_html = (f'<span style="color:#8ab4f8;">{tier_line}</span>'
+                f'<span style="color:#555;"> &nbsp;&middot;&nbsp; </span>' if tier_line else "")
+    return (
+        '<div style="font:14px/1.4 -apple-system,sans-serif;color:#eee;'
+        'background:#161616;padding:12px 14px 8px;">'
+        f'<div style="font-weight:600;font-size:15px;">{title_prefix}</div>'
+        f'<div style="margin-top:3px;font-size:12.5px;color:#aaa;">'
+        f'{tier_html}{trend_sentence}</div>'
+        '</div>'
+    )
+
+
+def _legend_row_html(show_model: bool) -> str:
+    """Static colour-key row, replacing Plotly's own in-canvas legend (which
+    has no room to lay out horizontally in a narrow embed without colliding
+    with the title)."""
+    items = [(LABEL_COLOR[0], "Fresh"), (LABEL_COLOR[1], "Getting tired"),
+            (LABEL_COLOR[2], "Fatigued")]
+    swatches = "".join(
+        '<span style="display:inline-flex;align-items:center;gap:5px;'
+        'margin-right:16px;white-space:nowrap;">'
+        f'<span style="width:9px;height:9px;border-radius:50%;background:{c};'
+        'display:inline-block;"></span>' + name + '</span>'
+        for c, name in items
+    )
+    if show_model:
+        swatches += (
+            '<span style="display:inline-flex;align-items:center;gap:5px;'
+            'margin-right:16px;white-space:nowrap;">'
+            '<span style="font-weight:800;color:#888;">&#10005;</span>'
+            "Tool's own guess <span style=\"color:#666;\">"
+            "(green = agrees, red = disagrees)</span></span>"
+        )
+    return (
+        '<div style="font:12px -apple-system,sans-serif;color:#ccc;'
+        'background:#161616;padding:0 14px 10px;display:flex;flex-wrap:wrap;">'
+        + swatches + '</div>'
+    )
+
+
+def _chart_html(seg, fs: int, t_start: float,
                 length_tag: str, title_prefix: str,
                 lab_t=None, lab_v=None, model_preds=None, subject=None) -> str:
     """Interactive 3-panel chart with scrub + playback, over any core.Segment.
@@ -351,7 +398,7 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
     Shared by render_window() (a dataset subject, ground-truth labels) and
     render_segment() (an uploaded recording, no labels -- lab_t/lab_v=None
     already renders the grey "no fatigue labels" fallback below).
-    chart_label/length_tag/title_prefix carry the caller-specific wording
+    length_tag/title_prefix carry the caller-specific wording
     ("Subject 13 (R biceps)" vs "your uploaded recording") into error
     messages and panel titles without duplicating this ~250-line function.
 
@@ -389,33 +436,21 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
         mdf_v = np.array([core.median_frequency(x[s0:s0 + win], fs=fs)])
         mdf_labels = np.array([_dominant_label(tc0, lab_t, lab_v)])
 
-    freqs = np.fft.rfftfreq(win, 1.0 / fs)
-    fmax = min(500.0, fs / 2.0)
-    fband = freqs <= fmax
-    freqs_band = freqs[fband]
     tw = (np.arange(win) / fs).tolist()   # per-window time axis, 0..4 s (const)
 
     def _window_start(tc: float) -> int:
         start = int(np.searchsorted(t, tc - WIN_SEC / 2.0))
         return int(min(max(start, 0), x.size - win))
 
-    # bake every frame's payload once, server-side (same np.fft/hanning as the
-    # legacy static path - no JS FFT, so nothing can diverge from classify()).
-    # Round baked floats so the serialized frame payload carries short numbers
-    # (a big chunk of the HTML size) with no visible change: the FFT trace is
-    # already normalised 0..1 so 4 dp is exact enough; raw EMG is ~1e-3, so a
-    # flat 4 dp would staircase the waveform - round to keep ~4 significant
-    # figures at the signal's own scale instead.
+    # bake every frame's EMG snippet once, server-side. Round to keep ~4
+    # significant figures at the signal's own scale (raw EMG is ~1e-3, so a
+    # flat 4 dp would staircase the waveform) - a big chunk of payload size.
     _amp = float(np.max(np.abs(x))) or 1e-12
     _emg_dp = int(np.clip(4 - np.floor(np.log10(_amp)), 4, 10))
-    frame_emg, frame_spec = [], []
+    frame_emg = []
     for tc in mdf_t:
         s = _window_start(float(tc))
-        w = x[s:s + win]
-        spec = np.abs(np.fft.rfft(w * np.hanning(win))) ** 2
-        spec = spec / (spec.max() + 1e-12)
-        frame_emg.append(np.round(w, _emg_dp).tolist())
-        frame_spec.append(np.round(spec[fband], 4))
+        frame_emg.append(np.round(x[s:s + win], _emg_dp).tolist())
     frame_mdf = [round(float(v), 2) for v in mdf_v]
     frame_label = [int(l) for l in mdf_labels]
 
@@ -439,38 +474,14 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
     def _tint(k):
         return _rgba(LABEL_COLOR.get(frame_label[k], "#888888"), 0.12)
 
-    fig = make_subplots(
-        rows=3, cols=1,
-        subplot_titles=(
-            f"{chart_label}: the muscle's signal right now (a 4-second close-up)",
-            "Is the muscle tiring? Median frequency (MDF) over the whole session - lower means more tired",
-            "The mix of frequencies in the signal right now (FFT spectrum)",
-        ),
-        vertical_spacing=0.1,
-    )
-
-    # --- static: MDF-over-time, split by fatigue label (panel 2) ---
-    if lab_t is None:
-        fig.add_trace(go.Scatter(x=mdf_t, y=mdf_v, mode="markers+lines",
-                                 name="Signal frequency (no fatigue labels for this trial)",
-                                 marker=dict(size=5, color="#888")), row=2, col=1)
-    else:
-        for lbl in (0, 1, 2):
-            mask = mdf_labels == lbl
-            if mask.any():
-                fig.add_trace(go.Scatter(
-                    x=mdf_t[mask], y=mdf_v[mask], mode="markers",
-                    name=LABEL_NAME[lbl],
-                    marker=dict(size=6, color=LABEL_COLOR[lbl])), row=2, col=1)
-
     # --- model's own prediction, as a distinct series from ground truth ---
     # Small X markers (not filled dots) so it reads visually as "a guess",
     # never mistaken for the same kind of mark as the ground-truth dots.
     # Also builds model_lab, aligned 1:1 with mdf_t, for the select-inspect
     # disagreement callout (-1 sentinel = no matching prediction).
     model_lab = [-1] * len(mdf_t)
+    mp_t, mp_v, mp_lab = [], [], []
     if model_preds:
-        mp_t, mp_v, mp_lab = [], [], []
         for i, tc in enumerate(mdf_t):
             key = min(model_preds.keys(), key=lambda k: abs(k - float(tc)))
             if abs(key - float(tc)) <= STEP_SEC:  # only plot a genuine match
@@ -478,91 +489,106 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
                 lbl = int(model_preds[key])
                 mp_lab.append(lbl)
                 model_lab[i] = lbl
-        if mp_t:
-            mp_colors = ["#e74c3c" if l else "#2ecc71" for l in mp_lab]
-            fig.add_trace(go.Scatter(
-                x=mp_t, y=mp_v, mode="markers", name="Tool's own guess",
-                marker=dict(size=9, symbol="x", color=mp_colors,
-                            line=dict(width=1.5, color=mp_colors))),
-                row=2, col=1)
 
-    # --- static: fitted MDF decline line + slope (panel 2) ---
-    # A least-squares line through the whole MDF trend; the slope in Hz/min is
-    # the quantitative fatigue signature (median frequency falls as the muscle
-    # fatigues). Static overlay - it does NOT change per frame, so it lives with
-    # the base traces (added before `base` below) and never enters fig.frames.
-    # hoverinfo=skip so it does not steal hover from the coloured MDF dots; the
-    # slope value rides in the legend label. Needs >=2 windows to fit.
+    # --- fitted MDF trend line + plain-language direction ---
+    # A least-squares line through the whole MDF trend; needs >=2 windows.
+    trend_sentence = "Not enough of the session yet for a trend."
+    _trend_x = _trend_y = None
     if mdf_v.size >= 2:
         _slope_hz_s, _mdf_icpt = np.polyfit(mdf_t, mdf_v, 1)
         _slope_hz_min = _slope_hz_s * 60.0
-        # guard |slope| < 0.05 so {:+.1f} never renders a bare "-0.0 Hz/min"
+        # guard |slope| < 0.05 so wording never flips on noise near zero
         _direction = ("staying about the same" if abs(_slope_hz_min) < 0.05
                       else "slowing down over time" if _slope_hz_min < 0
                       else "speeding up over time")
-        _trend_lbl = f"Overall: the signal is {_direction}"
-        fig.add_trace(go.Scatter(
-            x=mdf_t, y=_slope_hz_s * mdf_t + _mdf_icpt, mode="lines",
-            name=_trend_lbl,
-            line=dict(color="#58a6ff", width=2.5, dash="dash"),
-            hoverinfo="skip"), row=2, col=1)
+        trend_sentence = f"Overall, the signal is {_direction}."
+        _trend_x, _trend_y = mdf_t, _slope_hz_s * mdf_t + _mdf_icpt
 
-    # --- animated traces (fixed indices from here): [tint, emg, cursor,
-    #     fft line, fft marker], each rewritten by every frame by position ---
+    tier_line = reliability_tier(subject) if subject is not None else None
+
+    # --- two panels: (1) fatigue over the whole session - the hero chart a
+    # non-technical reader actually needs, (2) a small signal snapshot for
+    # context. No third (FFT) panel, no in-canvas title/legend - both moved to
+    # plain static HTML above the chart so nothing overlaps in a narrow embed.
+    fig = make_subplots(
+        rows=2, cols=1, row_heights=[0.62, 0.38],
+        subplot_titles=(
+            "Is the muscle tiring? (lower = more tired)",
+            "What the signal looks like right now",
+        ),
+        vertical_spacing=0.26,
+    )
+    # Shrink the subplot titles (default 16px) so they fit the gap alongside
+    # panel 1's x-axis without colliding with it or panel 2's plot area. Only
+    # the two subplot-title annotations exist at this point (the "asked"
+    # annotation is added later), so this can't touch anything else.
+    fig.update_annotations(font_size=13)
+
+    if lab_t is None:
+        fig.add_trace(go.Scatter(x=mdf_t, y=mdf_v, mode="markers+lines",
+                                 name="Signal frequency (no fatigue labels for this trial)",
+                                 marker=dict(size=5, color="#888"),
+                                 showlegend=False), row=1, col=1)
+    else:
+        for lbl in (0, 1, 2):
+            mask = mdf_labels == lbl
+            if mask.any():
+                fig.add_trace(go.Scatter(
+                    x=mdf_t[mask], y=mdf_v[mask], mode="markers",
+                    name=LABEL_NAME[lbl], showlegend=False,
+                    marker=dict(size=7, color=LABEL_COLOR[lbl])), row=1, col=1)
+
+    if mp_t:
+        mp_colors = ["#e74c3c" if l else "#2ecc71" for l in mp_lab]
+        fig.add_trace(go.Scatter(
+            x=mp_t, y=mp_v, mode="markers", name="Tool's own guess",
+            showlegend=False,
+            marker=dict(size=9, symbol="x", color=mp_colors,
+                        line=dict(width=1.5, color=mp_colors))),
+            row=1, col=1)
+
+    if _trend_x is not None:
+        fig.add_trace(go.Scatter(
+            x=_trend_x, y=_trend_y, mode="lines", name=trend_sentence,
+            showlegend=False,
+            line=dict(color="#58a6ff", width=2.5, dash="dash"),
+            hoverinfo="skip"), row=1, col=1)
+
+    # --- animated traces (fixed indices from here): [tint, emg, cursor],
+    #     each rewritten by every frame by position ---
     base = len(fig.data)
     fig.add_trace(go.Scatter(                                   # base+0 window tint
         x=[0, WIN_SEC, WIN_SEC, 0], y=[ylo, ylo, yhi, yhi],
         fill="toself", mode="lines", fillcolor=_tint(k0),
-        line=dict(width=0), hoverinfo="skip", showlegend=False), row=1, col=1)
+        line=dict(width=0), hoverinfo="skip", showlegend=False), row=2, col=1)
     fig.add_trace(go.Scatter(                                   # base+1 EMG window
         x=tw, y=frame_emg[k0], mode="lines", name="Muscle signal (this moment)",
-        line=dict(width=0.7, color="#00d4ff")), row=1, col=1)
+        showlegend=False,
+        line=dict(width=0.7, color="#00d4ff")), row=2, col=1)
     fig.add_trace(go.Scatter(                                   # base+2 scrub cursor
         x=[float(mdf_t[k0]), float(mdf_t[k0])], y=[mlo, mhi], mode="lines",
         line=dict(color="white", dash="dash", width=1.2),
-        hoverinfo="skip", showlegend=False), row=2, col=1)
-    fig.add_trace(go.Scatter(                                   # base+3 FFT power
-        x=freqs_band, y=frame_spec[k0], mode="lines", name="Frequency mix",
-        line=dict(color="#ff6b6b")), row=3, col=1)
-    fig.add_trace(go.Scatter(                                   # base+4 window MDF
-        x=[frame_mdf[k0], frame_mdf[k0]], y=[0.0, 1.05], mode="lines",
-        line=dict(color="yellow", dash="dash", width=1.5),
-        name="window MDF", hoverinfo="skip", showlegend=False), row=3, col=1)
-    anim_idx = [base, base + 1, base + 2, base + 3, base + 4]
-
-    def _title(k):
-        # Plain title: subject, queried time, and the window's median frequency.
-        # No per-window fatigue-state label here -- the fatigue stage is shown by
-        # the dot colours (Fresh/Transition/Fatigued), and the model's own verdict
-        # is delivered in the chatbot's text answer, not on the chart.
-        tier_txt = f"  |  {reliability_tier(subject)}" if subject is not None else ""
-        return (f"Muscle Fatigue - {title_prefix}  |  "
-                f"at {mdf_t[k]:.0f}s into the session, signal frequency {frame_mdf[k]:.1f} Hz"
-                f"{tier_txt}")
+        hoverinfo="skip", showlegend=False), row=1, col=1)
+    anim_idx = [base, base + 1, base + 2]
 
     if animate:
         frames = []
         for k in range(n_frames):
             # Each frame carries ONLY the attributes that change per frame.
             # Plotly partial-merges a frame trace onto its base trace (same
-            # index), so the CONSTANT x-axes (tw, freqs_band) and the constant
-            # y-extents inherit from the base traces instead of being re-baked
-            # into all ~N frames. That redundancy (constant x repeated per
-            # frame) was the bulk of the payload; dropping it is the biggest
-            # single size win with an identical rendered figure.
+            # index), so the CONSTANT x-axis (tw) inherits from the base trace
+            # instead of being re-baked into all ~N frames.
             frames.append(go.Frame(name=str(k), traces=anim_idx, data=[
                 go.Scatter(fillcolor=_tint(k)),                    # tint: fillcolor only
                 go.Scatter(y=frame_emg[k]),                        # EMG: y only (x=tw inherits)
                 go.Scatter(x=[float(mdf_t[k]), float(mdf_t[k])]),  # cursor: x only
-                go.Scatter(y=frame_spec[k]),                       # FFT: y only (x=freqs inherits)
-                go.Scatter(x=[frame_mdf[k], frame_mdf[k]]),        # window MDF: x only
-            ], layout=go.Layout(title=dict(text=_title(k)))))
+            ]))
         fig.frames = frames
 
         fig.update_layout(
             updatemenus=[dict(
                 type="buttons", direction="left", showactive=False,
-                x=0.02, y=1.10, xanchor="left", yanchor="top",
+                x=0.0, y=1.16, xanchor="left", yanchor="top",
                 buttons=[
                     dict(label="▶ Play", method="animate",
                          args=[None, {"frame": {"duration": 120, "redraw": True},
@@ -572,40 +598,36 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
                                         "mode": "immediate", "transition": {"duration": 0}}]),
                 ])],
             sliders=[dict(
-                active=k0, x=0.02, y=0, len=0.96, xanchor="left", yanchor="top",
-                pad=dict(t=40, b=10), currentvalue=dict(prefix="Time: ", font=dict(size=12)),
+                active=k0, x=0.0, y=0, len=1.0, xanchor="left", yanchor="top",
+                pad=dict(t=36, b=10), currentvalue=dict(prefix="Time: ", font=dict(size=12)),
                 steps=[dict(method="animate", label=f"{mdf_t[k]:.0f}s",
                             args=[[str(k)], {"frame": {"duration": 0, "redraw": True},
                                              "mode": "immediate", "transition": {"duration": 0}}])
                        for k in range(n_frames)])])
 
     fig.update_layout(
-        template="plotly_dark", height=880 if animate else 820, showlegend=True,
-        title=dict(text=_title(k0)),
-        margin=dict(t=110 if animate else 80, b=60),
-        legend=dict(orientation="h", yanchor="bottom", y=1.14 if animate else 1.02,
-                    xanchor="right", x=1.0),
+        template="plotly_dark", height=640 if animate else 580, showlegend=False,
+        margin=dict(t=40 if not animate else 56, b=56, l=52, r=16),
         # box-select defaults to a horizontal (time) band for select-to-inspect
-        # on the MDF panel; scroll-zoom stays available so select mode does not
-        # cost the user zoom.
+        # on the fatigue panel; scroll-zoom stays available so select mode does
+        # not cost the user zoom.
         dragmode="select", selectdirection="h",
     )
-    fig.update_xaxes(title_text="Time within this snapshot (s)", range=[0, WIN_SEC], row=1, col=1)
-    fig.update_yaxes(title_text="Signal strength", range=[ylo, yhi], row=1, col=1)
-    fig.update_xaxes(title_text="Time into the session (s)", range=[float(t[0]), float(t[-1])], row=2, col=1)
-    fig.update_yaxes(title_text="Signal frequency (Hz)", range=[mlo, mhi], row=2, col=1)
-    fig.update_xaxes(title_text="Frequency (Hz)  -  slower ... faster", range=[0, fmax], row=3, col=1)
-    fig.update_yaxes(title_text="Amount of signal", range=[0, 1.05], row=3, col=1)
+    # No x-axis title on panel 1 (redundant with the header above and frees
+    # room in the gap between panel 1's ticks and panel 2's subplot title).
+    fig.update_xaxes(range=[float(t[0]), float(t[-1])], row=1, col=1)
+    fig.update_yaxes(title_text="Signal frequency (Hz)", range=[mlo, mhi], row=1, col=1)
+    fig.update_xaxes(title_text="Time within this snapshot (s)", range=[0, WIN_SEC], row=2, col=1)
+    fig.update_yaxes(title_text="Signal strength", range=[ylo, yhi], row=2, col=1)
 
-    # Persistent "asked: t_start" marker on the MDF panel: a fixed vertical line
-    # + label at the exact time the user asked about. Added as layout shapes/
-    # annotations, which frames never rewrite (frames only set layout.title), so
-    # it stays put while playback/scrub moves the white cursor away - the chart
-    # always shows the moment that was actually queried. shapes[0] = this line.
-    fig.add_vline(x=t_start, row=2, col=1, line=dict(color=ASK_COLOR, width=2))
+    # Persistent "asked: t_start" marker on the fatigue panel: a fixed vertical
+    # line + label at the exact time the user asked about. Added as layout
+    # shapes/annotations, which frames never rewrite, so it stays put while
+    # playback/scrub moves the white cursor away. shapes[0] = this line.
+    fig.add_vline(x=t_start, row=1, col=1, line=dict(color=ASK_COLOR, width=2))
     # shapes[1] = the select-to-inspect span rect, reserved here (invisible)
     # and shown/moved by the JS on box-select. Kept below the data points.
-    fig.add_shape(type="rect", xref="x2", yref="y2",
+    fig.add_shape(type="rect", xref="x", yref="y",
                   x0=t_start, x1=t_start, y0=mlo, y1=mhi,
                   fillcolor=SEL_COLOR, opacity=0.0, line=dict(width=0),
                   layer="below")
@@ -620,14 +642,17 @@ def _chart_html(seg, fs: int, t_start: float, chart_label: str,
     fig.add_annotation(x=t_start, y=mhi, text=f"asked: {t_start:.0f}s",
                        showarrow=False, xanchor=_lab_anchor, yanchor="top",
                        xshift=_lab_shift, yshift=-2,
-                       font=dict(color=ASK_COLOR, size=11), row=2, col=1)
+                       font=dict(color=ASK_COLOR, size=11), row=1, col=1)
 
     # auto_play=False: rest at the opening frame (nearest t_start) until the
     # user hits Play. Plotly's to_html defaults auto_play=True, which fires
     # .animate() on load and scrolls the chart away from t_start immediately.
     chart = fig.to_html(full_html=False, auto_play=False, include_plotlyjs=False,
                         config={"responsive": True, "scrollZoom": True})
-    return _wrap_for_iframe(chart) + _select_inspect_html(mdf_t, mdf_v, mdf_labels, model_lab)
+    header = _meta_header_html(title_prefix, tier_line, trend_sentence)
+    legend = _legend_row_html(show_model=bool(mp_t))
+    return (header + legend + _wrap_for_iframe(chart)
+            + _select_inspect_html(mdf_t, mdf_v, mdf_labels, model_lab))
 
 
 def render_window(subject: int, t_start: float, side: str = "R",
@@ -658,7 +683,6 @@ def render_window(subject: int, t_start: float, side: str = "R",
     t_start = min(max(float(t_start), 0.0), float(seg.t[-1]))
     return _chart_html(
         seg, fs, t_start,
-        chart_label=f"S{subject} {side} biceps",
         length_tag=f"subject {subject} recording",
         title_prefix=f"Subject {subject} ({side} biceps)",
         lab_t=lab_t, lab_v=lab_v, model_preds=model_preds, subject=subject)
@@ -683,7 +707,6 @@ def render_segment(seg, fs: int, t_start: float,
     t_start = min(max(float(t_start), 0.0), float(seg.t[-1]))
     return _chart_html(
         seg, fs, t_start,
-        chart_label="your uploaded recording",
         length_tag="the uploaded recording",
         title_prefix="uploaded recording", model_preds=model_preds)
 

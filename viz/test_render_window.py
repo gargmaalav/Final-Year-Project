@@ -70,22 +70,30 @@ class HappyPath(unittest.TestCase):
         self.assertIn("plotly-graph-div", self.html)
         self.assertGreater(len(self.html), 100_000)
 
-    def test_has_three_panels(self):
-        for marker in ("the muscle's signal right now", "Median frequency (MDF)", "FFT spectrum"):
+    def test_has_two_panels(self):
+        # 2026-08-06 redesign: the FFT panel was dropped as too technical for
+        # a non-technical viewer; only the fatigue-over-time hero and the
+        # small signal snapshot remain.
+        for marker in ("Is the muscle tiring?", "What the signal looks like right now"):
             self.assertIn(marker, self.html, f"panel marker missing: {marker}")
+
+    def test_fft_panel_is_gone(self):
+        for marker in ("FFT spectrum", "Frequency mix", "Frequency (Hz)"):
+            self.assertNotIn(marker, self.html, f"dropped FFT panel text still present: {marker}")
 
     def test_asked_marker_pins_queried_time(self):
         self.assertIn("asked: 120s", self.html)
 
     def test_trend_line_present_and_declines(self):
-        # S13's MDF declines with fatigue, so the direction-worded legend
-        # label must read "slowing down", not the flat/speeding-up wording.
-        self.assertIn("Overall: the signal is slowing down over time", self.html)
+        # S13's MDF declines with fatigue, so the direction-worded trend
+        # sentence must read "slowing down", not the flat/speeding-up wording.
+        self.assertIn("Overall, the signal is slowing down over time.", self.html)
 
     def test_payload_stays_optimized(self):
-        # guards the frame-trim + basic-bundle optimization (was ~9.4MB, now
-        # ~3.1MB); a regression that re-bloats the payload should trip here.
-        self.assertLess(len(self.html), 5_000_000)
+        # guards the frame-trim + basic-bundle + FFT-panel-removal size (was
+        # ~9.4MB, then ~3.1MB, now ~1.2MB); a regression that re-bloats the
+        # payload should trip here.
+        self.assertLess(len(self.html), 2_500_000)
 
 
 @_needs_data
@@ -132,8 +140,9 @@ class DisagreementCallout(unittest.TestCase):
 
 @_needs_data
 class ReliabilityInTitle(unittest.TestCase):
-    """Task 4: the chart title states the deployed model's reliability tier
-    for the subject being viewed."""
+    """Task 4: the static header above the chart states the deployed model's
+    reliability tier for the subject being viewed (moved out of Plotly's own
+    title in the 2026-08-06 redesign, same information)."""
 
     def test_held_out_subject_shows_tier_in_title(self):
         html = render_window(13, 120.0, "R")
