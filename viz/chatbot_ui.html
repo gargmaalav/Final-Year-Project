@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMG Fatigue Chatbot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0C1012;
+    --panel: #10161A;
+    --card: #12181B;
+    --row-hover: #151C20;
+    --chip: #1A2226;
+    --border: #2C373C;
+    --divider: #212B2F;
+    --text: #DDE5E8;
+    --text-strong: #F0F5F7;
+    --text-dim: #8A989E;
+    --text-dimmer: #78888E;
+    --accent: #0E7C78;
+    --accent-hover: #12908B;
+    --fatigued: #E8817C;
+    --fresh: #5FCFA6;
+    --amber: #C08F3F;
+    --amber-line: #B8873A;
+    --error: #E5484D;
+    --error-border: #5C2A2B;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; font-size: 14px; }
+  .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  button { font-family: inherit; cursor: pointer; }
+  #app { display: flex; height: 100vh; width: 100%; overflow: hidden; }
+
+  /* sidebar */
+  #sidebar { width: 268px; flex: none; background: var(--panel); display: flex; flex-direction: column; padding: 24px 18px; gap: 22px; overflow-y: auto; }
+  #sidebar .brand { font-size: 15px; font-weight: 600; color: var(--text-strong); }
+  #new-chat { width: 100%; padding: 10px 14px; background: var(--accent); border: none; border-radius: 6px; color: #F2FBFA; font-size: 13.5px; font-weight: 500; text-align: left; }
+  #new-chat:hover { background: var(--accent-hover); }
+  #chats-label, #adv-hint { font-size: 12px; color: var(--text-dimmer); padding: 0 10px; }
+  #chat-list { display: flex; flex-direction: column; gap: 4px; }
+  .chat-item { border-radius: 6px; padding: 9px 10px; cursor: pointer; }
+  .chat-item:hover { background: var(--row-hover); }
+  .chat-item.active { background: var(--chip); }
+  .chat-item .t { font-size: 13px; color: #AEBBC0; }
+  .chat-item.active .t { color: var(--text-strong); }
+  .chat-item .s { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+  #adv-toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-dim); cursor: pointer; padding: 0 10px; }
+  #adv-toggle:hover { color: var(--text); }
+  #adv-body { display: none; flex-direction: column; gap: 5px; padding: 10px 10px 0; }
+  #adv-body.open { display: flex; }
+  #adv-body label { font-size: 12px; color: var(--text-dimmer); }
+  #adv-body label.required { color: var(--fatigued); }
+  #model-select { background: var(--chip); border: 1px solid var(--divider); border-radius: 6px; padding: 8px 10px; font-size: 13px; color: var(--text); width: 100%; }
+  #sample-rate { background: var(--chip); border: 1px dashed var(--text-dimmer); border-radius: 6px; padding: 8px 10px; font-size: 13px; color: var(--text); width: 100%; }
+  #sample-rate.required { border: 1px solid var(--fatigued); background: #1E1618; color: #B98C89; }
+  #sample-rate::placeholder { color: var(--text-dimmer); }
+  .adv-help { font-size: 11.5px; line-height: 1.55; color: var(--text-dim); }
+  .adv-help.required { color: #B98C89; }
+  #sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 14px; }
+  #clear-history { font-size: 12.5px; color: var(--text-dimmer); cursor: pointer; }
+  #clear-history:hover { color: #E0827E; }
+  #disclaimer { font-size: 11px; line-height: 1.55; color: #7C8B91; }
+
+  /* main column */
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #main-header { padding: 22px 40px 18px; display: flex; align-items: baseline; gap: 14px; }
+  #header-title { font-size: 16px; font-weight: 600; color: var(--text-strong); }
+  #header-sub { font-size: 12.5px; color: var(--text-dim); }
+  #thread { flex: 1; padding: 8px 40px 24px; display: flex; flex-direction: column; gap: 26px; overflow-y: auto; }
+
+  /* empty state */
+  #empty-state { max-width: 640px; margin: auto 0; display: flex; flex-direction: column; gap: 24px; }
+  #empty-state h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-strong); margin: 0; }
+  #empty-state p { font-size: 14.5px; line-height: 1.65; color: var(--text-dim); margin: 0; }
+  .suggestion { background: #141A1D; border-radius: 8px; padding: 12px 15px; font-size: 14px; color: #C9D4D8; cursor: pointer; }
+  .suggestion:hover { background: var(--chip); color: var(--text-strong); }
+
+  /* chat bubbles */
+  .msg-user { align-self: flex-end; max-width: 66%; background: var(--chip); border-radius: 10px 10px 2px 10px; padding: 12px 16px; font-size: 14.5px; line-height: 1.6; color: #E8EFF1; }
+  .msg-block { display: flex; flex-direction: column; gap: 20px; max-width: 720px; }
+
+  /* reading card */
+  .reading-card { border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 22px 24px; display: flex; flex-direction: column; gap: 20px; }
+  .reading-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+  .reading-top .label { font-size: 12px; color: var(--text-dimmer); }
+  .verdict { font-size: 38px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.05; }
+  .delta { font-size: 26px; font-weight: 500; }
+  .reading-meta { display: flex; gap: 36px; padding-top: 16px; border-top: 1px solid var(--divider); flex-wrap: wrap; }
+  .reading-meta .m-label { font-size: 11.5px; color: var(--text-dimmer); }
+  .reading-meta .m-val { font-size: 14px; color: #C9D4D8; }
+  .answer-text { margin: 0; max-width: 68ch; font-size: 15.5px; line-height: 1.75; color: #D3DDE1; }
+  .answer-text strong { font-weight: 600; color: var(--text-strong); }
+  .reading-foot { font-size: 12.5px; color: var(--text-dimmer); }
+  .forecast-block { border-top: 1px solid var(--divider); padding-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .forecast-block .f-title { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-dimmer); }
+  .forecast-block .f-row { display: flex; gap: 28px; }
+  .forecast-block .f-body { font-size: 13.5px; line-height: 1.65; color: var(--text-dim); }
+  .reading-actions { display: flex; gap: 8px; align-items: center; }
+  .fig-tab { background: var(--chip); border-radius: 6px; padding: 6px 11px; font-size: 12.5px; color: #E8EFF1; }
+  .regen { margin-left: auto; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+  .regen:hover { color: var(--text); }
+  .regen-live { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: .7; } }
+
+  /* loading */
+  .loading-row { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-dim); }
+  .loading-row .dot { width: 7px; height: 7px; }
+
+  /* guidance (amber, plain prose) */
+  .guidance-row { display: flex; gap: 14px; max-width: 734px; }
+  .guidance-rule { width: 2px; flex: none; background: var(--amber-line); border-radius: 1px; }
+  .guidance-text { margin: 0; max-width: 68ch; font-size: 15.5px; line-height: 1.75; color: #D3DDE1; }
+  .guidance-text strong { font-weight: 600; color: var(--text-strong); }
+
+  /* upload notice */
+  .upload-notice { background: #1A1417; border-radius: 8px; padding: 14px 16px; display: flex; gap: 12px; align-items: flex-start; }
+  .upload-notice .rule { width: 2px; align-self: stretch; background: var(--fatigued); border-radius: 1px; }
+  .upload-notice .title { font-size: 13.5px; color: #F0D3D1; }
+  .upload-notice .body { font-size: 12.5px; line-height: 1.6; color: #B98C89; }
+
+  /* failure */
+  .failure-card { max-width: 720px; border: 1px solid var(--error-border); border-radius: 8px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+  .failure-title { display: flex; align-items: center; gap: 9px; }
+  .failure-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--error); }
+  .failure-title span { font-size: 13.5px; font-weight: 500; color: #F2A5A3; }
+  .failure-body { margin: 0; font-size: 15px; line-height: 1.7; color: #D3DDE1; }
+  .failure-actions { display: flex; align-items: center; gap: 14px; padding-top: 4px; }
+  .retry-btn { background: var(--chip); border-radius: 6px; padding: 7px 13px; font-size: 12.5px; color: #E8EFF1; border: none; }
+  .retry-btn:hover { background: #212A2F; }
+  .failure-meta { font-size: 11.5px; color: var(--text-dim); }
+
+  /* input bar */
+  #input-bar-wrap { padding: 16px 40px 26px; }
+  #attach-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .attach-chip { background: var(--chip); border-radius: 6px; padding: 6px 11px; font-size: 12.5px; color: #C9D4D8; display: flex; gap: 8px; align-items: center; }
+  .attach-chip .x { color: var(--text-dim); cursor: pointer; }
+  #input-bar { display: flex; align-items: center; gap: 12px; background: #161D21; border-radius: 10px; padding: 13px 16px; }
+  #attach-btn { background: none; border: none; font-size: 17px; color: var(--text-dimmer); line-height: 1; }
+  #q-input { flex: 1; font-size: 14.5px; color: var(--text); background: none; border: none; outline: none; }
+  #q-input::placeholder { color: #697A80; }
+  #send-btn { width: 30px; height: 30px; background: var(--accent); border: none; border-radius: 6px; color: #F2FBFA; display: flex; align-items: center; justify-content: center; font-size: 14px; flex: none; }
+  #send-btn:disabled { opacity: .5; cursor: default; }
+
+  /* figures pane */
+  #fig-pane { width: 452px; flex: none; background: var(--panel); display: flex; flex-direction: column; padding: 24px 20px; gap: 18px; }
+  #fig-pane.hidden { display: none; }
+  #fig-collapsed { width: 52px; flex: none; background: var(--panel); display: flex; flex-direction: column; align-items: center; padding: 24px 0; gap: 16px; cursor: pointer; }
+  #fig-collapsed.hidden { display: none; }
+  #fig-collapsed:hover { background: #141B1F; }
+  .fig-collapsed-label { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--text-dim); writing-mode: vertical-rl; }
+  #fig-header { display: flex; align-items: baseline; justify-content: space-between; }
+  #fig-title { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--text-dim); }
+  #fig-header-right { display: flex; align-items: baseline; gap: 14px; }
+  #fig-status { font-size: 12px; color: var(--text-dim); }
+  #fig-hide { font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+  #fig-hide:hover { color: var(--text); }
+  #fig-body { display: flex; flex-direction: column; gap: 10px; flex: 1; overflow-y: auto; }
+  #fig-frame { width: 100%; height: 780px; border: none; border-radius: 8px; background: #0A0E10; }
+  .fig-idle { border-radius: 8px; background: #0F1417; height: 220px; display: flex; align-items: center; justify-content: center; }
+  .fig-idle span { font-size: 13px; color: #7C8B91; }
+  #fig-caption { font-size: 12.5px; line-height: 1.55; color: var(--text-dim); }
+  #fig-note { margin-top: auto; font-size: 12px; line-height: 1.6; color: #7C8B91; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="sidebar">
+    <div class="brand">EMG Fatigue Chatbot</div>
+    <button id="new-chat">New chat</button>
+
+    <div>
+      <div id="chats-label">Chats</div>
+      <div id="chat-list"></div>
+    </div>
+
+    <div>
+      <div id="adv-toggle"><span id="adv-caret">&#9656;</span>Advanced settings</div>
+      <div id="adv-hint">Sample rate is only needed for single-column CSV uploads.</div>
+      <div id="adv-body">
+        <label>Model</label>
+        <select id="model-select" class="mono"></select>
+        <label id="sample-rate-label" style="margin-top:6px">Sample rate</label>
+        <input id="sample-rate" class="mono" type="number" placeholder="not set" min="1" step="1">
+        <div id="sample-rate-help" class="adv-help">Your recording device's sample rate in Hz. Required only for single-column CSV uploads with no time column.</div>
+      </div>
+    </div>
+
+    <div id="sidebar-footer">
+      <div id="clear-history">Clear all history</div>
+      <div id="disclaimer">Educational final-year project demo. Not medical advice.</div>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="main-header">
+      <div id="header-title">New chat</div>
+      <div id="header-sub">Research dataset, subjects 1-13</div>
+    </div>
+
+    <div id="thread">
+      <div id="empty-state">
+        <h1>Ask about a recording</h1>
+        <p>Query one of the 13 research subjects, or attach your own surface EMG recording as a CSV.</p>
+        <div id="suggestions"></div>
+      </div>
+    </div>
+
+    <div id="input-bar-wrap">
+      <div id="attach-row" class="hidden"></div>
+      <div id="input-bar">
+        <button id="attach-btn" title="Attach a CSV recording">+</button>
+        <input id="file-input" type="file" accept=".csv" class="hidden">
+        <input id="q-input" type="text" placeholder="Ask about a subject, or attach your own EMG recording">
+        <button id="send-btn">&#8593;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="fig-collapsed" class="hidden">
+    <span id="fig-expand-arrow">&#8249;</span>
+    <span class="fig-collapsed-label">Figures</span>
+  </div>
+
+  <div id="fig-pane" class="hidden">
+    <div id="fig-header">
+      <div id="fig-title">Figures</div>
+      <div id="fig-header-right">
+        <div id="fig-status">No reading yet</div>
+        <div id="fig-hide">Hide &rsaquo;</div>
+      </div>
+    </div>
+    <div id="fig-body">
+      <div class="fig-idle"><span>No figure yet</span></div>
+    </div>
+    <div id="fig-note">Figures appear here when a reading is returned. They are not stored with chat history.</div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var API = ""; // same origin as models/serve.py
+  var STATE = {
+    chats: [],          // {id, title, subtitle, ts, subject, side, tStart, upload}
+    activeChatId: null,
+    figuresCollapsed: false,
+    lastFigureHtml: null,
+    pendingFile: null,
+    model: null
+  };
+
+  var els = {};
+  ["sidebar", "chat-list", "new-chat", "adv-toggle", "adv-body", "adv-caret",
+   "model-select",
+   "sample-rate", "sample-rate-help", "sample-rate-label",
+   "clear-history", "main-header", "header-title", "header-sub",
+   "thread", "empty-state", "suggestions",
+   "attach-row", "attach-btn", "file-input", "q-input", "send-btn",
+   "fig-collapsed", "fig-pane", "fig-status", "fig-hide", "fig-body", "fig-note"
+  ].forEach(function (id) { els[id.replace(/-([a-z])/g, function (_, c) { return c.toUpperCase(); })] = document.getElementById(id); });
+
+  function loadModels() {
+    fetch(API + "/models").then(function (r) { return r.json(); }).then(function (j) {
+      els.modelSelect.innerHTML = "";
+      (j.models || []).forEach(function (name) {
+        var o = document.createElement("option");
+        o.value = name; o.textContent = name;
+        els.modelSelect.appendChild(o);
+      });
+      STATE.model = j.default || (j.models && j.models[0]);
+      if (STATE.model) els.modelSelect.value = STATE.model;
+    }).catch(function () {
+      els.modelSelect.innerHTML = '<option value="llama3.1:8b">llama3.1:8b</option>';
+      STATE.model = "llama3.1:8b";
+    });
+  }
+  els.modelSelect.addEventListener("change", function () { STATE.model = els.modelSelect.value; });
+
+  var SUGGESTIONS = [
+    { subject: 4, side: "L", t: 90, text: "Is subject 4's left side fatigued at 90 s?" },
+    { subject: 11, side: "R", t: 60, text: "Is subject 11's right side fatigued at 60 s?" },
+    { subject: 13, side: "R", t: 60, text: "Is subject 13 fatigued at 60 seconds on the right side, and in 40 seconds?" }
+  ];
+
+  // ---------- persistence ----------
+  function loadChats() {
+    try { STATE.chats = JSON.parse(localStorage.getItem("emg_chats") || "[]"); }
+    catch (e) { STATE.chats = []; }
+  }
+  function saveChats() { localStorage.setItem("emg_chats", JSON.stringify(STATE.chats)); }
+
+  function fmtAgo(ts) {
+    var s = (Date.now() - ts) / 1000;
+    if (s < 90) return "Just now";
+    var m = s / 60;
+    if (m < 60) return Math.round(m) + " minute" + (Math.round(m) === 1 ? "" : "s") + " ago";
+    var h = m / 60;
+    if (h < 24) return Math.round(h) + " hour" + (Math.round(h) === 1 ? "" : "s") + " ago";
+    var d = h / 24;
+    if (d < 2) return "Yesterday";
+    if (d < 7) return Math.round(d) + " days ago";
+    return new Date(ts).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  }
+
+  function renderChatList() {
+    els.chatList.innerHTML = "";
+    STATE.chats.slice().sort(function (a, b) { return b.ts - a.ts; }).forEach(function (c) {
+      var row = document.createElement("div");
+      row.className = "chat-item" + (c.id === STATE.activeChatId ? " active" : "");
+      row.innerHTML = '<div class="t"></div><div class="s"></div>';
+      row.querySelector(".t").textContent = c.title;
+      row.querySelector(".s").textContent = fmtAgo(c.ts);
+      row.addEventListener("click", function () { openChat(c.id); });
+      els.chatList.appendChild(row);
+    });
+  }
+
+  // ---------- suggestions ----------
+  function renderSuggestions() {
+    els.suggestions.innerHTML = '<div id="suggest-label" style="font-size:12px;color:#78888E;margin-bottom:8px">Try</div>';
+    SUGGESTIONS.forEach(function (s) {
+      var d = document.createElement("div");
+      d.className = "suggestion";
+      d.textContent = s.text;
+      d.addEventListener("click", function () { els.qInput.value = s.text; submitQuery(); });
+      els.suggestions.appendChild(d);
+    });
+  }
+
+  // ---------- advanced settings ----------
+  var advOpenManually = false;
+  function setAdvOpen(open) {
+    els.advBody.classList.toggle("open", open);
+    els.advCaret.innerHTML = open ? "&#9662;" : "&#9656;";
+  }
+  els.advToggle.addEventListener("click", function () {
+    advOpenManually = !els.advBody.classList.contains("open");
+    setAdvOpen(advOpenManually);
+  });
+  function markSampleRateRequired(required) {
+    els.sampleRateLabel.textContent = required ? "Sample rate required" : "Sample rate";
+    els.sampleRateLabel.classList.toggle("required", required);
+    els.sampleRate.classList.toggle("required", required);
+    els.sampleRateHelp.classList.toggle("required", required);
+    els.sampleRateHelp.textContent = required
+      ? "Your file has one column, so the recording carries no timing information."
+      : "Your recording device's sample rate in Hz. Required only for single-column CSV uploads with no time column.";
+    if (required && !advOpenManually) setAdvOpen(true);
+  }
+
+  // ---------- header ----------
+  function setHeader(title, sub) { els.headerTitle.textContent = title; els.headerSub.textContent = sub; }
+
+  // ---------- thread rendering ----------
+  function clearThread() { els.thread.innerHTML = ""; }
+  function showEmptyState() {
+    clearThread();
+    els.thread.appendChild(els.emptyState);
+  }
+  function appendUserBubble(text) {
+    var b = document.createElement("div");
+    b.className = "msg-user";
+    b.textContent = text;
+    els.thread.appendChild(b);
+    return b;
+  }
+  function scrollThreadToEnd() { els.thread.scrollTop = els.thread.scrollHeight; }
+
+  function escapeHtml(text) {
+    var d = document.createElement("div");
+    d.textContent = text;
+    return d.innerHTML;
+  }
+  function boldNumbers(text) {
+    // bold Hz / % / second values and standalone verdict words so key figures scan.
+    // Caller must pass already-HTML-escaped text (see escapeHtml) since this
+    // returns a string meant for innerHTML -- never call this on raw user or
+    // model text directly.
+    return text
+      .replace(/(-?\d+(?:\.\d+)?\s?(?:Hz|%|s\b))/g, "<strong>$1</strong>")
+      .replace(/\b(fatigued|not fatigued)\b/gi, "<strong>$1</strong>");
+  }
+
+  function verdictColor(state) { return state === "fatigue" ? "var(--fatigued)" : "var(--fresh)"; }
+  function verdictLabel(state) { return state === "fatigue" ? "Fatigued" : "Not fatigued"; }
+
+  function renderForecastBlock(forecast) {
+    var div = document.createElement("div");
+    div.className = "forecast-block";
+    if (forecast.ok === false) {
+      div.innerHTML = '<div class="f-title">Forecast</div><div class="f-body">Not enough history yet to fit a trend for this window.</div>';
+      return div;
+    }
+    var lastIdx = forecast.y_future ? forecast.y_future.length - 1 : -1;
+    var projected = lastIdx >= 0 ? forecast.y_future[lastIdx] : null;
+    var loBand = lastIdx >= 0 ? forecast.pi_lo[lastIdx] : null;
+    var hiBand = lastIdx >= 0 ? forecast.pi_hi[lastIdx] : null;
+    var methodLabel = forecast.method === "lstm" ? "sequence model" : "trend line";
+    div.innerHTML =
+      '<div class="f-title">Forecast +' + forecast.horizon_sec.toFixed(0) + ' s</div>' +
+      '<div class="f-row">' +
+        (projected !== null
+          ? '<div><div class="m-label">Projected MDF</div><div class="m-val mono">' + projected.toFixed(1) + ' Hz</div></div>' +
+            '<div><div class="m-label">95% range</div><div class="m-val mono">' + loBand.toFixed(1) + '–' + hiBand.toFixed(1) + ' Hz</div></div>'
+          : '') +
+        '<div><div class="m-label">Method</div><div class="m-val mono">' + methodLabel + '</div></div>' +
+      '</div>' +
+      '<div class="f-body"></div>';
+    div.querySelector(".f-body").textContent = forecast.summary;
+    return div;
+  }
+
+  function buildAnswerText(cur, base, subject, side, tStart) {
+    var verdict = verdictLabel(cur.fatigue_state);
+    var sideWord = side === "L" ? "left" : "right";
+    var subjectPhrase = typeof subject === "number" ? "Subject " + subject + "'s " + sideWord + "-side" : "This recording's";
+    var lead = cur.fatigue_state === "fatigue"
+      ? "Yes. " + subjectPhrase + " signal is fatigued at the " + tStart + "-second mark."
+      : "No. " + subjectPhrase + " signal is not fatigued at the " + tStart + "-second mark.";
+    var body;
+    var deltaPct = null;
+    if (base) {
+      deltaPct = ((cur.mdf_hz - base.mdf_hz) / base.mdf_hz) * 100;
+      body = "Median frequency is " + cur.mdf_hz.toFixed(1) + " Hz against a " + base.mdf_hz.toFixed(1) +
+        " Hz reading at 0 s, a " + deltaPct.toFixed(1) + "% change, with " + (cur.confidence * 100).toFixed(0) + "% model confidence.";
+    } else {
+      body = "Median frequency is " + cur.mdf_hz.toFixed(1) + " Hz, calibrated fresh from the first " +
+        (cur.calibration ? cur.calibration.baseline_sec : "60") + "s of this recording, with " +
+        (cur.confidence * 100).toFixed(0) + "% model confidence.";
+    }
+    var caveat = cur.confidence < 0.6 ? " Confidence on this window is low, so treat this reading as indicative rather than certain." : "";
+    return { text: lead + " " + body + caveat, verdict: verdict, deltaPct: deltaPct };
+  }
+
+  function renderReading(opts) {
+    // opts: { subject, side, tStart, cur, base (nullable), source, label }
+    var block = document.createElement("div");
+    block.className = "msg-block";
+
+    var baseForText = (opts.base && opts.tStart !== 0) ? opts.base : null;
+    var built = buildAnswerText(opts.cur, baseForText, opts.subject, opts.side, opts.tStart);
+    var color = verdictColor(opts.cur.fatigue_state);
+    var confColor = opts.cur.confidence < 0.6 ? "var(--amber)" : "#C9D4D8";
+
+    // at t=0 "base" is the current window itself (no separate baseline was
+    // fetched), so a delta there is a tautological +0.0% -- suppress it
+    var hasRealBaseline = !!opts.base && opts.tStart !== 0;
+    var rightCol = hasRealBaseline
+      ? '<div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">' +
+          '<div class="label">Change from 0 s reading</div>' +
+          '<div class="delta mono">' + (built.deltaPct >= 0 ? "+" : "") + built.deltaPct.toFixed(1) + '%</div>' +
+        '</div>'
+      : '';
+    var baselineRow = hasRealBaseline
+      ? '<div><div class="m-label">0 s reading</div><div class="m-val mono">' + opts.base.mdf_hz.toFixed(1) + ' Hz</div></div>'
+      : opts.upload
+        ? '<div><div class="m-label">Calibration</div><div class="m-val mono">fresh, ' + (opts.cur.calibration ? opts.cur.calibration.baseline_sec : "60") + 's</div></div>'
+        : '<div><div class="m-label">Calibration</div><div class="m-val mono">stored, this is the 0 s reading</div></div>';
+
+    var card = document.createElement("div");
+    card.className = "reading-card";
+    card.innerHTML =
+      '<div class="reading-top">' +
+        '<div><div class="label">Verdict at ' + opts.tStart + ' s</div><div class="verdict" style="color:' + color + '">' + built.verdict + '</div></div>' +
+        rightCol +
+      '</div>' +
+      '<div class="reading-meta">' +
+        '<div><div class="m-label">Median frequency</div><div class="m-val mono">' + opts.cur.mdf_hz.toFixed(1) + ' Hz</div></div>' +
+        baselineRow +
+        '<div><div class="m-label">Confidence</div><div class="m-val mono" style="color:' + confColor + '">' + (opts.cur.confidence * 100).toFixed(0) + '%</div></div>' +
+        '<div><div class="m-label">Window</div><div class="m-val mono">' + opts.tStart.toFixed(1) + ' s</div></div>' +
+      '</div>';
+    block.appendChild(card);
+
+    var p = document.createElement("p");
+    p.className = "answer-text";
+    if (opts.llmText) {
+      // escape first (model output is untrusted), THEN bold -- never run
+      // boldNumbers on raw text and set innerHTML directly.
+      p.innerHTML = boldNumbers(escapeHtml(opts.llmText));
+    } else {
+      p.innerHTML = boldNumbers(escapeHtml(built.text));
+    }
+    block.appendChild(p);
+
+    if (opts.note) {
+      var note = document.createElement("div");
+      note.className = "reading-foot";
+      note.style.color = "var(--amber)";
+      note.textContent = opts.note;
+      block.appendChild(note);
+    }
+
+    if (opts.forecast) {
+      block.appendChild(renderForecastBlock(opts.forecast));
+    }
+
+    var subjectLabel = opts.label || (typeof opts.subject === "number" ? "Subject " + opts.subject : opts.subject);
+    var foot = document.createElement("div");
+    foot.className = "reading-foot";
+    foot.textContent = subjectLabel + " · " + (opts.side === "L" ? "left side" : "right side") + " · " + opts.tStart.toFixed(1) + " s window · " + opts.source;
+    block.appendChild(foot);
+
+    var actions = document.createElement("div");
+    actions.className = "reading-actions";
+    actions.innerHTML = '<div class="fig-tab">Figure shown</div>';
+    var regen = document.createElement("div");
+    regen.className = "regen";
+    regen.textContent = "Regenerate";
+    regen.addEventListener("click", function () {
+      if (opts.upload && opts.file) {
+        runUploadReading(opts.file, opts.tStart, opts.sampleRate, opts.question, STATE.activeChatId, opts.horizonSec);
+      } else if (!opts.upload) {
+        runReading(opts.subject, opts.side, opts.tStart, false, STATE.activeChatId, opts.question, opts.horizonSec);
+      }
+    });
+    actions.appendChild(regen);
+    block.appendChild(actions);
+
+    els.thread.appendChild(block);
+    scrollThreadToEnd();
+  }
+
+  function renderLoading(text) {
+    var row = document.createElement("div");
+    row.className = "loading-row";
+    row.innerHTML = '<span class="dot"></span><span></span>';
+    row.querySelector("span:last-child").textContent = text;
+    els.thread.appendChild(row);
+    scrollThreadToEnd();
+    return row;
+  }
+
+  function renderGuidance(text) {
+    var row = document.createElement("div");
+    row.className = "guidance-row";
+    row.innerHTML = '<div class="guidance-rule"></div><p class="guidance-text"></p>';
+    row.querySelector("p").innerHTML = boldNumbers(text);
+    els.thread.appendChild(row);
+    scrollThreadToEnd();
+  }
+
+  function renderUploadNotice(filename, detail) {
+    var block = document.createElement("div");
+    block.className = "msg-block";
+    var p = document.createElement("p");
+    p.className = "answer-text";
+    p.innerHTML = 'I can read <span class="mono">' + escapeHtml(filename) + '</span>, but it has a <strong>single column</strong> of amplitude values and no timestamps, so I don\'t know how fast it was sampled. Enter the <strong>sample rate</strong> in Advanced settings and I\'ll classify it.';
+    block.appendChild(p);
+    var notice = document.createElement("div");
+    notice.className = "upload-notice";
+    notice.innerHTML = '<span class="rule"></span><div><div class="title">Sample rate needed before this recording can be read</div><div class="body">' + escapeHtml(detail || "Typical surface EMG rigs record at 1000–2000 Hz. Guessing wrong shifts every frequency reading, so there is no default.") + '</div></div>';
+    block.appendChild(notice);
+    els.thread.appendChild(block);
+    scrollThreadToEnd();
+  }
+
+  function renderFailure(userText, detail, retryFn) {
+    var block = document.createElement("div");
+    block.className = "msg-block";
+    if (userText) {
+      var b = document.createElement("div");
+      b.className = "msg-user";
+      b.textContent = userText;
+      block.appendChild(b);
+    }
+    var card = document.createElement("div");
+    card.className = "failure-card";
+    card.innerHTML =
+      '<div class="failure-title"><span class="failure-dot"></span><span>Classifier unreachable</span></div>' +
+      '<p class="failure-body"></p>' +
+      '<div class="failure-actions"><button class="retry-btn">Retry</button><div class="failure-meta mono"></div></div>';
+    card.querySelector(".failure-body").textContent = detail || "The model server did not respond, so nothing was classified. Your question is still here — check that models/serve.py is running, then retry.";
+    card.querySelector(".failure-meta").textContent = new Date().toLocaleTimeString();
+    card.querySelector(".retry-btn").addEventListener("click", retryFn);
+    block.appendChild(card);
+    els.thread.appendChild(block);
+    scrollThreadToEnd();
+  }
+
+  // ---------- figures pane ----------
+  function setFigStatus(t) { els.figStatus.textContent = t; }
+  function showFigPaneOpen() {
+    document.getElementById("fig-collapsed").classList.add("hidden");
+    els.figPane.classList.remove("hidden");
+  }
+  function showFigPaneCollapsed() {
+    document.getElementById("fig-collapsed").classList.remove("hidden");
+    els.figPane.classList.add("hidden");
+  }
+  function hideFigPaneEntirely() {
+    document.getElementById("fig-collapsed").classList.add("hidden");
+    els.figPane.classList.add("hidden");
+  }
+  els.figHide.addEventListener("click", function () { STATE.figuresCollapsed = true; showFigPaneCollapsed(); });
+  document.getElementById("fig-collapsed").addEventListener("click", function () { STATE.figuresCollapsed = false; showFigPaneOpen(); });
+
+  function figLoading() {
+    els.figBody.innerHTML = '<div class="fig-idle"><span>Rendering figure</span></div>';
+    setFigStatus("Awaiting reading");
+    if (!STATE.figuresCollapsed) showFigPaneOpen(); else showFigPaneCollapsed();
+  }
+  function figShow(html, captionSubject, side, tStart) {
+    STATE.lastFigureHtml = html;
+    els.figBody.innerHTML = '<iframe id="fig-frame" sandbox="allow-scripts"></iframe><div id="fig-caption"></div>';
+    document.getElementById("fig-frame").srcdoc = html;
+    document.getElementById("fig-caption").innerHTML =
+      'Figure. How tired subject ' + captionSubject + '&#39;s muscle is over the session, ' +
+      'plus a close-up of the ' + (side === "L" ? "left" : "right") + '-side signal. Cursor at ' +
+      '<span class="mono">' + tStart.toFixed(1) + ' s</span>.';
+    setFigStatus("Latest reading");
+    if (!STATE.figuresCollapsed) showFigPaneOpen(); else showFigPaneCollapsed();
+  }
+  function figIdle() {
+    els.figBody.innerHTML = '<div class="fig-idle"><span>No figure yet</span></div>';
+    setFigStatus("No reading yet");
+    hideFigPaneEntirely();
+  }
+
+  // ---------- query parsing ----------
+  function parseQuery(text) {
+    var subjMatch = text.match(/subject\s+(\d+)/i);
+    var sideMatch = text.match(/\bleft\b/i) ? "L" : (text.match(/\bright\b/i) ? "R" : null);
+    // "and in 40 seconds?" / "in the next 40s" -> forecast horizon, distinct
+    // from "at 60 seconds" -> the window itself. Match the horizon phrasing
+    // FIRST and strip it out, so the plain "at/first-number" match below
+    // can't accidentally grab the horizon's number as tStart.
+    var hMatch = text.match(/\b(?:and\s+)?in(?:\s+the\s+next)?\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?\b/i);
+    var textForT = hMatch ? text.slice(0, hMatch.index) + text.slice(hMatch.index + hMatch[0].length) : text;
+    var tMatch = textForT.match(/at\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?\b/i) ||
+                 textForT.match(/(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?\b/i);
+    return {
+      subject: subjMatch ? parseInt(subjMatch[1], 10) : null,
+      side: sideMatch || "R",
+      tStart: tMatch ? parseFloat(tMatch[1]) : 0,
+      horizonSec: hMatch ? parseFloat(hMatch[1]) : null
+    };
+  }
+
+  // ---------- API calls ----------
+  // 4xx = expected/recoverable (bad subject id, short recording, ...) -> guidance.
+  // 502 from /answer* = Ollama specifically down -> ollamaFailure (numbers still ok).
+  // Everything else (5xx, network error, malformed body) -> real failure.
+  function handleApiResponse(r) {
+    if (r.status === 502) return r.json().then(function (j) { throw { ollamaFailure: true, detail: j.detail }; });
+    if (r.status >= 400 && r.status < 500) {
+      return r.json().then(function (j) { throw { guidance: true, detail: j.detail || ("request failed (" + r.status + ")") }; })
+        .catch(function (e) { throw (e && e.guidance) ? e : { guidance: true, detail: "request failed (" + r.status + ")" }; });
+    }
+    if (!r.ok) throw { detail: "server error (" + r.status + ")" };
+    return r.json();
+  }
+
+  function apiClassify(subject, tStart, side) {
+    return fetch(API + "/classify?subject=" + subject + "&t_start=" + tStart + "&side=" + side).then(handleApiResponse);
+  }
+  function apiAnswer(subject, tStart, side, question, model, horizonSec) {
+    var url = API + "/answer?subject=" + subject + "&t_start=" + tStart + "&side=" + side +
+      "&question=" + encodeURIComponent(question || "") + "&model=" + encodeURIComponent(model || "") +
+      (horizonSec ? "&horizon_sec=" + horizonSec : "");
+    return fetch(url).then(handleApiResponse);
+  }
+  function apiAnswerUpload(file, tStart, sampleRate, question, model, horizonSec) {
+    var fd = new FormData();
+    fd.append("file", file);
+    fd.append("t_start", tStart);
+    if (sampleRate) fd.append("sample_rate_hz", sampleRate);
+    fd.append("question", question || "");
+    fd.append("model", model || "");
+    if (horizonSec) fd.append("horizon_sec", horizonSec);
+    return fetch(API + "/answer_upload", { method: "POST", body: fd }).then(handleApiResponse);
+  }
+  function apiForecast(subject, tStart, side, horizonSec) {
+    return fetch(API + "/forecast?subject=" + subject + "&t_start=" + tStart + "&side=" + side +
+      "&horizon_sec=" + horizonSec).then(handleApiResponse).then(function (j) { return j.forecast; });
+  }
+  function apiForecastUpload(file, tStart, sampleRate, horizonSec) {
+    var fd = new FormData();
+    fd.append("file", file);
+    fd.append("t_start", tStart);
+    if (sampleRate) fd.append("sample_rate_hz", sampleRate);
+    fd.append("horizon_sec", horizonSec);
+    return fetch(API + "/forecast_upload", { method: "POST", body: fd }).then(handleApiResponse).then(function (j) { return j.forecast; });
+  }
+  function apiRender(subject, tStart, side) {
+    return fetch(API + "/render?subject=" + subject + "&t_start=" + tStart + "&side=" + side)
+      .then(function (r) { if (!r.ok) throw new Error("render failed"); return r.json(); })
+      .then(function (j) { return j.html; });
+  }
+  function apiClassifyUpload(file, tStart, sampleRate) {
+    var fd = new FormData();
+    fd.append("file", file);
+    fd.append("t_start", tStart);
+    if (sampleRate) fd.append("sample_rate_hz", sampleRate);
+    return fetch(API + "/classify_upload", { method: "POST", body: fd }).then(handleApiResponse);
+  }
+  function apiRenderUpload(file, tStart, sampleRate) {
+    var fd = new FormData();
+    fd.append("file", file);
+    fd.append("t_start", tStart);
+    if (sampleRate) fd.append("sample_rate_hz", sampleRate);
+    return fetch(API + "/render_upload", { method: "POST", body: fd })
+      .then(function (r) { if (!r.ok) throw new Error("render failed"); return r.json(); })
+      .then(function (j) { return j.html; });
+  }
+
+  // ---------- chat lifecycle ----------
+  function newChat() {
+    STATE.activeChatId = null;
+    STATE.pendingFile = null;
+    clearAttachChip();
+    setHeader("New chat", "Research dataset, subjects 1-13");
+    showEmptyState();
+    figIdle();
+    renderChatList();
+    els.qInput.value = "";
+  }
+  els.newChat.addEventListener("click", newChat);
+
+  function openChat(id) {
+    var c = STATE.chats.filter(function (x) { return x.id === id; })[0];
+    if (!c) return;
+    STATE.activeChatId = id;
+    renderChatList();
+    setHeader(c.title, c.subtitle);
+    clearThread();
+    figLoading();
+    if (c.upload) {
+      renderFailure(c.title, "Re-running an uploaded-file query needs the file re-attached — uploads are not stored between sessions. Attach " + c.title + " again to continue this thread.", function () {});
+      figIdle();
+    } else {
+      runReading(c.subject, c.side, c.tStart, false, id);
+    }
+  }
+
+  function clearAttachChip() {
+    els.attachRow.classList.add("hidden");
+    els.attachRow.innerHTML = "";
+  }
+
+  els.clearHistory.addEventListener("click", function () {
+    STATE.chats = [];
+    saveChats();
+    newChat();
+  });
+
+  // ---------- run a reading (dataset subject) ----------
+  function runReading(subject, side, tStart, isRetryFresh, chatId, question, horizonSec) {
+    if (document.getElementById("empty-state").parentNode === els.thread) clearThread();
+    var loadingRow = renderLoading("Classifying the " + tStart.toFixed(1) + " s window");
+    figLoading();
+
+    var needBaseline = tStart !== 0;
+    var baselineP = needBaseline ? apiClassify(subject, 0, side) : Promise.resolve(null);
+
+    apiAnswer(subject, tStart, side, question, STATE.model, horizonSec).then(function (answer) {
+      return baselineP.then(function (base) {
+        loadingRow.remove();
+        renderReading({
+          subject: subject, side: side, tStart: tStart,
+          cur: answer.result, base: needBaseline ? base : answer.result,
+          source: "research dataset", upload: false, llmText: answer.text, question: question,
+          horizonSec: horizonSec, forecast: answer.forecast
+        });
+        finishReading(subject, side, tStart, chatId);
+      });
+    }).catch(function (err) {
+      if (err && err.ollamaFailure) {
+        // classify() itself is fine; only the chat model is down. Still show a
+        // real reading, templated locally, rather than blocking on the LLM.
+        // Forecast (if requested) doesn't depend on Ollama either, so fetch
+        // it directly instead of losing it along with the generated prose.
+        var needBaseline2 = tStart !== 0;
+        Promise.all([
+          apiClassify(subject, tStart, side),
+          needBaseline2 ? apiClassify(subject, 0, side) : Promise.resolve(null),
+          horizonSec ? apiForecast(subject, tStart, side, horizonSec).catch(function () { return null; }) : Promise.resolve(null)
+        ]).then(function (res) {
+          loadingRow.remove();
+          var cur = res[0], base = needBaseline2 ? res[1] : res[0];
+          renderReading({
+            subject: subject, side: side, tStart: tStart, cur: cur, base: base,
+            source: "research dataset", upload: false, question: question,
+            horizonSec: horizonSec, forecast: res[2],
+            note: "Chat model (Ollama) unreachable — showing the computed summary instead of a generated one."
+          });
+          finishReading(subject, side, tStart, chatId);
+        }).catch(function () {
+          loadingRow.remove();
+          renderFailure(null, "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
+            runReading(subject, side, tStart, false, chatId, question, horizonSec);
+          });
+          figIdle();
+        });
+        return;
+      }
+      loadingRow.remove();
+      if (err && err.guidance) {
+        renderGuidance(err.detail);
+        figIdle();
+      } else {
+        renderFailure(null, "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
+          runReading(subject, side, tStart, false, chatId, question, horizonSec);
+        });
+        figIdle();
+      }
+    });
+  }
+
+  function finishReading(subject, side, tStart, chatId) {
+    apiRender(subject, tStart, side).then(function (html) {
+      figShow(html, subject, side, tStart);
+    }).catch(function () {
+      setFigStatus("No reading yet");
+    });
+    upsertChat(chatId, {
+      title: "Subject " + subject + ", " + (side === "L" ? "left" : "right") + " side",
+      subtitle: "Research dataset, 13 subjects",
+      subject: subject, side: side, tStart: tStart, upload: false
+    });
+  }
+
+  // ---------- run an uploaded-file reading ----------
+  function runUploadReading(file, tStart, sampleRate, question, chatId, horizonSec) {
+    if (document.getElementById("empty-state").parentNode === els.thread) clearThread();
+    var loadingRow = renderLoading("Classifying the uploaded recording");
+    figLoading();
+
+    function finishUpload() {
+      apiRenderUpload(file, tStart, sampleRate).then(function (html) {
+        STATE.lastFigureHtml = html;
+        els.figBody.innerHTML = '<iframe id="fig-frame" sandbox="allow-scripts"></iframe><div id="fig-caption"></div>';
+        document.getElementById("fig-frame").srcdoc = html;
+        document.getElementById("fig-caption").textContent = "Figure. Muscle signal for " + file.name + ".";
+        setFigStatus("Latest reading");
+        showFigPaneOpen();
+      }).catch(function () { setFigStatus("No reading yet"); });
+      upsertChat(chatId, { title: file.name, subtitle: "Your recording", upload: true });
+    }
+
+    // uploads have no stored per-subject baseline: classify_upload() calibrates
+    // fresh from the recording's own first baseline_sec and returns no separate
+    // baseline mdf_hz, so base stays null (renderReading shows calibration info
+    // instead of a change-from-baseline delta)
+    apiAnswerUpload(file, tStart, sampleRate, question, STATE.model, horizonSec).then(function (answer) {
+      loadingRow.remove();
+      renderReading({
+        subject: file.name, side: "R", tStart: tStart,
+        cur: answer.result, base: null,
+        source: "uploaded recording", upload: true, label: file.name, llmText: answer.text,
+        file: file, sampleRate: sampleRate, question: question,
+        horizonSec: horizonSec, forecast: answer.forecast
+      });
+      finishUpload();
+    }).catch(function (err) {
+      if (err && err.ollamaFailure) {
+        Promise.all([
+          apiClassifyUpload(file, tStart, sampleRate),
+          horizonSec ? apiForecastUpload(file, tStart, sampleRate, horizonSec).catch(function () { return null; }) : Promise.resolve(null)
+        ]).then(function (res) {
+          loadingRow.remove();
+          renderReading({
+            subject: file.name, side: "R", tStart: tStart, cur: res[0], base: null,
+            source: "uploaded recording", upload: true, label: file.name,
+            file: file, sampleRate: sampleRate, question: question,
+            horizonSec: horizonSec, forecast: res[1],
+            note: "Chat model (Ollama) unreachable — showing the computed summary instead of a generated one."
+          });
+          finishUpload();
+        }).catch(function () {
+          loadingRow.remove();
+          renderFailure(file.name + " — am I fatigued?", "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
+            runUploadReading(file, tStart, sampleRate, question, chatId, horizonSec);
+          });
+          figIdle();
+        });
+        return;
+      }
+      loadingRow.remove();
+      if (err && err.guidance) {
+        var needsRate = /sample_rate_hz|sample rate/i.test(err.detail || "");
+        if (needsRate) {
+          markSampleRateRequired(true);
+          renderUploadNotice(file.name, err.detail);
+        } else {
+          renderGuidance(err.detail);
+        }
+        figIdle();
+      } else {
+        renderFailure(file.name + " — am I fatigued?", "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
+          runUploadReading(file, tStart, sampleRate, question, chatId, horizonSec);
+        });
+        figIdle();
+      }
+    });
+  }
+
+  function upsertChat(existingId, fields) {
+    var id = existingId || (Date.now() + "-" + Math.random().toString(36).slice(2));
+    var existing = STATE.chats.filter(function (c) { return c.id === id; })[0];
+    var chat = existing || { id: id };
+    chat.title = fields.title;
+    chat.subtitle = fields.subtitle;
+    chat.ts = Date.now();
+    chat.subject = fields.subject;
+    chat.side = fields.side;
+    chat.tStart = fields.tStart;
+    chat.upload = fields.upload;
+    if (!existing) STATE.chats.unshift(chat);
+    saveChats();
+    STATE.activeChatId = id;
+    renderChatList();
+    setHeader(chat.title, chat.subtitle);
+  }
+
+  // ---------- submit ----------
+  function submitQuery() {
+    var text = els.qInput.value.trim();
+    if (!text && !STATE.pendingFile) return;
+
+    if (STATE.pendingFile) {
+      var file = STATE.pendingFile;
+      var parsed = parseQuery(text || "");
+      appendUserBubbleForUpload(file.name, text);
+      var sampleRate = els.sampleRate.value ? parseFloat(els.sampleRate.value) : null;
+      runUploadReading(file, parsed.tStart || 0, sampleRate, text, null, parsed.horizonSec);
+      STATE.pendingFile = null;
+      clearAttachChip();
+    } else {
+      var parsed2 = parseQuery(text);
+      appendUserBubble(text);
+      if (parsed2.subject === null) {
+        renderGuidance("I couldn't find a subject number in that question — this dataset holds subjects <strong>1</strong>–<strong>13</strong>. Try “Is subject 4 fatigued at 60 s?”, or attach your own recording.");
+        figIdle();
+      } else {
+        runReading(parsed2.subject, parsed2.side, parsed2.tStart, false, null, text, parsed2.horizonSec);
+      }
+    }
+    els.qInput.value = "";
+  }
+  function appendUserBubbleForUpload(filename, extraText) {
+    if (document.getElementById("empty-state").parentNode === els.thread) clearThread();
+    appendUserBubble(filename + (extraText ? " — " + extraText : " — am I fatigued?"));
+  }
+
+  els.sendBtn.addEventListener("click", submitQuery);
+  els.qInput.addEventListener("keydown", function (e) { if (e.key === "Enter") submitQuery(); });
+
+  els.attachBtn.addEventListener("click", function () { els.fileInput.click(); });
+  els.fileInput.addEventListener("change", function () {
+    var f = els.fileInput.files[0];
+    if (!f) return;
+    STATE.pendingFile = f;
+    els.attachRow.classList.remove("hidden");
+    els.attachRow.innerHTML = "";
+    var chip = document.createElement("div");
+    chip.className = "attach-chip";
+    chip.innerHTML = '<span></span><span class="x">✕</span>';
+    chip.querySelector("span").textContent = f.name;
+    chip.querySelector(".x").addEventListener("click", function () {
+      STATE.pendingFile = null;
+      els.fileInput.value = "";
+      clearAttachChip();
+    });
+    els.attachRow.appendChild(chip);
+    els.qInput.placeholder = "How many seconds in? (optional, defaults to the start)";
+  });
+
+  // ---------- init ----------
+  loadChats();
+  renderChatList();
+  renderSuggestions();
+  loadModels();
+  newChat();
+})();
+</script>
+</body>
+</html>

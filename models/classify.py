@@ -53,17 +53,17 @@ def _load():
     return _BUNDLE, _MODEL
 
 
-def classify(subject: int, t_start: float, side: str = "R") -> dict:
-    """Classify the EMG window starting at `t_start` for one subject.
+def classify_from_segment(subject: int, seg: "core.Segment", fs: int, t_start: float) -> dict:
+    """Same result as classify(), given an ALREADY-LOADED segment.
 
-    Args:
-        subject: subject id (1-13 in the Zenodo dataset).
-        t_start: window start time in seconds.
-        side: "R" or "L".
-
-    Returns:
-        {"mdf_hz": float, "fatigue_label": int, "confidence": float}
-        fatigue_label: 0 = non-fatigue, 1 = fatigue (see bundle["label_meaning"]).
+    classify() calls loader.load_biceps_segment() itself, which re-reads and
+    re-processes the subject's whole recording from disk EVERY call (~3s).
+    That's fine for a single query, but models/serve.py's /render endpoint
+    calls this once per MDF window to build the model-prediction overlay
+    (viz.render_window's model_preds) -- tens to 100+ windows per chart, which
+    turned an O(1) disk load into O(n) and made every chart take minutes.
+    Callers that already have seg/fs (a loop over one subject's windows)
+    should call this directly instead of classify() in a loop.
     """
     bundle, model = _load()
     cfg = bundle["config"]
@@ -79,10 +79,6 @@ def classify(subject: int, t_start: float, side: str = "R") -> dict:
         raise KeyError(f"no fresh-baseline calibration stored for subject {subject}")
     mu, sd = np.array(bl["mu"], float), np.array(bl["sd"], float)
 
-    # load this subject's (downsampled, band-passed) signal
-    seg = loader.load_biceps_segment(DATA_ROOT, subject, side,
-                                     target_fs=cfg["target_fs"], bandpass=True)
-    fs = int(getattr(seg, "eff_fs", loader.FS_NATIVE))
     x = seg.data[:, 0]
     t = np.asarray(seg.t, float)
     win = max(2, int(round(cfg["win_sec"] * fs)))
@@ -119,6 +115,31 @@ def classify(subject: int, t_start: float, side: str = "R") -> dict:
         "fatigue_label": label,
         "confidence": float(prob[label]),
     }
+
+
+def classify(subject: int, t_start: float, side: str = "R") -> dict:
+    """Classify the EMG window starting at `t_start` for one subject.
+
+    Args:
+        subject: subject id (1-13 in the Zenodo dataset).
+        t_start: window start time in seconds.
+        side: "R" or "L".
+
+    Returns:
+        {"mdf_hz": float, "fatigue_label": int, "confidence": float}
+        fatigue_label: 0 = non-fatigue, 1 = fatigue (see bundle["label_meaning"]).
+
+    Loads the subject's segment from disk on every call (~3s) -- fine for a
+    single query. A caller classifying MANY windows for one subject (e.g. a
+    per-window overlay) should load the segment once and call
+    classify_from_segment() in a loop instead; see that function's docstring.
+    """
+    bundle, _ = _load()
+    cfg = bundle["config"]
+    seg = loader.load_biceps_segment(DATA_ROOT, subject, side,
+                                     target_fs=cfg["target_fs"], bandpass=True)
+    fs = int(getattr(seg, "eff_fs", loader.FS_NATIVE))
+    return classify_from_segment(subject, seg, fs, t_start)
 
 
 def classify_upload(seg: "core.Segment", fs: int, t_start: float,

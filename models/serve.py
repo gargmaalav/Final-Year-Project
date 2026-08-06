@@ -1,20 +1,29 @@
 """
-HTTP wrapper around classify() so the Open WebUI chatbot can reach it.
-=====================================================================
+HTTP wrapper around classify() -- also serves the standalone chatbot UI.
+=========================================================================
 
-Open WebUI can't import this project's code directly, so it calls this small
-API via function calling. Open WebUI runs natively on this host (verified
-2026-07-12: `.venv/bin/open-webui serve`, no Docker in this repo), so it
-reaches this at http://localhost:8000. This is the "link your deep-learning
-algorithms to the chatbot frontend" bridge the supervisor asked for.
+Two consumers of this API:
+  1. viz/chatbot_ui.html -- served at "/" by this file. A self-contained
+     frontend (no build step, no LLM-side tool-calling) that calls
+     /classify, /render, /answer, /forecast, and the upload variants
+     directly. This is the primary demo UI.
+  2. Open WebUI, as an optional alternate frontend -- it calls this same
+     API via function calling (models/openwebui_tool_reference.py). Kept
+     working; not required to run the UI in (1).
 
 One-time setup:
-    pip install fastapi uvicorn
+    pip install fastapi uvicorn requests
+    # requests is new: /answer and /answer_upload call Ollama's HTTP API
+    # directly (http://localhost:11434). Also needs `ollama serve` running
+    # with a model pulled (default: llama3.1:8b) -- `ollama run llama3.1:8b`
+    # once before your first query, or the model's cold-load can trip the
+    # 60s request timeout on the very first classify.
 
 Run (from the repo root):
-    python models/serve.py            # serves on http://localhost:8000
+    python models/serve.py            # UI at http://localhost:8000
 
 Test in a browser:
+    http://localhost:8000/                          # chatbot UI
     http://localhost:8000/classify?subject=13&t_start=120
     http://localhost:8000/render?subject=13&t_start=120
     http://localhost:8000/health
@@ -31,21 +40,205 @@ import sys
 
 import numpy as np
 import pandas as pd
+import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 import uvicorn
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "viz"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "zenodo_biceps"))
-from classify import classify, classify_upload       # noqa: E402  contract fns
+from classify import classify, classify_upload, classify_from_segment  # noqa: E402
 from render_window import (                          # noqa: E402
-    render_window, render_segment, TARGET_FS, WIN_SEC, STEP_SEC, _load_subject)
+    render_window, render_segment, TARGET_FS, WIN_SEC, STEP_SEC, _load_subject, DATA_ROOT)
+from fatigue_forecast import forecast_fatigue         # noqa: E402  MDF trend projection
 import loader                                         # noqa: E402  to_segment, mdf_trend
 
 app = FastAPI(title="EMG Fatigue classify() API")
 
 _STATE = {0: "non-fatigue", 1: "fatigue", 2: "fatigue"}
+
+_UI_PATH = os.path.join(REPO_ROOT, "viz", "chatbot_ui.html")
+
+
+@app.get("/")
+def chatbot_ui():
+    """Serve the standalone chatbot UI (viz/chatbot_ui.html)."""
+    return FileResponse(_UI_PATH, media_type="text/html")
+
+
+# --- Ollama-backed chat answers ---------------------------------------------
+# Same grounding pattern as models/openwebui_tool_reference.py's get_fatigue():
+# hand the LLM the real classify() numbers and tell it to use only those, not
+# free-form knowledge. Native Ollama here (not through Open WebUI's chat loop)
+# so viz/chatbot_ui.html can be a standalone frontend with no Open WebUI
+# dependency.
+OLLAMA_BASE = "http://localhost:11434"
+DEFAULT_MODEL = "llama3.1:8b"
+
+
+def _grounding_text(subject, side, t_start, result, source, calibration=None):
+    subject_desc = f"subject {subject}" if isinstance(subject, int) else f"the uploaded recording ({subject})"
+    lines = [
+        f"{subject_desc}, {side} arm, t={t_start}s, source={source}: "
+        f"fatigue_state={result.get('fatigue_state')}, "
+        f"fatigue_label={result['fatigue_label']}, "
+        f"median_frequency={result['mdf_hz']:.1f} Hz, "
+        f"confidence={result['confidence']:.2f}.",
+    ]
+    if calibration:
+        lines.append(f"calibration: fresh, first {calibration.get('baseline_sec')}s of this recording "
+                     "(no stored per-subject baseline for an upload).")
+    if result["confidence"] < 0.6:
+        lines.append("Confidence is below 60%, which is low for this model -- say explicitly that "
+                     "this reading is uncertain and should be treated as indicative, not a firm verdict.")
+    lines.append("Use only these values in your answer -- do not invent numbers, do not add a "
+                "baseline/delta figure unless one was given above, and answer in 2-4 sentences.")
+    return " ".join(lines)
+
+
+@app.get("/models")
+def list_models():
+    """Ollama models available for the chat answer, for the UI's model picker."""
+    try:
+        r = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
+        r.raise_for_status()
+        names = [m["name"] for m in r.json().get("models", [])]
+        if names:
+            return {"models": names, "default": DEFAULT_MODEL if DEFAULT_MODEL in names else names[0]}
+    except requests.RequestException:
+        pass
+    return {"models": [DEFAULT_MODEL], "default": DEFAULT_MODEL}
+
+
+def _ask_ollama(model: str, question: str, grounding: str) -> str:
+    payload = {
+        "model": model or DEFAULT_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a concise assistant reporting EMG fatigue "
+                                          "readings for a final-year research project. " + grounding},
+            {"role": "user", "content": question},
+        ],
+        "stream": False,
+    }
+    r = requests.post(f"{OLLAMA_BASE}/api/chat", json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json()["message"]["content"].strip()
+
+
+_FORECAST_JSON_KEYS = ("t_observed", "y_observed", "t_future", "y_future",
+                      "ci_lo", "ci_hi", "pi_lo", "pi_hi")
+
+
+def _jsonable_forecast(forecast: dict | None) -> dict | None:
+    """forecast_fatigue() returns numpy arrays; FastAPI's default JSON
+    encoder can't serialise those, so convert the array fields to plain
+    lists and drop anything else non-serialisable (e.g. nested numpy floats
+    inside "lstm")."""
+    if not forecast:
+        return None
+    if forecast.get("ok") is False:
+        return {"ok": False}
+    out = {"ok": True, "summary": forecast["summary"],
+          "horizon_sec": forecast["horizon_sec"],
+          "clipped_at_zero": forecast["clipped_at_zero"],
+          "method": forecast["method"],
+          "slope_hz_per_min": float(forecast["slope"]) * 60.0,
+          "r2": float(forecast["r2"]), "p_value": float(forecast["p_value"])}
+    for k in _FORECAST_JSON_KEYS:
+        if k in forecast:
+            out[k] = np.asarray(forecast[k]).tolist()
+    return out
+
+
+def _forecast_grounding_line(forecast: dict | None) -> str:
+    """Append a forecast summary to the grounding, if one was computed.
+
+    forecast_fatigue() already writes a plain-language "summary" sentence
+    that states the observed trend and, separately, the projected value --
+    hand that straight to the model rather than re-deriving it, so the
+    LLM's forecast claim and the chart's forecast claim can never drift
+    apart from each other.
+    """
+    if not forecast:
+        return ""
+    if forecast.get("ok") is False:
+        return ("A forecast was requested but there isn't enough MDF history "
+                "yet to fit a trend -- say so, don't invent one.")
+    return "Forecast: " + forecast["summary"]
+
+
+@app.get("/answer")
+def answer_endpoint(subject: int, t_start: float, side: str = "R",
+                    question: str = "", model: str = DEFAULT_MODEL,
+                    horizon_sec: float | None = None):
+    """Classify the window, then have Ollama phrase the result (grounded).
+
+    horizon_sec: if given, also run forecast_fatigue() for that many seconds
+    ahead of t_start and fold its summary into the grounding text.
+    """
+    if not (1 <= subject <= 13):
+        raise HTTPException(status_code=400,
+                            detail=f"subject must be 1-13, got {subject}. Try subject 13.")
+    if side.upper() not in ("R", "L"):
+        raise HTTPException(status_code=400,
+                            detail=f"side must be 'R' or 'L', got {side!r}.")
+    try:
+        result = classify(subject, t_start, side)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    result["fatigue_state"] = _STATE.get(result["fatigue_label"], str(result["fatigue_label"]))
+    grounding = _grounding_text(subject, side, t_start, result, "dataset")
+
+    forecast = None
+    if horizon_sec:
+        seg = loader.load_biceps_segment(DATA_ROOT, subject, side,
+                                         target_fs=TARGET_FS, bandpass=True)
+        fs = int(getattr(seg, "eff_fs", TARGET_FS))
+        forecast = forecast_fatigue(seg, fs, horizon_sec=horizon_sec, t_end=t_start)
+        grounding += " " + _forecast_grounding_line(forecast)
+
+    q = question or f"Is subject {subject} fatigued at {t_start}s on the {side} side?"
+    try:
+        text = _ask_ollama(model, q, grounding)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Ollama unreachable: {e}")
+    return {"text": text, "result": result, "forecast": _jsonable_forecast(forecast)}
+
+
+@app.post("/answer_upload")
+async def answer_upload_endpoint(file: UploadFile = File(...),
+                                 t_start: float = Form(0.0),
+                                 sample_rate_hz: float | None = Form(None),
+                                 baseline_sec: float = Form(60.0),
+                                 question: str = Form(""),
+                                 model: str = Form(DEFAULT_MODEL),
+                                 horizon_sec: float | None = Form(None)):
+    """Same as /answer, for an uploaded recording."""
+    raw = await file.read()
+    try:
+        seg, fs = _load_upload_segment(raw, sample_rate_hz)
+        result = classify_upload(seg, fs, t_start, baseline_sec=baseline_sec)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    result["fatigue_state"] = _STATE.get(result["fatigue_label"], str(result["fatigue_label"]))
+    grounding = _grounding_text(file.filename, "R", t_start, result, "upload",
+                                calibration=result.get("calibration"))
+
+    forecast = None
+    if horizon_sec:
+        forecast = forecast_fatigue(seg, fs, horizon_sec=horizon_sec, t_end=t_start)
+        grounding += " " + _forecast_grounding_line(forecast)
+
+    q = question or f"Am I fatigued in {file.filename} at {t_start}s?"
+    try:
+        text = _ask_ollama(model, q, grounding)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Ollama unreachable: {e}")
+    return {"text": text, "result": result, "forecast": _jsonable_forecast(forecast)}
 
 
 def _parse_csv_upload(raw: bytes, sample_rate_hz: float | None):
@@ -166,10 +359,15 @@ def render_endpoint(subject: int, t_start: float = 0, side: str = "R"):
     try:
         seg, fs, _, _ = _load_subject(subject, side)
         mdf_t, _, _ = loader.mdf_trend(seg, fs=fs, win_sec=WIN_SEC, step_sec=STEP_SEC)
+        # classify_from_segment() reuses the seg/fs already loaded above --
+        # classify() itself reloads the whole subject recording from disk
+        # EVERY call (~3s), which made this loop take minutes per chart when
+        # it ran classify() once per window (100+ windows). Same segment
+        # object as classify() would load internally (both use TARGET_FS).
         model_preds = {}
         for tc in mdf_t:
             try:
-                r = classify(subject, float(tc), side)
+                r = classify_from_segment(subject, seg, fs, float(tc))
                 model_preds[float(tc)] = r["fatigue_label"]
             except Exception:
                 pass  # a single window's failure must not blank the whole overlay
@@ -196,6 +394,42 @@ async def render_upload_endpoint(file: UploadFile = File(...),
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"html": html}
+
+
+@app.get("/forecast")
+def forecast_endpoint(subject: int, t_start: float, side: str = "R",
+                      horizon_sec: float = 20.0):
+    """MDF trend projection (models/fatigue_forecast.py), independent of
+    /answer -- lets the UI show the forecast even when Ollama is down."""
+    if not (1 <= subject <= 13):
+        raise HTTPException(status_code=400,
+                            detail=f"subject must be 1-13, got {subject}. Try subject 13.")
+    if side.upper() not in ("R", "L"):
+        raise HTTPException(status_code=400,
+                            detail=f"side must be 'R' or 'L', got {side!r}.")
+    try:
+        seg = loader.load_biceps_segment(DATA_ROOT, subject, side,
+                                         target_fs=TARGET_FS, bandpass=True)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    fs = int(getattr(seg, "eff_fs", TARGET_FS))
+    forecast = forecast_fatigue(seg, fs, horizon_sec=horizon_sec, t_end=t_start)
+    return {"forecast": _jsonable_forecast(forecast)}
+
+
+@app.post("/forecast_upload")
+async def forecast_upload_endpoint(file: UploadFile = File(...),
+                                   t_start: float = Form(0.0),
+                                   sample_rate_hz: float | None = Form(None),
+                                   horizon_sec: float = Form(20.0)):
+    """Same as /forecast, for an uploaded recording."""
+    raw = await file.read()
+    try:
+        seg, fs = _load_upload_segment(raw, sample_rate_hz)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    forecast = forecast_fatigue(seg, fs, horizon_sec=horizon_sec, t_end=t_start)
+    return {"forecast": _jsonable_forecast(forecast)}
 
 
 @app.get("/health")
