@@ -79,8 +79,8 @@ class HappyPath(unittest.TestCase):
 
     def test_trend_line_present_and_declines(self):
         # S13's MDF declines with fatigue, so the fitted slope must be negative;
-        # the legend label reads "fatigue trend -X.X Hz/min".
-        self.assertIn("fatigue trend -", self.html)
+        # the legend label reads "Overall trend: -X.X Hz/min".
+        self.assertIn("Overall trend: -", self.html)
 
     def test_payload_stays_optimized(self):
         # guards the frame-trim + basic-bundle optimization (was ~9.4MB, now
@@ -97,7 +97,7 @@ class LabelsAbsentFallback(unittest.TestCase):
         with mock.patch.object(loader, "load_fatigue_labels",
                                lambda *a, **k: (None, None)):
             html = render_window(13, 120.0, "R")   # must not raise
-        self.assertIn("no ground-truth labels", html)
+        self.assertIn("no fatigue labels for this trial", html)
 
 
 if __name__ == "__main__":

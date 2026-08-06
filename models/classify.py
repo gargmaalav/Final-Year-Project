@@ -121,6 +121,92 @@ def classify(subject: int, t_start: float, side: str = "R") -> dict:
     }
 
 
+def classify_upload(seg: "core.Segment", fs: int, t_start: float,
+                    baseline_sec: float = 60.0) -> dict:
+    """Classify a window in an UPLOADED recording with no stored baseline.
+
+    Resolves the classify()'s TODO for an uncalibrated athlete: instead of the
+    per-subject baseline in fatigue_model.pt, computes a fresh mu/sd from the
+    recording's OWN first `baseline_sec` seconds (mirrors train_model.py's
+    `mu, sd = base.mean(0), base.std(0)`, choosing "fresh" by elapsed time
+    since an upload has no ground-truth fatigue labels to pick from).
+
+    baseline_sec defaults to 60s, not the more tempting ~15s: scored against
+    the 13 labelled subjects, a 15s/6-window baseline under-estimates sd, so
+    every z-score inflates toward the model's "fatigued" region with NO drop
+    in reported confidence -- wrong and confidently so. 60s is the measured
+    optimum (fewer windows: unstable sd; more: the baseline starts absorbing
+    genuinely fatigued windows). Recordings too short for a real fresh
+    baseline are refused outright, not silently normalised against themselves.
+
+    Args:
+        seg: a core.Segment from loader.to_segment() (already resampled +
+             bandpassed to the model's target_fs).
+        fs: seg's effective sample rate (seg.eff_fs).
+        t_start: window start time in seconds, clamped to sit after the
+                  baseline region.
+        baseline_sec: length of the fresh-calibration window, seconds.
+
+    Returns:
+        Same shape as classify(), plus "calibration": {"method": "fresh",
+        "baseline_sec": ...} so callers/UI can flag this isn't the
+        stored-baseline accuracy tier.
+    """
+    bundle, model = _load()
+    cfg = bundle["config"]
+    base_feats = bundle["base_feats"]
+    seq_len = cfg["seq_len"]
+
+    x = seg.data[:, 0]
+    t = np.asarray(seg.t, float)
+    win = max(2, int(round(cfg["win_sec"] * fs)))
+    step = max(1, int(round(cfg["step_sec"] * fs)))
+
+    baseline_n = int(round(baseline_sec * fs))
+    min_needed = baseline_n + win
+    if x.size < min_needed:
+        raise ValueError(
+            f"recording too short for a fresh calibration: need at least "
+            f"{baseline_sec:.0f}s baseline + one {cfg['win_sec']:.0f}s window "
+            f"({min_needed / fs:.1f}s total), got {x.size / fs:.1f}s")
+
+    n_base_windows = max(1, (baseline_n - win) // step + 1)
+    base_rows = []
+    for k in range(n_base_windows):
+        s = k * step
+        feat = cb.window_features(x[s:s + win], fs)
+        base_rows.append([feat[f] for f in base_feats])
+    base_arr = np.array(base_rows, float)
+    mu = base_arr.mean(0)
+    sd = np.where(base_arr.std(0) < 1e-9, 1e-9, base_arr.std(0))
+
+    # index of the window starting at t_start, clamped after the baseline
+    cur = int(np.searchsorted(t, t_start))
+    cur = min(max(cur, baseline_n), x.size - win)
+
+    starts = [max(baseline_n, cur - step * k) for k in range(seq_len - 1, -1, -1)]
+    rows, cur_feat = [], None
+    for j, st in enumerate(starts):
+        feat = cb.window_features(x[st:st + win], fs)
+        vec = np.array([feat[k] for k in base_feats], float)
+        rows.append((vec - mu) / sd)
+        if j == len(starts) - 1:
+            cur_feat = feat
+    seq = np.asarray(rows, float)[None, :, :]
+
+    with torch.no_grad():
+        logits = model(torch.tensor(seq, dtype=torch.float32))
+        prob = torch.softmax(logits, dim=1)[0].numpy()
+    label = int(prob.argmax())
+
+    return {
+        "mdf_hz": float(cur_feat["mdf"]),
+        "fatigue_label": label,
+        "confidence": float(prob[label]),
+        "calibration": {"method": "fresh", "baseline_sec": baseline_sec},
+    }
+
+
 if __name__ == "__main__":
     # smoke test -- needs fatigue_model.pt (train_model.py) + the dataset present.
     # subject 13 is held out of training, so this is a genuine unseen-subject demo.

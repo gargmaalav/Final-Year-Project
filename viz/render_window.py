@@ -50,7 +50,10 @@ WIN_SEC = 4.0    # authors' MDF window (loader.mdf_trend default)
 STEP_SEC = 2.0   # authors' MDF step   (loader.mdf_trend default)
 
 LABEL_COLOR = {0: "#2ecc71", 1: "#f39c12", 2: "#e74c3c"}
-LABEL_NAME = {0: "Fresh", 1: "Transition", 2: "Fatigued"}
+# Plain-language names for a non-technical reader. The dataset's canonical
+# 3-class scheme is fresh / transition / fatigued; "Getting tired" is the
+# reader-facing wording for the transition class (same class, plainer word).
+LABEL_NAME = {0: "Fresh", 1: "Getting tired", 2: "Fatigued"}
 
 ASK_COLOR = "#b388ff"   # persistent "asked: Ns" marker (distinct from the
                         # white scrub cursor and the yellow FFT-MDF line)
@@ -159,19 +162,21 @@ def _wrap_for_iframe(plotly_html: str) -> str:
 _SELECT_INSPECT = """
 <div id="__viz_readout" style="font:13px/1.5 -apple-system,sans-serif;
   color:#ddd;background:#161616;border-top:1px solid #333;padding:10px 14px;">
-  <span style="color:#888">Tip: pick the <b>Box Select</b> tool (top-right) and
-  drag across the middle MDF panel to inspect a span - the readout and the
-  EMG/FFT panels jump to it. Click a point on that panel to jump there.</span>
+  <span style="color:#888">Tip: to inspect part of the session, pick the
+  <b>Box Select</b> tool (top-right) and drag across the middle chart. You get
+  the fatigue state and frequency range for that stretch, and the close-up
+  charts jump to it. Click any dot to jump there.</span>
 </div>
 <script>
 (function () {
   var D = __VIZ_DATA__;
   var SEL_SHAPE = 1;                 // layout.shapes[1] = the select-span rect
   var box = document.getElementById('__viz_readout');
-  var TIP = '<span style="color:#888">Tip: pick the <b>Box Select</b> tool '
-          + '(top-right) and drag across the middle MDF panel to inspect a span '
-          + '- the readout and the EMG/FFT panels jump to it. Click a point on '
-          + 'that panel to jump there.</span>';
+  var TIP = '<span style="color:#888">Tip: to inspect part of the session, pick '
+          + 'the <b>Box Select</b> tool (top-right) and drag across the middle '
+          + 'chart. You get the fatigue state and frequency range for that '
+          + 'stretch, and the close-up charts jump to it. Click any dot to jump '
+          + 'there.</span>';
   var gd = null;
   function hint(msg) { box.innerHTML = '<span style="color:#e0a030">' + msg + '</span>'; }
 
@@ -200,7 +205,7 @@ _SELECT_INSPECT = """
     var lo = Math.min(t0, t1), hi = Math.max(t0, t1);
     var idx = [];
     for (var i = 0; i < D.t.length; i++) if (D.t[i] >= lo && D.t[i] <= hi) idx.push(i);
-    if (!idx.length) { hint('No MDF windows between ' + lo.toFixed(0) + 's and '
+    if (!idx.length) { hint('No data between ' + lo.toFixed(0) + 's and '
                             + hi.toFixed(0) + 's.'); return; }
     var mn = Infinity, mx = -Infinity, sum = 0, cnt = {};
     for (var j = 0; j < idx.length; j++) {
@@ -217,10 +222,10 @@ _SELECT_INSPECT = """
       '<b>' + lo.toFixed(0) + '-' + hi.toFixed(0) + ' s</b> &nbsp; '
       + '<span style="background:' + col + ';color:#111;padding:1px 7px;'
       + 'border-radius:10px;font-weight:600">' + name + '</span> '
-      + '<span style="color:#888">(' + bestN + '/' + idx.length + ' windows)</span>'
-      + ' &nbsp;|&nbsp; MDF '
+      + '<span style="color:#888">(' + bestN + '/' + idx.length + ' moments)</span>'
+      + ' &nbsp;|&nbsp; frequency '
       + '<b>' + mn.toFixed(1) + '</b> / <b>' + mean.toFixed(1) + '</b> / '
-      + '<b>' + mx.toFixed(1) + '</b> Hz <span style="color:#888">(min / mean / max)</span>';
+      + '<b>' + mx.toFixed(1) + '</b> Hz <span style="color:#888">(lowest / average / highest)</span>';
   }
 
   function onSelect(ev) {
@@ -232,9 +237,9 @@ _SELECT_INSPECT = """
       shadeSpan(lo, hi);         // keep the span visible on the timeline
       jumpTo((lo + hi) / 2);     // detail panels reflect the selection (its centre)
     } else {
-      hint('Time spans are read off the middle MDF panel (whole-recording '
-         + 'time). That box was on the EMG-window or FFT panel, which are not '
-         + 'recording time.');
+      hint('Time spans are read off the middle chart (the whole session). That '
+         + 'box was on the top or bottom close-up chart, which is not the '
+         + 'session timeline - try dragging across the middle chart instead.');
     }
   }
   function onClick(ev) {
@@ -308,9 +313,10 @@ def _rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
-def _single_subject_html(subject: int, t_start: float, side: str,
-                         model_pred: dict | None = None) -> str:
-    """Interactive 3-panel single-subject chart with scrub + playback.
+def _chart_html(seg, fs: int, t_start: float, chart_label: str,
+                length_tag: str, title_prefix: str,
+                lab_t=None, lab_v=None) -> str:
+    """Interactive 3-panel chart with scrub + playback, over any core.Segment.
 
     Deliberately reproduces viz/signal_viewer.py's supervisor-liked layout
     (the tool the supervisor previewed) as an in-chat Plotly chart:
@@ -324,18 +330,21 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     step), the frames/slider reproduction of signal_viewer.py's slider+Play.
     Every per-frame value reuses loader.mdf_trend windows so the panels and
     the LLM's classify()-grounded numbers stay in agreement (no JS FFT).
-    """
-    if subject not in ALL_SUBJECTS:
-        raise ValueError(f"subject must be 1-13, got {subject}")
 
-    seg, fs, lab_t, lab_v = _load_subject(subject, side)
+    Shared by render_window() (a dataset subject, ground-truth labels) and
+    render_segment() (an uploaded recording, no labels -- lab_t/lab_v=None
+    already renders the grey "no fatigue labels" fallback below).
+    chart_label/length_tag/title_prefix carry the caller-specific wording
+    ("Subject 13 (R biceps)" vs "your uploaded recording") into error
+    messages and panel titles without duplicating this ~250-line function.
+    """
     x = seg.data[:, 0].astype(float)
     t = seg.t.astype(float)
 
     win = int(round(WIN_SEC * fs))
     if x.size < win:
         raise ValueError(
-            f"subject {subject} recording ({x.size / fs:.1f}s) is shorter "
+            f"{length_tag} ({x.size / fs:.1f}s) is shorter "
             f"than one {WIN_SEC:.0f}s window")
 
     t_start = min(max(float(t_start), 0.0), float(t[-1]))
@@ -408,9 +417,9 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     fig = make_subplots(
         rows=3, cols=1,
         subplot_titles=(
-            f"S{subject} {side} biceps - raw EMG of the current 4 s window (bandpass 20-450 Hz)",
-            "Median frequency (MDF) over the whole recording - fatigue marker + scrub cursor",
-            "FFT spectrum of the current window",
+            f"{chart_label}: the muscle's raw signal right now (raw EMG, a 4-second close-up)",
+            "Is the muscle tiring? Median frequency (MDF) over the whole session - lower means more tired",
+            "The mix of frequencies in the signal right now (FFT spectrum)",
         ),
         vertical_spacing=0.1,
     )
@@ -418,7 +427,7 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     # --- static: MDF-over-time, split by fatigue label (panel 2) ---
     if lab_t is None:
         fig.add_trace(go.Scatter(x=mdf_t, y=mdf_v, mode="markers+lines",
-                                 name="MDF (no ground-truth labels)",
+                                 name="Signal frequency (no fatigue labels for this trial)",
                                  marker=dict(size=5, color="#888")), row=2, col=1)
     else:
         for lbl in (0, 1, 2):
@@ -440,8 +449,8 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         _slope_hz_s, _mdf_icpt = np.polyfit(mdf_t, mdf_v, 1)
         _slope_hz_min = _slope_hz_s * 60.0
         # guard |slope| < 0.05 so {:+.1f} never renders a bare "-0.0 Hz/min"
-        _trend_lbl = ("fatigue trend ~0 Hz/min (flat)" if abs(_slope_hz_min) < 0.05
-                      else f"fatigue trend {_slope_hz_min:+.1f} Hz/min")
+        _trend_lbl = ("Overall trend: roughly flat" if abs(_slope_hz_min) < 0.05
+                      else f"Overall trend: {_slope_hz_min:+.1f} Hz/min")
         fig.add_trace(go.Scatter(
             x=mdf_t, y=_slope_hz_s * mdf_t + _mdf_icpt, mode="lines",
             name=_trend_lbl,
@@ -456,14 +465,14 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         fill="toself", mode="lines", fillcolor=_tint(k0),
         line=dict(width=0), hoverinfo="skip", showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(                                   # base+1 EMG window
-        x=tw, y=frame_emg[k0], mode="lines", name="EMG (current 4 s window)",
+        x=tw, y=frame_emg[k0], mode="lines", name="Muscle signal (this moment)",
         line=dict(width=0.7, color="#00d4ff")), row=1, col=1)
     fig.add_trace(go.Scatter(                                   # base+2 scrub cursor
         x=[float(mdf_t[k0]), float(mdf_t[k0])], y=[mlo, mhi], mode="lines",
         line=dict(color="white", dash="dash", width=1.2),
         hoverinfo="skip", showlegend=False), row=2, col=1)
     fig.add_trace(go.Scatter(                                   # base+3 FFT power
-        x=freqs_band, y=frame_spec[k0], mode="lines", name="FFT power",
+        x=freqs_band, y=frame_spec[k0], mode="lines", name="Frequency mix",
         line=dict(color="#ff6b6b")), row=3, col=1)
     fig.add_trace(go.Scatter(                                   # base+4 window MDF
         x=[frame_mdf[k0], frame_mdf[k0]], y=[0.0, 1.05], mode="lines",
@@ -476,8 +485,8 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         # No per-window fatigue-state label here -- the fatigue stage is shown by
         # the dot colours (Fresh/Transition/Fatigued), and the model's own verdict
         # is delivered in the chatbot's text answer, not on the chart.
-        return (f"EMG Fatigue Progression - Subject {subject} ({side} Biceps) | "
-                f"t={mdf_t[k]:.0f}s, window MDF={frame_mdf[k]:.1f} Hz")
+        return (f"Muscle Fatigue - {title_prefix}  |  "
+                f"at {mdf_t[k]:.0f}s into the session, signal frequency {frame_mdf[k]:.1f} Hz")
 
     if animate:
         frames = []
@@ -529,12 +538,12 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         # cost the user zoom.
         dragmode="select", selectdirection="h",
     )
-    fig.update_xaxes(title_text="Time in window (s)", range=[0, WIN_SEC], row=1, col=1)
-    fig.update_yaxes(title_text="EMG (a.u.)", range=[ylo, yhi], row=1, col=1)
-    fig.update_xaxes(title_text="Time (s)", range=[float(t[0]), float(t[-1])], row=2, col=1)
-    fig.update_yaxes(title_text="MDF (Hz)", range=[mlo, mhi], row=2, col=1)
-    fig.update_xaxes(title_text="Frequency (Hz)", range=[0, fmax], row=3, col=1)
-    fig.update_yaxes(title_text="Power (norm.)", range=[0, 1.05], row=3, col=1)
+    fig.update_xaxes(title_text="Time within this snapshot (s)", range=[0, WIN_SEC], row=1, col=1)
+    fig.update_yaxes(title_text="Signal strength", range=[ylo, yhi], row=1, col=1)
+    fig.update_xaxes(title_text="Time into the session (s)", range=[float(t[0]), float(t[-1])], row=2, col=1)
+    fig.update_yaxes(title_text="Signal frequency (Hz)", range=[mlo, mhi], row=2, col=1)
+    fig.update_xaxes(title_text="Frequency (Hz)  -  slower ... faster", range=[0, fmax], row=3, col=1)
+    fig.update_yaxes(title_text="Amount of signal", range=[0, 1.05], row=3, col=1)
 
     # Persistent "asked: t_start" marker on the MDF panel: a fixed vertical line
     # + label at the exact time the user asked about. Added as layout shapes/
@@ -586,7 +595,38 @@ def render_window(subject: int, t_start: float, side: str = "R",
     side = _validate_side(side)
     if subject is None:
         raise ValueError("subject is required (the all-subjects overview was removed)")
-    return _single_subject_html(int(subject), t_start, side, model_pred=model_pred)
+    if subject not in ALL_SUBJECTS:
+        raise ValueError(f"subject must be 1-13, got {subject}")
+
+    seg, fs, lab_t, lab_v = _load_subject(subject, side)
+    t_start = min(max(float(t_start), 0.0), float(seg.t[-1]))
+    return _chart_html(
+        seg, fs, t_start,
+        chart_label=f"S{subject} {side} biceps",
+        length_tag=f"subject {subject} recording",
+        title_prefix=f"Subject {subject} ({side} biceps)",
+        lab_t=lab_t, lab_v=lab_v)
+
+
+def render_segment(seg, fs: int, t_start: float,
+                   model_pred: dict | None = None) -> str:
+    """Same 3-panel chart as render_window(), for an UPLOADED recording.
+
+    No ground-truth fatigue labels exist for an upload, so panel 2's dots
+    render in the grey "no fatigue labels for this trial" fallback that
+    already existed for dataset trials missing a labels CSV -- this is not a
+    new code path, just the existing lab_t=None branch reached from a new
+    caller. `seg`/`fs` come from loader.to_segment() on the uploaded CSV
+    (models/serve.py's /classify_upload, /render_upload).
+
+    model_pred: see render_window() -- accepted, currently unused on-chart.
+    """
+    t_start = min(max(float(t_start), 0.0), float(seg.t[-1]))
+    return _chart_html(
+        seg, fs, t_start,
+        chart_label="your uploaded recording",
+        length_tag="the uploaded recording",
+        title_prefix="uploaded recording")
 
 
 if __name__ == "__main__":
