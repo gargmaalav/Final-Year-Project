@@ -63,21 +63,24 @@
   .chat-item .t { font-size: 13px; color: #AEBBC0; }
   .chat-item.active .t { color: var(--text-strong); }
   .chat-item .s { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
-  #adv-toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-dim); cursor: pointer; padding: 0 10px; }
-  #adv-toggle:hover { color: var(--text); }
-  #adv-body { display: none; flex-direction: column; gap: 5px; padding: 10px 10px 0; }
-  #adv-body.open { display: flex; }
-  #adv-body label { font-size: 12px; color: var(--text-dimmer); }
-  #adv-body label.required { color: var(--fatigued); }
   #model-select { background: var(--chip); border: 1px solid var(--divider); border-radius: 6px; padding: 8px 10px; font-size: 13px; color: var(--text); width: 100%; }
   #sample-rate { background: var(--chip); border: 1px dashed var(--text-dimmer); border-radius: 6px; padding: 8px 10px; font-size: 13px; color: var(--text); width: 100%; }
   #sample-rate.required { border: 1px solid var(--fatigued); background: #1E1618; color: #B98C89; }
   #sample-rate::placeholder { color: var(--text-dimmer); }
   .adv-help { font-size: 11.5px; line-height: 1.55; color: var(--text-dim); }
   .adv-help.required { color: #B98C89; }
-  #sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 14px; }
-  #clear-history { font-size: 12.5px; color: var(--text-dimmer); cursor: pointer; }
-  #clear-history:hover { color: #E0827E; }
+  #sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 12px; }
+
+  /* settings: a gear button bottom-left, popover above it - same idea as Claude's
+     account/settings entry point tucked at the bottom of its own sidebar */
+  #settings-wrap { position: relative; }
+  #settings-btn { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none; border-radius: 6px; padding: 7px 10px; font-size: 13px; color: var(--text-dim); text-align: left; }
+  #settings-btn:hover { background: var(--row-hover); color: var(--text); }
+  #settings-panel { position: absolute; bottom: calc(100% + 8px); left: 0; width: 232px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 5; }
+  #settings-panel.hidden { display: none; }
+  #settings-panel-title { font-size: 12px; font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
+  #settings-panel label { font-size: 12px; color: var(--text-dimmer); }
+  #settings-panel label.required { color: var(--fatigued); }
   #disclaimer { font-size: 11px; line-height: 1.55; color: #7C8B91; }
 
   /* main column */
@@ -86,17 +89,6 @@
   #header-title { font-size: 16px; font-weight: 600; color: var(--text-strong); }
   #header-sub { font-size: 12.5px; color: var(--text-dim); }
   #main-header #model-select { margin-left: auto; width: auto; max-width: 220px; }
-
-  /* signature element: a live-looking EMG trace under the header, standing in for a "typing"
-     indicator elsewhere might use a spinner - ours nods at the subject matter instead.
-     Real sEMG is a noisy interference pattern even at rest, not a flat line with clean spikes
-     (that's an ECG/pulse-monitor look) - baseline carries continuous low-amplitude jitter,
-     burst zones raise amplitude, same as an actual contraction would. */
-  #emg-strip { height: 20px; margin: 0 40px; overflow: hidden; border-bottom: 1px solid var(--divider); }
-  #emg-strip svg { width: 200%; height: 100%; display: block; animation: emg-scroll 7s linear infinite; }
-  #emg-strip path { fill: none; stroke: var(--accent-hover); stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; opacity: .38; }
-  @keyframes emg-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-  @media (prefers-reduced-motion: reduce) { #emg-strip svg { animation: none; } }
   #thread { flex: 1; padding: 8px 40px 24px; display: flex; flex-direction: column; gap: 26px; overflow-y: auto; }
 
   /* empty state */
@@ -228,20 +220,19 @@
         <div id="chats-label">Chats</div>
         <div id="chat-list"></div>
       </div>
+    </div>
 
-      <div>
-        <div id="adv-toggle"><span id="adv-caret">&#9656;</span>Advanced settings</div>
-        <div id="adv-hint">Sample rate is only needed for single-column CSV uploads.</div>
-        <div id="adv-body">
+    <div id="sidebar-footer">
+      <div id="settings-wrap">
+        <button id="settings-btn" title="Settings">&#9881;<span id="settings-btn-label">Settings</span></button>
+        <div id="settings-panel" class="hidden">
+          <div id="settings-panel-title">Settings</div>
+          <div id="adv-hint">Sample rate is only needed for single-column CSV uploads.</div>
           <label id="sample-rate-label">Sample rate</label>
           <input id="sample-rate" class="mono" type="number" placeholder="not set" min="1" step="1">
           <div id="sample-rate-help" class="adv-help">Your recording device's sample rate in Hz. Required only for single-column CSV uploads with no time column.</div>
         </div>
       </div>
-    </div>
-
-    <div id="sidebar-footer">
-      <div id="clear-history">Clear all history</div>
       <div id="disclaimer">Educational final-year project demo. Not medical advice.</div>
     </div>
   </div>
@@ -256,13 +247,6 @@
       <div id="header-title">New chat</div>
       <div id="header-sub">Research dataset, subjects 1-13</div>
       <select id="model-select" class="mono"></select>
-    </div>
-
-    <div id="emg-strip" aria-hidden="true">
-      <svg viewBox="0 0 800 26" preserveAspectRatio="none">
-        <path d="M0,12.54 L4,12.09 L8,13.39 L12,11.89 L16,13.09 L20,12.65 L24,11.85 L28,13.02 L32,11.8 L36,12.83 L40,11.88 L44,11.94 L48,12.8 L52,13.85 L56,12.02 L60,5 L65,19 L70,3 L75,20 L80,8 L85,21 L90,10 L95,17 L100,7 L105,16 L110,12.28 L114,13.33 L118,14.16 L122,13.2 L126,12.73 L130,14.24 L134,11.82 L138,13.93 L142,12.45 L146,12.08 L150,12.01 L154,12.5 L158,13.82 L162,12.17 L166,13.21 L170,13.36 L174,12.67 L178,13.12 L182,11.86 L186,11.85 L190,12.24 L194,13.47 L198,12.81 L202,12.52 L206,13.22 L210,12.88 L214,12.48 L218,13.77 L220,4 L225,23 L230,5 L235,19 L240,9 L245,20 L250,11 L255,13.52 L259,12.33 L263,13.19 L267,13.07 L271,13.98 L275,13.6 L279,12.45 L283,14.25 L287,12.01 L291,12.79 L295,13.67 L299,12.1 L303,12.97 L307,11.8 L311,13.44 L315,13.69 L319,13.19 L323,13.98 L327,12.52 L331,13.51 L335,13.25 L339,13.21 L343,12.89 L347,13.88 L351,14.16 L355,12.93 L359,13.43 L363,11.86 L367,13.52 L371,13.38 L375,14.28 L379,13.84 L383,12.44 L387,12.7 L391,13.44 L395,11.76 L400,13" />
-        <path d="M0,12.54 L4,12.09 L8,13.39 L12,11.89 L16,13.09 L20,12.65 L24,11.85 L28,13.02 L32,11.8 L36,12.83 L40,11.88 L44,11.94 L48,12.8 L52,13.85 L56,12.02 L60,5 L65,19 L70,3 L75,20 L80,8 L85,21 L90,10 L95,17 L100,7 L105,16 L110,12.28 L114,13.33 L118,14.16 L122,13.2 L126,12.73 L130,14.24 L134,11.82 L138,13.93 L142,12.45 L146,12.08 L150,12.01 L154,12.5 L158,13.82 L162,12.17 L166,13.21 L170,13.36 L174,12.67 L178,13.12 L182,11.86 L186,11.85 L190,12.24 L194,13.47 L198,12.81 L202,12.52 L206,13.22 L210,12.88 L214,12.48 L218,13.77 L220,4 L225,23 L230,5 L235,19 L240,9 L245,20 L250,11 L255,13.52 L259,12.33 L263,13.19 L267,13.07 L271,13.98 L275,13.6 L279,12.45 L283,14.25 L287,12.01 L291,12.79 L295,13.67 L299,12.1 L303,12.97 L307,11.8 L311,13.44 L315,13.69 L319,13.19 L323,13.98 L327,12.52 L331,13.51 L335,13.25 L339,13.21 L343,12.89 L347,13.88 L351,14.16 L355,12.93 L359,13.43 L363,11.86 L367,13.52 L371,13.38 L375,14.28 L379,13.84 L383,12.44 L387,12.7 L391,13.44 L395,11.76 L400,13" transform="translate(400,0)" />
-      </svg>
     </div>
 
     <div id="thread">
@@ -326,10 +310,10 @@
   };
 
   var els = {};
-  ["sidebar", "chat-list", "new-chat", "adv-toggle", "adv-body", "adv-caret",
+  ["sidebar", "chat-list", "new-chat", "settings-btn", "settings-panel",
    "model-select",
    "sample-rate", "sample-rate-help", "sample-rate-label",
-   "clear-history", "main-header", "header-title", "header-sub",
+   "main-header", "header-title", "header-sub",
    "thread", "empty-state", "suggestions",
    "attach-row", "attach-btn", "file-input", "q-input", "send-btn",
    "fig-collapsed", "fig-pane", "fig-status", "fig-hide", "fig-body", "fig-note"
@@ -403,15 +387,22 @@
     });
   }
 
-  // ---------- advanced settings ----------
+  // ---------- settings popover ----------
   var advOpenManually = false;
   function setAdvOpen(open) {
-    els.advBody.classList.toggle("open", open);
-    els.advCaret.innerHTML = open ? "&#9662;" : "&#9656;";
+    els.settingsPanel.classList.toggle("hidden", !open);
   }
-  els.advToggle.addEventListener("click", function () {
-    advOpenManually = !els.advBody.classList.contains("open");
+  els.settingsBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    advOpenManually = els.settingsPanel.classList.contains("hidden");
     setAdvOpen(advOpenManually);
+  });
+  document.addEventListener("click", function (e) {
+    if (!els.settingsPanel.classList.contains("hidden") &&
+        !els.settingsPanel.contains(e.target) && e.target !== els.settingsBtn) {
+      advOpenManually = false;
+      setAdvOpen(false);
+    }
   });
   function markSampleRateRequired(required) {
     els.sampleRateLabel.textContent = required ? "Sample rate required" : "Sample rate";
@@ -860,12 +851,6 @@
     els.attachRow.classList.add("hidden");
     els.attachRow.innerHTML = "";
   }
-
-  els.clearHistory.addEventListener("click", function () {
-    STATE.chats = [];
-    saveChats();
-    newChat();
-  });
 
   // ---------- run a reading (dataset subject) ----------
   function runReading(subject, side, tStart, isRetryFresh, chatId, question, horizonSec) {
