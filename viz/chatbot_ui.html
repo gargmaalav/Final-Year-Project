@@ -82,13 +82,16 @@
   /* chat bubbles */
   .msg-user { align-self: flex-end; max-width: 66%; background: var(--chip); border-radius: 10px 10px 2px 10px; padding: 12px 16px; font-size: 14.5px; line-height: 1.6; color: #E8EFF1; }
   .msg-block { display: flex; flex-direction: column; gap: 20px; max-width: 720px; }
+  .assistant-tag { display: flex; align-items: center; gap: 8px; margin-bottom: -6px; }
+  .assistant-avatar { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: #F2FBFA; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex: none; }
+  .assistant-name { font-size: 12px; color: var(--text-dim); }
 
   /* reading card */
   .reading-card { border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 22px 24px; display: flex; flex-direction: column; gap: 20px; }
-  .reading-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
-  .reading-top .label { font-size: 12px; color: var(--text-dimmer); }
+  .reading-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+  .reading-top .label { font-size: 12px; color: var(--text-dimmer); margin-bottom: 8px; display: block; }
   .verdict { font-size: 38px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.05; }
-  .delta { font-size: 26px; font-weight: 500; }
+  .delta { font-size: 26px; font-weight: 500; margin-top: 2px; }
   .reading-meta { display: flex; gap: 36px; padding-top: 16px; border-top: 1px solid var(--divider); flex-wrap: wrap; }
   .reading-meta .m-label { font-size: 11.5px; color: var(--text-dimmer); }
   .reading-meta .m-val { font-size: 14px; color: #C9D4D8; }
@@ -101,8 +104,10 @@
   .forecast-block .f-body { font-size: 13.5px; line-height: 1.65; color: var(--text-dim); }
   .reading-actions { display: flex; gap: 8px; align-items: center; }
   .fig-tab { background: var(--chip); border-radius: 6px; padding: 6px 11px; font-size: 12.5px; color: #E8EFF1; }
-  .regen { margin-left: auto; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
-  .regen:hover { color: var(--text); }
+  .actions-right { margin-left: auto; display: flex; gap: 16px; align-items: center; opacity: 0; transition: opacity .12s ease; }
+  .msg-block:hover .actions-right, .msg-block:focus-within .actions-right { opacity: 1; }
+  .regen, .copy-btn { font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+  .regen:hover, .copy-btn:hover { color: var(--text); }
   .regen-live { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
 
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
@@ -369,6 +374,7 @@
     els.thread.appendChild(els.emptyState);
   }
   function appendUserBubble(text) {
+    if (els.emptyState.parentNode === els.thread) clearThread();
     var b = document.createElement("div");
     b.className = "msg-user";
     b.textContent = text;
@@ -448,6 +454,11 @@
     var block = document.createElement("div");
     block.className = "msg-block";
 
+    var tag = document.createElement("div");
+    tag.className = "assistant-tag";
+    tag.innerHTML = '<span class="assistant-avatar">E</span><span class="assistant-name">EMG Fatigue Chatbot</span>';
+    block.appendChild(tag);
+
     var baseForText = (opts.base && opts.tStart !== 0) ? opts.base : null;
     var built = buildAnswerText(opts.cur, baseForText, opts.subject, opts.side, opts.tStart);
     var color = verdictColor(opts.cur.fatigue_state);
@@ -515,6 +526,24 @@
     var actions = document.createElement("div");
     actions.className = "reading-actions";
     actions.innerHTML = '<div class="fig-tab">Figure shown</div>';
+
+    var actionsRight = document.createElement("div");
+    actionsRight.className = "actions-right";
+
+    var copyBtn = document.createElement("div");
+    copyBtn.className = "copy-btn";
+    copyBtn.textContent = "Copy";
+    copyBtn.addEventListener("click", function () {
+      var textToCopy = opts.llmText || built.text;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(textToCopy).then(function () {
+          copyBtn.textContent = "Copied";
+          setTimeout(function () { copyBtn.textContent = "Copy"; }, 1200);
+        });
+      }
+    });
+    actionsRight.appendChild(copyBtn);
+
     var regen = document.createElement("div");
     regen.className = "regen";
     regen.textContent = "Regenerate";
@@ -525,7 +554,9 @@
         runReading(opts.subject, opts.side, opts.tStart, false, STATE.activeChatId, opts.question, opts.horizonSec);
       }
     });
-    actions.appendChild(regen);
+    actionsRight.appendChild(regen);
+
+    actions.appendChild(actionsRight);
     block.appendChild(actions);
 
     els.thread.appendChild(block);
@@ -757,7 +788,7 @@
 
   // ---------- run a reading (dataset subject) ----------
   function runReading(subject, side, tStart, isRetryFresh, chatId, question, horizonSec) {
-    if (document.getElementById("empty-state").parentNode === els.thread) clearThread();
+    if (els.emptyState.parentNode === els.thread) clearThread();
     var loadingRow = renderLoading("Classifying the " + tStart.toFixed(1) + " s window");
     figLoading();
 
@@ -833,7 +864,7 @@
 
   // ---------- run an uploaded-file reading ----------
   function runUploadReading(file, tStart, sampleRate, question, chatId, horizonSec) {
-    if (document.getElementById("empty-state").parentNode === els.thread) clearThread();
+    if (els.emptyState.parentNode === els.thread) clearThread();
     var loadingRow = renderLoading("Classifying the uploaded recording");
     figLoading();
 
@@ -950,7 +981,7 @@
     els.qInput.value = "";
   }
   function appendUserBubbleForUpload(filename, extraText) {
-    if (document.getElementById("empty-state").parentNode === els.thread) clearThread();
+    if (els.emptyState.parentNode === els.thread) clearThread();
     appendUserBubble(filename + (extraText ? " — " + extraText : " — am I fatigued?"));
   }
 
