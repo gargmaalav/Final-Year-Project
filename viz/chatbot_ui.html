@@ -35,12 +35,27 @@
   button { font-family: inherit; cursor: pointer; }
   #app { display: flex; height: 100vh; width: 100%; overflow: hidden; }
 
-  /* sidebar */
-  #sidebar { width: 268px; flex: none; background: var(--panel); display: flex; flex-direction: column; padding: 24px 18px; gap: 22px; overflow-y: auto; }
-  #sidebar .brand { font-size: 15px; font-weight: 600; color: var(--text-strong); }
-  #new-chat { width: 100%; padding: 10px 14px; background: var(--accent); border: none; border-radius: 6px; color: #F2FBFA; font-size: 13.5px; font-weight: 500; text-align: left; }
+  /* sidebar - collapses to a narrow icon rail, same pattern as the figures panel */
+  #sidebar {
+    width: 268px; flex: none; background: var(--panel); display: flex; flex-direction: column;
+    padding: 20px 18px 24px; gap: 16px; overflow: hidden;
+    transition: width .2s ease, padding .2s ease, opacity .15s ease;
+  }
+  #sidebar.collapsed { width: 0; padding: 20px 0 24px; opacity: 0; pointer-events: none; }
+  #sidebar-scroll { display: flex; flex-direction: column; gap: 22px; overflow-y: auto; min-width: 232px; }
+  #sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 232px; }
+  #sidebar .brand { font-size: 15px; font-weight: 600; color: var(--text-strong); white-space: nowrap; }
+  #new-chat { width: 100%; min-width: 232px; padding: 10px 14px; background: var(--accent); border: none; border-radius: 6px; color: #F2FBFA; font-size: 13.5px; font-weight: 500; text-align: left; display: flex; align-items: center; gap: 8px; }
   #new-chat:hover { background: var(--accent-hover); }
+  #new-chat-icon { font-size: 13px; }
   #chats-label, #adv-hint { font-size: 12px; color: var(--text-dimmer); padding: 0 10px; }
+
+  #sidebar-rail { width: 52px; flex: none; background: var(--panel); display: flex; flex-direction: column; align-items: center; padding: 20px 0; gap: 16px; cursor: pointer; transition: background .12s ease; }
+  #sidebar-rail.hidden { display: none; }
+  #sidebar-rail:hover { background: #141B1F; }
+  #rail-expand-icon { color: var(--text-dim); font-size: 13px; }
+  #rail-new-chat { width: 30px; height: 30px; border-radius: 6px; background: var(--accent); border: none; color: #F2FBFA; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+  #rail-new-chat:hover { background: var(--accent-hover); }
   #chat-list { display: flex; flex-direction: column; gap: 4px; }
   .chat-item { border-radius: 6px; padding: 9px 10px; cursor: pointer; }
   .chat-item:hover { background: var(--row-hover); }
@@ -190,23 +205,28 @@
 <div id="app">
 
   <div id="sidebar">
-    <div class="brand">EMG Fatigue Chatbot</div>
-    <button id="new-chat">New chat</button>
-
-    <div>
-      <div id="chats-label">Chats</div>
-      <div id="chat-list"></div>
+    <div id="sidebar-head">
+      <div class="brand">EMG Fatigue Chatbot</div>
+      <button id="sidebar-toggle" class="fig-icon-btn" title="Collapse sidebar">&#10530;</button>
     </div>
+    <button id="new-chat"><span id="new-chat-icon">&#43;</span><span id="new-chat-label">New chat</span></button>
 
-    <div>
-      <div id="adv-toggle"><span id="adv-caret">&#9656;</span>Advanced settings</div>
-      <div id="adv-hint">Sample rate is only needed for single-column CSV uploads.</div>
-      <div id="adv-body">
-        <label>Model</label>
-        <select id="model-select" class="mono"></select>
-        <label id="sample-rate-label" style="margin-top:6px">Sample rate</label>
-        <input id="sample-rate" class="mono" type="number" placeholder="not set" min="1" step="1">
-        <div id="sample-rate-help" class="adv-help">Your recording device's sample rate in Hz. Required only for single-column CSV uploads with no time column.</div>
+    <div id="sidebar-scroll">
+      <div>
+        <div id="chats-label">Chats</div>
+        <div id="chat-list"></div>
+      </div>
+
+      <div>
+        <div id="adv-toggle"><span id="adv-caret">&#9656;</span>Advanced settings</div>
+        <div id="adv-hint">Sample rate is only needed for single-column CSV uploads.</div>
+        <div id="adv-body">
+          <label>Model</label>
+          <select id="model-select" class="mono"></select>
+          <label id="sample-rate-label" style="margin-top:6px">Sample rate</label>
+          <input id="sample-rate" class="mono" type="number" placeholder="not set" min="1" step="1">
+          <div id="sample-rate-help" class="adv-help">Your recording device's sample rate in Hz. Required only for single-column CSV uploads with no time column.</div>
+        </div>
       </div>
     </div>
 
@@ -214,6 +234,11 @@
       <div id="clear-history">Clear all history</div>
       <div id="disclaimer">Educational final-year project demo. Not medical advice.</div>
     </div>
+  </div>
+
+  <div id="sidebar-rail" class="hidden" title="Expand sidebar">
+    <span id="rail-expand-icon">&#10529;</span>
+    <button id="rail-new-chat" title="New chat">&#43;</button>
   </div>
 
   <div id="main">
@@ -651,6 +676,19 @@
     document.getElementById("fig-collapsed").classList.add("hidden");
     els.figPane.classList.add("hidden");
   }
+  // ---------- sidebar collapse ----------
+  function setSidebarCollapsed(collapsed) {
+    document.getElementById("sidebar").classList.toggle("collapsed", collapsed);
+    document.getElementById("sidebar-rail").classList.toggle("hidden", !collapsed);
+  }
+  document.getElementById("sidebar-toggle").addEventListener("click", function () { setSidebarCollapsed(true); });
+  document.getElementById("sidebar-rail").addEventListener("click", function () { setSidebarCollapsed(false); });
+  document.getElementById("rail-new-chat").addEventListener("click", function (e) {
+    e.stopPropagation();
+    setSidebarCollapsed(false);
+    document.getElementById("new-chat").click();
+  });
+
   els.figHide.addEventListener("click", function () { STATE.figuresCollapsed = true; showFigPaneCollapsed(); });
   document.getElementById("fig-collapsed").addEventListener("click", function () { STATE.figuresCollapsed = false; showFigPaneOpen(); });
   document.getElementById("fig-fullscreen").addEventListener("click", function (e) {
