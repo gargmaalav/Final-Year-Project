@@ -85,6 +85,14 @@
   #main-header { padding: 22px 40px 18px; display: flex; align-items: baseline; gap: 14px; }
   #header-title { font-size: 16px; font-weight: 600; color: var(--text-strong); }
   #header-sub { font-size: 12.5px; color: var(--text-dim); }
+
+  /* signature element: a live-looking EMG trace under the header, standing in for a "typing"
+     indicator elsewhere might use a spinner - ours nods at the subject matter instead */
+  #pulse-strip { height: 20px; margin: 0 40px; overflow: hidden; border-bottom: 1px solid var(--divider); }
+  #pulse-strip svg { width: 200%; height: 100%; display: block; animation: pulse-scroll 7s linear infinite; }
+  #pulse-strip path { fill: none; stroke: var(--accent-hover); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; opacity: .38; }
+  @keyframes pulse-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  @media (prefers-reduced-motion: reduce) { #pulse-strip svg { animation: none; } }
   #thread { flex: 1; padding: 8px 40px 24px; display: flex; flex-direction: column; gap: 26px; overflow-y: auto; }
 
   /* empty state */
@@ -245,6 +253,13 @@
     <div id="main-header">
       <div id="header-title">New chat</div>
       <div id="header-sub">Research dataset, subjects 1-13</div>
+    </div>
+
+    <div id="pulse-strip" aria-hidden="true">
+      <svg viewBox="0 0 800 26" preserveAspectRatio="none">
+        <path d="M0,13 L10,13 L20,13 L30,13 L40,13 L50,13 L60,4 L66,20 L72,2 L78,21 L84,7 L90,17 L96,11 L102,13 L112,13 L122,13 L132,13 L142,13 L152,13 L162,13 L172,13 L182,13 L192,13 L202,13 L212,13 L220,5 L226,23 L232,4 L238,19 L244,10 L250,13 L260,13 L270,13 L280,13 L290,13 L300,13 L310,13 L320,13 L330,13 L340,13 L350,13 L360,13 L370,13 L380,13 L390,13 L400,13" />
+        <path d="M0,13 L10,13 L20,13 L30,13 L40,13 L50,13 L60,4 L66,20 L72,2 L78,21 L84,7 L90,17 L96,11 L102,13 L112,13 L122,13 L132,13 L142,13 L152,13 L162,13 L172,13 L182,13 L192,13 L202,13 L212,13 L220,5 L226,23 L232,4 L238,19 L244,10 L250,13 L260,13 L270,13 L280,13 L290,13 L300,13 L310,13 L320,13 L330,13 L340,13 L350,13 L360,13 L370,13 L380,13 L390,13 L400,13" transform="translate(400,0)" />
+      </svg>
     </div>
 
     <div id="thread">
