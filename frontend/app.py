@@ -33,16 +33,21 @@ for _p in (os.path.join(_REPO_ROOT, "models"),
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from classify import classify, classify_upload      # noqa: E402
+from classify import (classify, classify_upload,      # noqa: E402
+                      available_subjects)
 from fatigue_forecast import forecast_fatigue         # noqa: E402
 from render_window import render_window               # noqa: E402
 import loader as data_loader                           # noqa: E402
 
+import analysis                                  # noqa: E402
 import charts                                    # noqa: E402
 import extract                                   # noqa: E402
 import history                                   # noqa: E402
+import intent as intent_router                   # noqa: E402
 from llm import LLMError, chat, list_models      # noqa: E402
-from prompt import build_prompt, describe_window  # noqa: E402
+from prompt import (build_facts_prompt, build_prompt,  # noqa: E402
+                    compare_facts, describe_window, onset_facts,
+                    overview_facts, ranking_facts)
 from recommend import build_recommendation_prompt, wants_recommendation  # noqa: E402
 from upload import UploadError, load_uploaded_segment, parse_uploaded_csv  # noqa: E402
 
@@ -93,17 +98,193 @@ def _load_subject_segment(subject: int, side: str):
     return seg, int(getattr(seg, "eff_fs", 250))
 
 
-def _dataset_turn(user_text: str, previous: dict | None) -> dict:
-    params = extract.parse_query(user_text, previous)
-    if params is None:
-        return {"content": (
-            "I couldn't tell which subject (1-13), time (seconds), and side "
-            "(R/L) you're asking about -- could you spell that out, e.g. "
-            "\"subject 13 at 60 seconds, right side\"?")}
+@st.cache_data(show_spinner=False, max_entries=1)
+def _subjects() -> list[int]:
+    try:
+        return available_subjects()
+    except Exception:
+        return list(range(1, 14))
 
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _cached_scan(subject: int, side: str) -> dict:
+    seg, fs = _load_subject_segment(subject, side)
+    return analysis.summarise(analysis.scan_recording(subject, side, seg=seg, fs=fs))
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def _cached_ranking(side: str) -> dict:
+    return analysis.rank_subjects(_subjects(), side=side)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _cached_compare_subjects(subjects: tuple[int, ...], t_start: float | None,
+                             side: str) -> dict:
+    return analysis.compare_subjects(list(subjects), t_start=t_start, side=side)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _cached_compare_sides(subject: int, t_start: float | None) -> dict:
+    return analysis.compare_sides(subject, t_start=t_start)
+
+
+def _duration_of(subject: int, side: str) -> float | None:
+    """Recording length, needed to resolve "near the end" and to reject a time
+    past the end of the data."""
+    try:
+        seg, _ = _load_subject_segment(subject, side)
+        return float(seg.t[-1]) if seg.t.size else None
+    except Exception:
+        return None
+
+
+def _subject_for(intent, previous: dict | None) -> int | None:
+    """The subject an analysis question is about: named this turn, else the
+    one already under discussion."""
+    if intent.subjects:
+        return intent.subjects[0]
+    return (previous or {}).get("subject")
+
+
+def _needs_subject_msg() -> str:
+    subs = _subjects()
+    return (f"Which subject did you mean? I have subjects "
+            f"{subs[0]}-{subs[-1]}.")
+
+
+def _catalogue_text() -> str:
+    subs = _subjects()
+    return (
+        f"I have surface EMG recordings for {len(subs)} subjects "
+        f"(numbered {subs[0]}-{subs[-1]}), each with a right and a left biceps "
+        "recording. They're efforts held to exhaustion, so the recordings vary "
+        "a lot in length -- from about 25 seconds to about 8 minutes.\n\n"
+        "Things you can ask me:\n"
+        "- a reading at a moment: *\"is subject 13 fatigued at 60 seconds?\"*\n"
+        "- in plain terms: *\"how about subject 5 near the end?\"*\n"
+        "- when it set in: *\"when did subject 13 start fatiguing?\"*\n"
+        "- the whole recording: *\"summarise subject 7\"*\n"
+        "- side by side: *\"compare subject 5 and 9\"*, *\"left vs right for subject 4\"*\n"
+        "- the field: *\"which subject fatigued the most?\"*\n"
+        "- the forecast: *\"will subject 2 get more tired over the next minute?\"*\n"
+        "- definitions: *\"what does median frequency mean?\"*\n\n"
+        "You can also attach your own EMG recording as a CSV with the + button.")
+
+
+def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
+    """Handle every question that isn't a single-window reading."""
+    kind = intent.kind
+
+    if kind == intent_router.CATALOGUE:
+        return {"content": _catalogue_text()}
+
+    if kind == intent_router.EXPLAIN:
+        text = analysis.define(intent.term)
+        return {"content": text} if text else {"content": _catalogue_text()}
+
+    if kind in (intent_router.ONSET, intent_router.OVERVIEW):
+        subject = _subject_for(intent, previous)
+        if subject is None:
+            return {"content": _needs_subject_msg()}
+        if subject not in _subjects():
+            subs = _subjects()
+            return {"content": f"I don't have subject {subject} -- the dataset "
+                               f"has subjects {subs[0]}-{subs[-1]}."}
+        side = extract.side_from_text(user_text) or (previous or {}).get("side") or "R"
+        summary = _cached_scan(subject, side)
+        facts = (onset_facts(summary) if kind == intent_router.ONSET
+                 else overview_facts(summary))
+        instruction = (
+            "Answer in 2-4 sentences. Say when fatigue set in and how sure the "
+            "reading is, and state the ±accuracy that comes from the scan step "
+            "-- do not imply a more precise moment than was measured."
+            if kind == intent_router.ONSET else
+            "Answer in 3-5 sentences. Describe how the recording develops from "
+            "start to finish, quoting the median frequency at each end and how "
+            "much of the recording was classified as fatigued.")
+        return {"prompt": build_facts_prompt(
+                    "Measured results:", facts, user_text, instruction),
+                "window": {"subject": subject, "side": side, "source": "dataset",
+                           "kind": kind},
+                "user_text": user_text}
+
+    # comparisons
+    if intent.both_sides:
+        subject = _subject_for(intent, previous)
+        if subject is None:
+            return {"content": _needs_subject_msg()}
+        comparison = _cached_compare_sides(subject, None)
+        facts = compare_facts(comparison)
+        instruction = ("Answer in 2-4 sentences. Say which arm is more "
+                       "fatigued and by how much, or that they are similar.")
+    elif len(intent.subjects) >= 2:
+        subjects = [s for s in intent.subjects if s in _subjects()]
+        if len(subjects) < 2:
+            return {"content": "I need two subjects I actually have to compare. "
+                               + _needs_subject_msg()}
+        side = extract.side_from_text(user_text) or "R"
+        t_start = extract.t_start_from_text(user_text, None)
+        comparison = _cached_compare_subjects(tuple(subjects), t_start, side)
+        facts = compare_facts(comparison)
+        instruction = ("Answer in 2-4 sentences. Say which subject is more "
+                       "fatigued and on what basis. If the subjects were read "
+                       "at a fraction of their own recordings rather than the "
+                       "same absolute time, say so in one clause.")
+    else:
+        # a superlative over the whole field ("which subject fatigued most?")
+        side = extract.side_from_text(user_text) or "R"
+        comparison = _cached_ranking(side)
+        facts = ranking_facts(comparison)
+        instruction = ("Answer in 3-5 sentences. Name the top few and the "
+                       "bottom few with their median-frequency drops, and "
+                       "state in one clause what the ranking is based on. "
+                       "Mention any excluded subject.")
+
+    return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
+                                         instruction),
+            "window": None, "user_text": user_text}
+
+
+def _dataset_turn(user_text: str, previous: dict | None) -> dict:
+    intent = intent_router.route(user_text)
+    if intent.kind != intent_router.READING:
+        return _analysis_turn(user_text, intent, previous)
+
+    subjects = _subjects()
+    # resolve the subject first so the recording's length is known, which is
+    # what lets "near the end" and "halfway" mean anything
+    provisional = intent.subjects[0] if intent.subjects else (previous or {}).get("subject")
+    side_hint = extract.side_from_text(user_text) or (previous or {}).get("side") or "R"
+    duration = _duration_of(provisional, side_hint) if provisional in subjects else None
+
+    resolved = extract.resolve_query(user_text, previous, duration=duration,
+                                     subjects=subjects)
+
+    # "will subject 2 get more tired over the next minute?" states a horizon
+    # but no start. Asking "which point in the recording?" back is obtuse --
+    # the question plainly means "from where they are now", which is how the
+    # upload path has always read a timeless question. Defaulted, not guessed:
+    # the provenance line under the answer says the time was not given.
+    if (not resolved.ok and duration is not None
+            and extract.extract_horizon_seconds(user_text, default=None) is not None):
+        resolved = extract.resolve_query(
+            user_text, {**(previous or {}), "subject": provisional,
+                        "t_start": duration, "side": side_hint},
+            duration=duration, subjects=subjects)
+        if resolved.ok:
+            resolved.problems.append(
+                "no time given, so this reads the end of the recording")
+
+    if not resolved.ok:
+        message = " ".join(resolved.problems + [resolved.ask])
+        return {"content": message}
+
+    params = resolved.params
     subject, t_start, side = params["subject"], params["t_start"], params["side"]
+    notes = resolved.problems
     window = {"subject": subject, "t_start": t_start, "side": side,
-              "source": "dataset", "carried_over": params.get("carried_over", [])}
+              "source": "dataset", "carried_over": params.get("carried_over", []),
+              "notes": notes}
     try:
         result = classify(subject, t_start, side)
     except KeyError:
@@ -149,9 +330,13 @@ def _upload_turn(user_text: str, uploaded_file) -> dict:
 
     seg, fs = cache["seg"], cache["fs"]
     duration = float(seg.t[-1]) if seg.t.size else 0.0
-    t_start = extract.extract_t_start_seconds(user_text)
+    # duration is passed so "near the end" / "halfway" resolve on an upload
+    # exactly as they do for a dataset subject
+    t_start = extract.extract_t_start_seconds(user_text, duration)
     if t_start is None:
         t_start = duration  # "how fatigued am I" with no time -> right now
+    elif t_start > duration:
+        t_start = duration
 
     try:
         result, baseline = classify_upload(seg, fs, t_start, baseline=cache["baseline"])
@@ -198,6 +383,20 @@ def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
 
 
 def _finalize(turn: dict) -> dict:
+    # a pre-built analysis prompt (onset / overview / comparison / ranking):
+    # the numbers are already computed, the LLM only phrases them
+    if "prompt" in turn:
+        try:
+            content = chat([{"role": "user", "content": turn["prompt"]}],
+                           model=st.session_state.model)
+        except LLMError as e:
+            content = (f"[LLM phrasing unavailable: {e}]\n\n"
+                       + turn["prompt"].split("Measured results:", 1)[-1]
+                                       .split("User question:", 1)[0].strip())
+        return {"content": content, "chart_html": turn.get("chart_html"),
+                "forecast_chart_html": None, "recommendation": None,
+                "user_text": turn.get("user_text"), "window": turn.get("window")}
+
     if "features" not in turn:
         return {"content": turn["content"], "chart_html": None,
                 "forecast_chart_html": None, "recommendation": None}
@@ -243,6 +442,8 @@ def _provenance(window: dict | None, features: dict) -> str | None:
     carried = window.get("carried_over") or []
     if carried:
         parts.append(f"({' and '.join(carried)} carried over from your previous question)")
+    for note in window.get("notes") or []:
+        parts.append(f"· {note}")
     if features.get("calibration"):
         cal = features["calibration"]
         parts.append(f"· self-calibrated from the first {cal['fresh_sec']:.0f}s "
@@ -264,11 +465,17 @@ def _handle_turn(user_text: str, uploaded_file) -> None:
     chat_obj["messages"].append({"role": "assistant", **final})
     st.session_state.last_turn_context = final if "features" in final else None
     # remember the resolved window so the next turn can say "and at 90 seconds?"
+    # remember the resolved window so the next turn can say "and at 90 seconds?".
+    # Analysis turns (onset/overview) name a subject but no single time, so the
+    # previous time is kept rather than dropped -- otherwise asking "summarise
+    # subject 7" mid-conversation would strand the follow-up.
     window = final.get("window")
     if window and window.get("source") == "dataset":
-        st.session_state.last_params = {"subject": window["subject"],
-                                        "t_start": window["t_start"],
-                                        "side": window["side"]}
+        prev = st.session_state.last_params or {}
+        st.session_state.last_params = {
+            "subject": window.get("subject", prev.get("subject")),
+            "t_start": window.get("t_start", prev.get("t_start")),
+            "side": window.get("side", prev.get("side", "R"))}
     history.save_chat(chat_obj)
 
 

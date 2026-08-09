@@ -104,13 +104,57 @@ def _classify_window(seg, fs: int, t_start: float, mu: np.ndarray, sd: np.ndarra
     }
 
 
-def classify(subject: int, t_start: float, side: str = "R") -> dict:
+def _subject_baseline(bundle: dict, subject: int) -> tuple[np.ndarray, np.ndarray]:
+    """The stored fresh-baseline (mu, sd) for one subject.
+
+    Raises KeyError when the subject has none -- a real, uncalibrated athlete
+    is handled by classify_upload() below, which computes one from a fresh
+    recording instead.
+    """
+    bl = bundle["baselines"].get(subject) or bundle["baselines"].get(str(subject))
+    if bl is None:
+        raise KeyError(f"no fresh-baseline calibration stored for subject {subject}")
+    return np.array(bl["mu"], float), np.array(bl["sd"], float)
+
+
+def available_subjects() -> list[int]:
+    """Subject ids that have a stored calibration, so callers can say what
+    exists rather than hard-coding "1-13" and going stale if the bundle
+    changes."""
+    bundle, _ = _load()
+    out = set()
+    for key in bundle["baselines"]:
+        try:
+            out.add(int(key))
+        except (TypeError, ValueError):
+            continue
+    return sorted(out)
+
+
+def load_subject_segment(subject: int, side: str = "R"):
+    """The (downsampled, band-passed) signal for one subject, plus its rate.
+
+    Split out of classify() so callers that need many windows from the same
+    recording can load it once -- see classify_many().
+    """
+    bundle, _ = _load()
+    seg = loader.load_biceps_segment(DATA_ROOT, subject, side,
+                                     target_fs=bundle["config"]["target_fs"],
+                                     bandpass=True)
+    return seg, int(getattr(seg, "eff_fs", loader.FS_NATIVE))
+
+
+def classify(subject: int, t_start: float, side: str = "R", seg=None,
+             fs: int | None = None) -> dict:
     """Classify the EMG window starting at `t_start` for one subject.
 
     Args:
         subject: subject id (1-13 in the Zenodo dataset).
         t_start: window start time in seconds.
         side: "R" or "L".
+        seg, fs: an already-loaded segment for this subject/side. Optional and
+            purely a cost optimisation -- omit them and the recording is
+            loaded here, exactly as before.
 
     Returns:
         {"mdf_hz": float, "fatigue_label": int, "confidence": float}
@@ -121,18 +165,37 @@ def classify(subject: int, t_start: float, side: str = "R") -> dict:
     base_feats = bundle["base_feats"]
 
     # subject fresh-baseline (the SAME transform training used)
-    bl = bundle["baselines"].get(subject) or bundle["baselines"].get(str(subject))
-    if bl is None:
-        # a real, uncalibrated athlete has no fresh baseline yet -- see
-        # classify_upload() below, which computes one from a fresh recording.
-        raise KeyError(f"no fresh-baseline calibration stored for subject {subject}")
-    mu, sd = np.array(bl["mu"], float), np.array(bl["sd"], float)
+    mu, sd = _subject_baseline(bundle, subject)
 
-    # load this subject's (downsampled, band-passed) signal
-    seg = loader.load_biceps_segment(DATA_ROOT, subject, side,
-                                     target_fs=cfg["target_fs"], bandpass=True)
-    fs = int(getattr(seg, "eff_fs", loader.FS_NATIVE))
+    if seg is None:
+        seg, fs = load_subject_segment(subject, side)
     return _classify_window(seg, fs, t_start, mu, sd, cfg, base_feats, model)
+
+
+def classify_many(subject: int, t_starts, side: str = "R", seg=None,
+                  fs: int | None = None) -> list[dict]:
+    """classify() at several times in one recording, loading it only once.
+
+    Scanning a whole recording through classify() re-reads and re-resamples a
+    multi-MB CSV per window, which makes questions like "when did they start
+    fatiguing?" cost tens of seconds. Each returned dict is classify()'s, plus
+    the "t_start" it was measured at.
+    """
+    bundle, model = _load()
+    cfg = bundle["config"]
+    base_feats = bundle["base_feats"]
+    mu, sd = _subject_baseline(bundle, subject)
+
+    if seg is None:
+        seg, fs = load_subject_segment(subject, side)
+
+    out = []
+    for t_start in t_starts:
+        result = _classify_window(seg, fs, float(t_start), mu, sd, cfg,
+                                  base_feats, model)
+        result["t_start"] = float(t_start)
+        out.append(result)
+    return out
 
 
 # Calibration constants for the uncalibrated-athlete path. These are not

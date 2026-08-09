@@ -19,10 +19,14 @@ class LLMError(Exception):
 
 
 def chat(messages: list[dict], *, model: str | None = None,
-         temperature: float = 0.0) -> str:
+         temperature: float = 0.0, timeout: float | None = None) -> str:
     """Send a chat completion request to Ollama, return the reply text.
 
     messages: list of {"role": "system"|"user"|"assistant", "content": str}.
+    timeout: seconds to wait, defaulting to TIMEOUT_SEC. A cold model load
+        can take most of a minute on a laptop, so callers that only want to
+        know whether Ollama is answering at all should pass a short one
+        rather than blocking the caller for the full default.
     """
     try:
         r = requests.post(
@@ -33,7 +37,7 @@ def chat(messages: list[dict], *, model: str | None = None,
                 "stream": False,
                 "options": {"temperature": temperature},
             },
-            timeout=TIMEOUT_SEC,
+            timeout=TIMEOUT_SEC if timeout is None else timeout,
         )
     except requests.RequestException as e:
         raise LLMError(f"could not reach Ollama at {OLLAMA_BASE} ({e})") from e
