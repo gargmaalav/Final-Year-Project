@@ -182,13 +182,20 @@ def ranking_facts(ranking: dict) -> list[str]:
 
 
 def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
-                 window: dict | None = None) -> str:
+                 window: dict | None = None, chart_shown: bool = False) -> str:
     """Build the grounding prompt.
 
     `window` names the reading's provenance (which subject/time/side, or that
     it came from an upload) and is stated in the answer on purpose. Without it
     a follow-up like "and at 90 seconds?" produces an answer that never says
     which window it used, so a wrong resolution is invisible to the reader.
+
+    `chart_shown` says whether the app is *actually* rendering a chart for
+    this turn (charts are now request-gated, see extract.wants_visual). Left
+    unstated, a question that mentions "graph" got answered with "I don't
+    have the capability to display graphs" directly above the chart the app
+    was rendering at that exact moment -- the model has no way to know the
+    app's own behaviour unless it's told.
     """
     forecast_line = (
         f"- fatigue trend: {forecast['summary']}\n" if forecast and forecast.get("ok") else ""
@@ -209,6 +216,17 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         "the uploaded recording itself, so the result is less reliable. "
         if calib else ""
     )
+    chart_line = (
+        "A chart for this exact reading is displayed directly below your "
+        "answer. You may refer to it (e.g. \"see the chart below\"), but you "
+        "cannot see its contents yourself, so do not describe specific "
+        "values shown in it beyond what's given above.\n"
+        if chart_shown else
+        "No chart is being shown for this reading. If the question asked to "
+        "see a graph/chart/plot, say in one short clause that they can ask "
+        "to \"show the graph\" to get one -- do NOT say you are unable to "
+        "display charts, since the app can and will show one on request.\n"
+    )
 
     return (
         "You are an assistant reporting the result of a lab sensor reading "
@@ -224,6 +242,7 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         f"- model confidence: {features['confidence'] * 100:.1f}%\n"
         f"{calib_line}"
         f"{forecast_line}\n"
+        f"{chart_line}\n"
         f"User question: {user_query}\n\n"
         f"Answer in 1-4 sentences. {say_where}State the fatigue state and "
         f"confidence plainly. {say_calib}Mention the trend only if it's "

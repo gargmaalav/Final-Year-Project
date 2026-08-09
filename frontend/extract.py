@@ -436,6 +436,22 @@ def t_start_from_text(text: str, duration: float | None = None) -> float | None:
     return _t_start_from_text(text, duration)
 
 
+# Charts used to render on every single-window reading, unconditionally --
+# fine in isolation, but three unrequested panels stacked under a one-line
+# answer read as clutter rather than as help. Same principle as
+# extract_horizon_seconds() below: show it when asked for, not by default.
+_VISUAL_RE = re.compile(
+    r"\b(graph|chart|plot|visual\w*|diagram|picture|"
+    r"show(?: me)? (?:the|a|it)|let me see|can i see|"
+    r"what does (?:it|this|that) look like|see the (?:data|signal|trend))\b",
+    re.IGNORECASE)
+
+
+def wants_visual(text: str) -> bool:
+    """Whether the message explicitly asked to see a chart."""
+    return bool(_VISUAL_RE.search(text or ""))
+
+
 def parse_query(user_query: str, previous: dict | None = None) -> dict | None:
     """Back-compatible wrapper: the resolved triple, or None.
 
