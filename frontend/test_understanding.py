@@ -80,6 +80,16 @@ ROUTING = [
     ("recommend a training plan",                    intent.READING, None, None),
 ]
 
+# A subject named with no question attached: offer the menu rather than
+# guessing which of a dozen possible readings was wanted.
+VAGUE = [
+    "tell me about subject 13",
+    "subject 13",
+    "subject 5?",
+    "info on subject 7",
+    "show me subject 2",
+]
+
 BOTH_SIDES = [
     "compare the left and right arm for subject 4",
     "is subject 4 more fatigued in the left or right arm",
@@ -130,6 +140,15 @@ def main() -> int:
             failures.append(f"  {question!r}\n     wanted {want_kind}"
                             f"/subject={want_subject}/t={want_t}, got "
                             f"{got.kind}/subjects={got.subjects}")
+
+    for question in VAGUE:
+        got = intent.route(question)
+        if got.kind == intent.MENU and got.subjects:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r}\n     wanted the subject menu, got "
+                            f"{got.kind}")
 
     for question in BOTH_SIDES:
         got = intent.route(question)

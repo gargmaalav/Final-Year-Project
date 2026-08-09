@@ -34,7 +34,7 @@ for _p in (os.path.join(_REPO_ROOT, "models"),
         sys.path.insert(0, _p)
 
 from classify import (classify, classify_upload,      # noqa: E402
-                      available_subjects)
+                      available_subjects, subject_reference, upload_reference)
 from fatigue_forecast import forecast_fatigue         # noqa: E402
 from render_window import render_window               # noqa: E402
 import loader as data_loader                           # noqa: E402
@@ -44,6 +44,7 @@ import charts                                    # noqa: E402
 import extract                                   # noqa: E402
 import history                                   # noqa: E402
 import intent as intent_router                   # noqa: E402
+import interpret                                 # noqa: E402
 from llm import LLMError, chat, list_models      # noqa: E402
 from prompt import (build_facts_prompt, build_prompt,  # noqa: E402
                     compare_facts, describe_window, onset_facts,
@@ -128,6 +129,21 @@ def _cached_compare_sides(subject: int, t_start: float | None) -> dict:
     return analysis.compare_sides(subject, t_start=t_start)
 
 
+def _plain_reading(result: dict, reference: dict | None, t_start: float | None,
+                   duration: float | None, who: str) -> dict | None:
+    """interpret.py's plain-language view, or None if it can't be built.
+
+    Never allowed to break an answer: if anything here fails the prompt falls
+    back to stating the raw values, which is what it did before.
+    """
+    try:
+        described = interpret.describe_reading(result, reference, t_start, duration)
+        return {"lines": interpret.plain_lines(described, who),
+                "technical": interpret.technical_line(described)}
+    except Exception:
+        return None
+
+
 def _duration_of(subject: int, side: str) -> float | None:
     """Recording length, needed to resolve "near the end" and to reject a time
     past the end of the data."""
@@ -171,12 +187,49 @@ def _catalogue_text() -> str:
         "You can also attach your own EMG recording as a CSV with the + button.")
 
 
+def _subject_menu(subject: int) -> str:
+    """What can be asked about one subject.
+
+    Shown when a subject is named but nothing specific is asked. Answering
+    that with one window's numbers guesses at the question; this states the
+    couple of facts that are cheap to get, then offers the real options in the
+    reader's words rather than ours.
+    """
+    duration = _duration_of(subject, "R")
+    length = (f"Their right-arm recording is {duration:.0f} seconds long"
+              if duration else "I have a right and a left arm recording for them")
+    return (
+        f"**Subject {subject}** — what would you like to know?\n\n"
+        f"{length}, and it's an effort held until exhaustion, so they start "
+        "fresh and fatigue as it goes.\n\n"
+        "- **Are they fatigued at a particular moment?** — *\"is subject "
+        f"{subject} fatigued at 60 seconds?\"* or *\"subject {subject} near "
+        "the end\"*\n"
+        f"- **When did fatigue set in?** — *\"when did subject {subject} "
+        "start fatiguing?\"*\n"
+        f"- **How did the whole effort go?** — *\"summarise subject {subject}\"*\n"
+        f"- **Which arm held up better?** — *\"which arm is worse for subject "
+        f"{subject}?\"*\n"
+        f"- **What happens next?** — *\"will subject {subject} get more tired "
+        "over the next minute?\"*\n"
+        f"- **How do they compare?** — *\"compare subject {subject} and 9\"*\n\n"
+        "Or just ask in your own words.")
+
+
 def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
     """Handle every question that isn't a single-window reading."""
     kind = intent.kind
 
     if kind == intent_router.CATALOGUE:
         return {"content": _catalogue_text()}
+
+    if kind == intent_router.MENU:
+        subject = intent.subjects[0]
+        if subject not in _subjects():
+            subs = _subjects()
+            return {"content": f"I don't have subject {subject} -- the dataset "
+                               f"has subjects {subs[0]}-{subs[-1]}."}
+        return {"content": _subject_menu(subject)}
 
     if kind == intent_router.EXPLAIN:
         text = analysis.define(intent.term)
@@ -247,6 +300,15 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
 
 def _dataset_turn(user_text: str, previous: dict | None) -> dict:
     intent = intent_router.route(user_text)
+
+    # Mid-conversation, "what about subject 5?" is a follow-up asking for the
+    # same reading on someone else, not a request to start over -- so the menu
+    # is only offered when there is no previous window to carry a time from.
+    if (intent.kind == intent_router.MENU and previous
+            and previous.get("t_start") is not None):
+        intent = intent_router.Intent(kind=intent_router.READING,
+                                      subjects=intent.subjects)
+
     if intent.kind != intent_router.READING:
         return _analysis_turn(user_text, intent, previous)
 
@@ -303,8 +365,12 @@ def _dataset_turn(user_text: str, previous: dict | None) -> dict:
 
     seg, fs = _load_subject_segment(subject, side)
     forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
+    reading = _plain_reading(result, subject_reference(subject), t_start,
+                             float(seg.t[-1]) if seg.t.size else None,
+                             f"Subject {subject}")
 
-    return {"features": result, "chart_html": chart_html, "forecast": forecast,
+    return {"features": result, "reading": reading,
+            "chart_html": chart_html, "forecast": forecast,
             "forecast_chart_html": forecast_chart_html, "user_text": user_text,
             "window": window}
 
@@ -352,8 +418,15 @@ def _upload_turn(user_text: str, uploaded_file) -> dict:
         seg, mdf_t, mdf_v, title=f"Uploaded: {uploaded_file.name}")
 
     forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
+    try:
+        reference = upload_reference(cache["baseline"])
+    except Exception:
+        reference = None
+    reading = _plain_reading(result, reference, t_start, duration,
+                             "This recording")
 
-    return {"features": result, "chart_html": chart_html, "forecast": forecast,
+    return {"features": result, "reading": reading,
+            "chart_html": chart_html, "forecast": forecast,
             "forecast_chart_html": forecast_chart_html, "user_text": user_text,
             "window": {"t_start": t_start, "source": "upload",
                        "name": uploaded_file.name}}
@@ -406,13 +479,23 @@ def _finalize(turn: dict) -> dict:
 
     try:
         content = chat([{"role": "user",
-                        "content": build_prompt(features, user_text, forecast, window)}],
+                        "content": build_prompt(features, user_text, forecast,
+                                                window, turn.get("reading"))}],
                        model=st.session_state.model)
     except LLMError as e:
-        content = (f"{features['fatigue_state']} "
-                  f"(median frequency {features['mdf_hz']:.1f} Hz, "
-                  f"confidence {features['confidence'] * 100:.1f}%). "
-                  f"[LLM phrasing unavailable: {e}]")
+        # The fallback is what a reader actually sees whenever Ollama is slow,
+        # missing, or not yet installed on the server -- so it states the
+        # plain-language reading too, not a bare dump of hertz.
+        reading = turn.get("reading")
+        if reading and reading.get("lines"):
+            content = ("\n".join(f"- {line}" for line in reading["lines"])
+                       + f"\n\n_{reading['technical']}_"
+                       + f"\n\n[LLM phrasing unavailable: {e}]")
+        else:
+            content = (f"{features['fatigue_state']} "
+                      f"(median frequency {features['mdf_hz']:.1f} Hz, "
+                      f"confidence {features['confidence'] * 100:.1f}%). "
+                      f"[LLM phrasing unavailable: {e}]")
 
     recommendation = None
     if wants_recommendation(user_text):
@@ -426,8 +509,8 @@ def _finalize(turn: dict) -> dict:
     return {"content": content, "chart_html": turn.get("chart_html"),
             "forecast_chart_html": turn.get("forecast_chart_html"),
             "recommendation": recommendation, "provenance": _provenance(window, features),
-            "features": features, "forecast": forecast, "user_text": user_text,
-            "window": window}
+            "features": features, "reading": turn.get("reading"),
+            "forecast": forecast, "user_text": user_text, "window": window}
 
 
 def _provenance(window: dict | None, features: dict) -> str | None:
@@ -488,6 +571,7 @@ def _regenerate() -> None:
         chat_obj["messages"].pop()
 
     turn = {"features": ctx["features"], "forecast": ctx.get("forecast"),
+           "reading": ctx.get("reading"),
            "user_text": ctx["user_text"], "chart_html": ctx.get("chart_html"),
            "forecast_chart_html": ctx.get("forecast_chart_html"),
            "window": ctx.get("window")}

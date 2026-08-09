@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 import extract
 
 READING = "reading"          # classify one window -- the original behaviour
+MENU = "menu"                # a subject named, but nothing specific asked
 COMPARE = "compare"          # two subjects, or the two arms of one subject
 ONSET = "onset"              # when does fatigue set in
 OVERVIEW = "overview"        # how does one recording develop start to finish
@@ -98,6 +99,27 @@ def _term_for(text: str) -> str | None:
     return None
 
 
+# An open-ended request about a subject: "tell me about subject 13", "subject
+# 13", "subject 13 info". These name a person but no question, and answering
+# them with a single window's numbers guesses at what was wanted.
+_VAGUE_RE = re.compile(
+    r"^\s*(?:tell me about|about|info(?:rmation)? (?:on|about)|show me|"
+    r"look at|check|analyse|analyze|how(?:'s| is| about)|what about|"
+    r"data (?:on|for)|anything (?:on|about))?\s*"
+    r"(?:subject|subj|participant|person|athlete|s)?\s*"
+    r"[#-]?\s*(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen)\s*[?.!]*\s*$", re.IGNORECASE)
+
+
+def is_vague_subject_request(text: str, subjects: list[int]) -> bool:
+    """True when a subject is named but nothing specific is asked about it."""
+    if len(subjects) != 1:
+        return False
+    if extract.t_start_from_text(text, None) is not None:
+        return False
+    return bool(_VAGUE_RE.match(text or ""))
+
+
 def route(user_query: str) -> Intent:
     """Classify one message. Precedence is deliberate and top-to-bottom."""
     text = user_query or ""
@@ -127,5 +149,12 @@ def route(user_query: str) -> Intent:
 
     if _OVERVIEW_RE.search(text):
         return Intent(kind=OVERVIEW, subjects=subjects)
+
+    # Checked last, so anything that names a real question wins over the menu.
+    # The app suppresses this when there is a previous turn to carry a time
+    # from -- mid-conversation, "what about subject 5?" is a follow-up asking
+    # for the same reading, not a request to start over.
+    if is_vague_subject_request(text, subjects):
+        return Intent(kind=MENU, subjects=subjects)
 
     return Intent(kind=READING, subjects=subjects)

@@ -117,6 +117,35 @@ def _subject_baseline(bundle: dict, subject: int) -> tuple[np.ndarray, np.ndarra
     return np.array(bl["mu"], float), np.array(bl["sd"], float)
 
 
+def mdf_reference_from(mu, sd, base_feats: list[str]) -> dict:
+    """The fresh median-frequency reference implied by a baseline.
+
+    A raw "51.2 Hz" tells a reader nothing -- subjects sit anywhere from 59 to
+    81 Hz when fresh, so the same number is unremarkable for one person and a
+    steep fall for another. What is interpretable is the distance from *that
+    person's own* fresh state, which the stored baseline already contains: mu
+    is their fresh mean and sd their fresh spread, both in Hz for the mdf
+    feature. No extra computation -- this is read straight out of the bundle.
+    """
+    i = base_feats.index("mdf")
+    spread = float(sd[i])
+    return {"fresh_mdf": float(mu[i]), "sd_mdf": spread if spread > 0 else None}
+
+
+def subject_reference(subject: int) -> dict:
+    """The stored fresh reference for one of the dataset subjects."""
+    bundle, _ = _load()
+    mu, sd = _subject_baseline(bundle, subject)
+    return mdf_reference_from(mu, sd, bundle["base_feats"])
+
+
+def upload_reference(baseline: dict) -> dict:
+    """The same, for a recording calibrated against its own fresh window."""
+    bundle, _ = _load()
+    return mdf_reference_from(baseline["mu"], baseline["sd"],
+                              bundle["base_feats"])
+
+
 def available_subjects() -> list[int]:
     """Subject ids that have a stored calibration, so callers can say what
     exists rather than hard-coding "1-13" and going stale if the bundle

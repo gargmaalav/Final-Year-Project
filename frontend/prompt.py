@@ -182,13 +182,18 @@ def ranking_facts(ranking: dict) -> list[str]:
 
 
 def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
-                 window: dict | None = None) -> str:
+                 window: dict | None = None, reading: dict | None = None) -> str:
     """Build the grounding prompt.
 
     `window` names the reading's provenance (which subject/time/side, or that
     it came from an upload) and is stated in the answer on purpose. Without it
     a follow-up like "and at 90 seconds?" produces an answer that never says
     which window it used, so a wrong resolution is invisible to the reader.
+
+    `reading` is interpret.py's plain-language view of the same numbers
+    ({"lines": [...], "technical": str}). Optional, so the contract's original
+    signature still works; when absent the prompt falls back to stating the
+    raw values as it always did.
     """
     forecast_line = (
         f"- fatigue trend: {forecast['summary']}\n" if forecast and forecast.get("ok") else ""
@@ -210,6 +215,21 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         if calib else ""
     )
 
+    # The plain-language lines lead. Raw Hz and confidence are still handed
+    # over, but last and labelled as secondary: a reader who is not on this
+    # project cannot do anything with "51.2 Hz", because median frequency has
+    # no absolute meaning across people. What they can use is how far the
+    # person has moved from their own fresh state.
+    plain = reading.get("lines") if reading else None
+    plain_block = ("\n".join(f"- {line}" for line in plain) + "\n") if plain else (
+        f"- fatigue state: {features['fatigue_state']}\n"
+        f"- median frequency: {features['mdf_hz']:.1f} Hz\n"
+        f"- model confidence: {features['confidence'] * 100:.1f}%\n")
+    technical = reading.get("technical") if reading else None
+    technical_block = (f"\nRaw figures, secondary -- include at most one of "
+                       f"these and only if the question asked for numbers:\n"
+                       f"- {technical}\n") if technical else ""
+
     return (
         "You are an assistant reporting the result of a lab sensor reading "
         "(muscle fatigue from an EMG sensor) -- this is a factual "
@@ -217,18 +237,32 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         "and expected to state it plainly. Ground your answer ONLY in the "
         "measured values below -- do not invent, adjust, or round "
         "differently any number that isn't listed here.\n\n"
+        "The reader is NOT a signal-processing specialist. Lead with what the "
+        "result means for the person, in ordinary words. Do not open with "
+        "hertz or with the phrase 'median frequency'.\n\n"
         f"Measured result:\n"
         f"{where_line}"
-        f"- fatigue state: {features['fatigue_state']}\n"
-        f"- median frequency: {features['mdf_hz']:.1f} Hz\n"
-        f"- model confidence: {features['confidence'] * 100:.1f}%\n"
+        f"{plain_block}"
         f"{calib_line}"
-        f"{forecast_line}\n"
+        f"{forecast_line}"
+        f"{technical_block}\n"
         f"User question: {user_query}\n\n"
-        f"Answer in 1-4 sentences. {say_where}State the fatigue state and "
-        f"confidence plainly. {say_calib}Mention the trend only if it's "
-        "relevant to the question or a forecast is provided above. If the "
-        "question also asks for sport or training suggestions, ignore that "
-        "part here -- it is answered separately; just report the measured "
-        "fatigue result."
+        f"Answer in 2-4 sentences of plain English. {say_where}Say whether "
+        "the muscle is fatigued, how far through the effort the reading is, "
+        "and how far the signal has moved from that person's own fresh level. "
+        f"{say_calib}Mention the trend only if it's relevant to the question "
+        "or a forecast is provided above. If the question also asks for sport "
+        "or training suggestions, ignore that part here -- it is answered "
+        "separately; just report the measured fatigue result.\n\n"
+        "Three rules, each added after the model broke it:\n"
+        "1. Report the fatigue verdict as given. Do NOT argue with it, "
+        "soften it, or conclude the person is fine, performing well, or "
+        "unaffected when the verdict says fatigued. Where a note says the "
+        "verdict and the median-frequency marker disagree, report that as a "
+        "caveat ON the verdict -- the verdict still stands.\n"
+        "2. Never call the confidence figure certainty. Do not write 'the "
+        "model is 100% certain' or 'definitely'. It is the model's own "
+        "confidence in its call, and it is not a measure of correctness.\n"
+        "3. Use the percentages exactly as written. Do not convert them into "
+        "fractions or approximations -- 89% must not become 'three-quarters'."
     )
