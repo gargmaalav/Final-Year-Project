@@ -125,7 +125,11 @@ def _mentioned_numbers(text: str) -> set[float]:
 # cue-anchored slot extraction
 # --------------------------------------------------------------------------
 _NUM_WORD = "|".join(list(_TENS) + list(_TEENS) + list(_UNITS))
-_NUM = rf"(\d+|(?:{_NUM_WORD})(?:[\s-]+(?:{'|'.join(_UNITS)}))?)"
+# Decimals must be part of the number itself. Without `(?:\.\d+)?` the pattern
+# matched "60" in "60.5 seconds", failed on the "." that followed, then
+# re-matched further along and read the reading as 5 seconds -- a silently
+# wrong window, which is the exact failure mode this module exists to stop.
+_NUM = rf"(\d+(?:\.\d+)?|(?:{_NUM_WORD})(?:[\s-]+(?:{'|'.join(_UNITS)}))?)"
 
 # A subject number must sit next to a word that means "subject". Without this
 # cue, "at 60 seconds for subject 13" can bind 60 to the subject slot: the
@@ -246,6 +250,10 @@ def _t_start_from_text(text: str, duration: float | None) -> float | None:
             continue
         value = _number_token(m.group(1))
         if value is not None:
+            # a leading minus is kept so the caller can reject it, rather than
+            # silently reading "-5 seconds" as 5 seconds
+            if stripped[:m.start(1)].rstrip().endswith("-"):
+                value = -value
             return _to_seconds(value, m.group(2))
     if re.search(r"\b(?:a|one)\s+minute\s+and\s+a\s+half\b", stripped, re.I):
         return 90.0

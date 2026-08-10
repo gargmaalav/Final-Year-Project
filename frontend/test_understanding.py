@@ -50,6 +50,11 @@ ROUTING = [
     ("subject 9 in the last 30 seconds",             intent.READING, 9, 170.0),
     ("at 60 seconds for subject 13",                 intent.READING, 13, 60.0),
     ("subject 2 half a minute in",                   intent.READING, 2, 30.0),
+    # decimals must belong to the number: "60.5" once matched as "60", failed
+    # on the ".", then re-matched later and read the window as 5 seconds
+    ("subject 13 at 60.5 seconds",                   intent.READING, 13, 60.5),
+    ("subject 4 at 12.25 seconds",                   intent.READING, 4, 12.25),
+    ("subject 13 at 1.5 minutes",                    intent.READING, 13, 90.0),
 
     # --- new question types ----------------------------------------------
     ("when did subject 13 start getting fatigued?",  intent.ONSET, 13, None),
@@ -117,6 +122,8 @@ MUST_ASK = [
 MUST_FLAG = [
     ("what about subject 20?", "subject 20"),
     ("subject 4 at 9999 seconds", "200s"),
+    # a leading minus used to be dropped, so "-5 seconds" read as 5 seconds
+    ("subject 4 at -5 seconds", "negative"),
 ]
 
 
