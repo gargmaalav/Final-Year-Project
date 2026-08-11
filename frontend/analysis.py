@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from classify import classify, classify_many, load_subject_segment
+from classify import (classify, classify_many, load_subject_segment,
+                      subject_reference)
 
 SCAN_STEP_SEC = 5.0        # resolution of a whole-recording scan
 SUSTAIN_WINDOWS = 2        # consecutive fatigue readings before calling it onset
@@ -55,6 +56,17 @@ def scan_recording(subject: int, side: str = "R", seg=None, fs: int | None = Non
             "step": step, "readings": readings}
 
 
+# Measured against the dataset's own ground-truth labels (the end of the
+# non-fatigue span, per loader.fatigue_onsets): MAE 11.8 s over the 11 subjects
+# an onset is actually reported for, 8/11 within +/-15 s.
+#
+# This number matters because it is NOT the scan step. A 5 s step gives 5 s of
+# *precision*, and quoting that as the answer's accuracy overstated it by more
+# than twofold. Reproduce with scripts/validate_onset.py.
+ONSET_MAE_SEC = 11.8
+ONSET_TYPICAL_ERROR_SEC = 12.0
+
+
 def find_onset(scan: dict, sustain: int = SUSTAIN_WINDOWS) -> dict:
     """First time fatigue appears and stays.
 
@@ -65,17 +77,26 @@ def find_onset(scan: dict, sustain: int = SUSTAIN_WINDOWS) -> dict:
     """
     readings = scan["readings"]
     flags = [r["fatigue_label"] in FATIGUE_LABELS for r in readings]
+    base = {"sustain": sustain, "step": scan["step"],
+            "typical_error": ONSET_TYPICAL_ERROR_SEC,
+            "fraction_fatigued": sum(flags) / len(flags) if flags else 0.0}
 
     for i in range(len(flags) - sustain + 1):
         if all(flags[i:i + sustain]):
             r = readings[i]
-            return {"found": True, "t_start": r["t_start"],
+            # Already fatigued at the very first reading. These protocols start
+            # fresh, so this is not an onset at t=0 -- it means the transition
+            # happened before anything was measured, or the classifier is wrong
+            # early. Subject 12 does this: reporting "fatigue set in at 0 s"
+            # against a ground truth of 102 s was the single worst error in the
+            # validation, and stating it as a time is what made it wrong.
+            if i == 0:
+                return {**base, "found": False, "fatigued_from_start": True}
+            return {**base, "found": True, "t_start": r["t_start"],
                     "confidence": r["confidence"], "mdf_hz": r["mdf_hz"],
-                    "sustain": sustain, "step": scan["step"],
-                    "fraction_fatigued": sum(flags) / len(flags)}
+                    "fatigued_from_start": False}
 
-    return {"found": False, "sustain": sustain, "step": scan["step"],
-            "fraction_fatigued": sum(flags) / len(flags) if flags else 0.0}
+    return {**base, "found": False, "fatigued_from_start": False}
 
 
 def summarise(scan: dict) -> dict:
@@ -164,6 +185,17 @@ def compare_subjects(subjects: list[int], t_start: float | None = None,
         r = classify(s, when, side, seg=seg, fs=fs)
         r["t_start"] = when
         r["duration"] = durations[s]
+        # Each subject's own fresh level, because absolute median frequency is
+        # NOT comparable between people -- fresh subjects here span 59 to 81 Hz,
+        # so "5 is at 70 Hz and 9 is at 61 Hz" says nothing about who is more
+        # fatigued. Only the distance from each person's own fresh state does.
+        try:
+            ref = subject_reference(s)
+            r["fresh_mdf"] = ref["fresh_mdf"]
+            r["drop_percent"] = ((ref["fresh_mdf"] - r["mdf_hz"])
+                                 / ref["fresh_mdf"] * 100.0) if ref["fresh_mdf"] else None
+        except Exception:
+            r["fresh_mdf"] = r["drop_percent"] = None
         results[s] = r
 
     return {"kind": "subjects", "subjects": subjects, "side": side,

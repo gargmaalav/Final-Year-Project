@@ -27,6 +27,7 @@ import extract
 
 READING = "reading"          # classify one window -- the original behaviour
 MENU = "menu"                # a subject named, but nothing specific asked
+FOLLOWUP = "followup"        # "why?", "explain that" -- about the last answer
 COMPARE = "compare"          # two subjects, or the two arms of one subject
 ONSET = "onset"              # when does fatigue set in
 OVERVIEW = "overview"        # how does one recording develop start to finish
@@ -120,10 +121,36 @@ def is_vague_subject_request(text: str, subjects: list[int]) -> bool:
     return bool(_VAGUE_RE.match(text or ""))
 
 
+# Questions about the previous answer rather than about new data. Each LLM
+# call is built from scratch with no conversation history, so "why?" used to be
+# routed as a fresh reading -- it re-classified the same window and restated
+# the same answer, never addressing what was asked. These are answered from the
+# previous turn's already-measured numbers instead.
+_FOLLOWUP_RE = re.compile(
+    r"^\s*(why\??|why is that\??|why though\??|how come\??|"
+    r"(?:can you |could you |please )?(?:explain|elaborate|expand)"
+    r"(?: (?:that|this|it|more|further|again))?\??|"
+    r"(?:tell me |say )?more\??|say more|go on|"
+    r"what does that mean\??|what do you mean\??|"
+    r"in (?:simpler|plain|simple|other) (?:terms|words|english)\??|"
+    r"simpler\??|simplify(?: that| this| it)?\??|"
+    r"break (?:that|it) down\??|"
+    r"i don'?t (?:get|understand)(?: that| it)?\??)\s*$", re.IGNORECASE)
+
+
+def is_followup(text: str) -> bool:
+    """True for a question about the previous answer, not about new data."""
+    return bool(_FOLLOWUP_RE.match(text or ""))
+
+
 def route(user_query: str) -> Intent:
     """Classify one message. Precedence is deliberate and top-to-bottom."""
     text = user_query or ""
     subjects = extract.subjects_in_text(text)
+
+    # First: these name no data at all, and any other branch would misread them
+    if is_followup(text):
+        return Intent(kind=FOLLOWUP)
 
     # "what data do you have" -- never about a specific window
     if _CATALOGUE_RE.search(text) and not subjects:

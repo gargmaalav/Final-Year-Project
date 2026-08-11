@@ -32,6 +32,37 @@ def describe_window(window: dict | None) -> str:
             f"at {window['t_start']:.0f}s")
 
 
+def build_followup_prompt(previous_question: str, previous_answer: str,
+                          facts: list[str], user_query: str) -> str:
+    """Re-explain the last answer, from the same measured numbers.
+
+    Every other call is built from scratch with no conversation history, which
+    is right for the grounded answers -- but it means "why?" had nothing to
+    refer to. Rather than threading history through every call (and giving the
+    model a chance to quote stale figures as if freshly measured), the previous
+    exchange is handed over explicitly, with the same facts that produced it,
+    and nothing new is measured.
+    """
+    body = "\n".join(f"- {f}" for f in facts) if facts else "- (none recorded)"
+    return (
+        "You are re-explaining an answer you already gave about a lab EMG "
+        "muscle-fatigue measurement. The reader wants the SAME result "
+        "explained differently -- not a new measurement.\n\n"
+        f"What they originally asked:\n{previous_question}\n\n"
+        f"What you answered:\n{previous_answer}\n\n"
+        f"The measured values that answer came from:\n{body}\n\n"
+        f"They have now said: {user_query}\n\n"
+        "Answer in 2-4 sentences, in plainer language than before, for a "
+        "reader who is not a signal-processing specialist. Explain the "
+        "reasoning behind the result -- what was measured and why it means "
+        "what it means. Use ONLY the values listed above; do not introduce a "
+        "number that is not there, and do not change the conclusion. If they "
+        "asked why, explain the causal chain: a fatiguing muscle's fibres "
+        "conduct more slowly, which shifts the signal's power to lower "
+        "frequencies, which is what the median frequency measures."
+    )
+
+
 def build_facts_prompt(heading: str, facts: list[str], user_query: str,
                        instruction: str) -> str:
     """Grounding prompt for the whole-recording and cross-subject answers.
@@ -67,9 +98,20 @@ def onset_facts(summary: dict) -> list[str]:
             f"fatigue first appears and holds at {onset['t_start']:.0f}s "
             f"(confidence {onset['confidence'] * 100:.0f}%), requiring "
             f"{onset['sustain']} consecutive fatigued readings to count")
+        # The honest figure is the measured error against ground truth, not
+        # the scan step -- the step is precision and is roughly four times
+        # tighter than the accuracy, so quoting it would overstate the answer.
         facts.append(
-            f"because the scan step is {onset['step']:.0f}s, that time is "
-            f"accurate to about ±{onset['step']:.0f}s, not to the second")
+            f"checked against the dataset's own labels, this onset estimate is "
+            f"typically within about {onset.get('typical_error', 20):.0f}s of "
+            "the labelled transition, so give it as an approximate time and do "
+            "not imply it is accurate to the second")
+    elif onset.get("fatigued_from_start"):
+        facts.append(
+            "this recording is already classified as fatigued at its very "
+            "first reading, so there is no onset to report within it -- either "
+            "the transition happened before the recording starts or the early "
+            "readings are wrong. Say that plainly rather than giving a time")
     else:
         facts.append("fatigue never appears and holds for consecutive readings "
                      "anywhere in this recording")
@@ -87,8 +129,12 @@ def overview_facts(summary: dict) -> list[str]:
     if drop is None:
         change = "not enough readings to state a change"
     elif drop > 0:
-        change = (f"median frequency FELL by {drop:.1f} Hz from start to end "
-                  "-- falling is the direction that indicates fatigue")
+        # Spelled out because the model read "a fall in median frequency" as
+        # "a fall in fatigue" -- the exact inversion of what it means.
+        change = (f"median frequency FELL by {drop:.1f} Hz from start to end. "
+                  "A falling median frequency means fatigue INCREASED -- the "
+                  "muscle got more fatigued, not less. Never describe this as "
+                  "a fall or reduction in fatigue")
     elif drop < 0:
         change = (f"median frequency ROSE by {-drop:.1f} Hz from start to end "
                   "-- it did not fall, so this recording does not show the "
@@ -106,8 +152,17 @@ def overview_facts(summary: dict) -> list[str]:
     ]
     onset = summary["onset"]
     if onset["found"]:
-        facts.append(f"fatigue sets in around {onset['t_start']:.0f}s "
-                     f"(±{onset['step']:.0f}s)")
+        # the measured error against ground truth, not the scan step -- the
+        # same overclaim onset_facts() had
+        # "within 12s of" became "12s after" when phrased -- which asserts a
+        # direction the measurement does not claim (the error runs both ways)
+        facts.append(
+            f"fatigue sets in around {onset['t_start']:.0f}s. Call this "
+            "approximate; do not state how far off it is or in which "
+            "direction")
+    elif onset.get("fatigued_from_start"):
+        facts.append("already classified as fatigued at the very first "
+                     "reading, so no onset time can be given for it")
     return facts
 
 
@@ -134,13 +189,33 @@ def compare_facts(comparison: dict) -> list[str]:
     else:
         facts.append(f"all subjects read at {comparison['t_start']:.0f}s")
 
+    # Absolute median frequency is not comparable between people: fresh
+    # subjects in this dataset span 59-81 Hz, so whoever happens to sit higher
+    # is not thereby less fatigued. Handing over raw Hz alone got exactly that
+    # wrong conclusion ("5 is at 70 Hz, 9 at 61 Hz, so 5 is more fatigued"), so
+    # the drop from each person's own fresh level is given and named as the
+    # thing to compare.
+    facts.append(
+        "IMPORTANT: compare the subjects on how far each has dropped from "
+        "their OWN fresh level, not on their raw hertz values. A higher or "
+        "lower median frequency than someone else means nothing on its own, "
+        "because everyone starts at a different level")
+
     side = "right" if comparison["side"] == "R" else "left"
     facts.append(f"{side} arm")
     for s, r in comparison["results"].items():
         state = "fatigued" if r["fatigue_label"] in (1, 2) else "not fatigued"
+        drop = r.get("drop_percent")
+        drop_txt = ""
+        if drop is not None:
+            drop_txt = (f", down {drop:.0f}% from their own fresh level of "
+                        f"{r['fresh_mdf']:.1f} Hz" if drop >= 0 else
+                        f", UP {abs(drop):.0f}% on their own fresh level of "
+                        f"{r['fresh_mdf']:.1f} Hz (not the fatigue direction)")
         facts.append(f"subject {s} (recording {r['duration']:.0f}s, read at "
                      f"{r['t_start']:.0f}s): {state}, median frequency "
-                     f"{r['mdf_hz']:.1f} Hz, confidence {r['confidence'] * 100:.0f}%")
+                     f"{r['mdf_hz']:.1f} Hz{drop_txt}, confidence "
+                     f"{r['confidence'] * 100:.0f}%")
     if comparison.get("clamped"):
         facts.append("recording shorter than the time asked about, so the last "
                      "window was used for subject(s): "

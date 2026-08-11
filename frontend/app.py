@@ -46,7 +46,8 @@ import history                                   # noqa: E402
 import intent as intent_router                   # noqa: E402
 import interpret                                 # noqa: E402
 from llm import LLMError, chat, list_models      # noqa: E402
-from prompt import (build_facts_prompt, build_prompt,  # noqa: E402
+from prompt import (build_facts_prompt, build_followup_prompt,  # noqa: E402
+                    build_prompt,
                     compare_facts, describe_window, onset_facts,
                     overview_facts, ranking_facts)
 from recommend import build_recommendation_prompt, wants_recommendation  # noqa: E402
@@ -80,6 +81,15 @@ if "last_turn_context" not in st.session_state:
     st.session_state.last_turn_context = None
 if "last_params" not in st.session_state:
     st.session_state.last_params = None   # last resolved {subject, t_start, side}
+if "last_answer" not in st.session_state:
+    # {question, answer, facts} for the previous turn, whatever kind it was --
+    # this is what "why?" and "explain that" are asking about. Kept separately
+    # from last_turn_context, which only ever holds single-window readings.
+    st.session_state.last_answer = None
+if "draft" not in st.session_state:
+    st.session_state.draft = None         # suggestion staged for review, not sent
+if "draft_nonce" not in st.session_state:
+    st.session_state.draft_nonce = 0      # forces the draft box to take a new value
 
 
 # ---------------------------------------------------------------------------
@@ -168,52 +178,103 @@ def _needs_subject_msg() -> str:
             f"{subs[0]}-{subs[-1]}.")
 
 
-def _catalogue_text() -> str:
+def _catalogue_text() -> dict:
     subs = _subjects()
-    return (
+    text = (
         f"I have surface EMG recordings for {len(subs)} subjects "
         f"(numbered {subs[0]}-{subs[-1]}), each with a right and a left biceps "
         "recording. They're efforts held to exhaustion, so the recordings vary "
         "a lot in length -- from about 25 seconds to about 8 minutes.\n\n"
-        "Things you can ask me:\n"
-        "- a reading at a moment: *\"is subject 13 fatigued at 60 seconds?\"*\n"
-        "- in plain terms: *\"how about subject 5 near the end?\"*\n"
-        "- when it set in: *\"when did subject 13 start fatiguing?\"*\n"
-        "- the whole recording: *\"summarise subject 7\"*\n"
-        "- side by side: *\"compare subject 5 and 9\"*, *\"left vs right for subject 4\"*\n"
-        "- the field: *\"which subject fatigued the most?\"*\n"
-        "- the forecast: *\"will subject 2 get more tired over the next minute?\"*\n"
-        "- definitions: *\"what does median frequency mean?\"*\n\n"
-        "You can also attach your own EMG recording as a CSV with the + button.")
+        "Pick one to try it, or attach your own EMG recording as a CSV with "
+        "the + button.")
+    suggestions = [
+        ("A reading at a moment", "is subject 13 fatigued at 60 seconds?"),
+        ("In plain terms", "how about subject 5 near the end?"),
+        ("When fatigue set in", "when did subject 13 start fatiguing?"),
+        ("A whole recording", "summarise subject 7"),
+        ("Two subjects", "compare subject 5 and 9"),
+        ("Left vs right", "which arm is worse for subject 4?"),
+        ("Across everyone", "which subject fatigued the most?"),
+        ("A forecast", "will subject 2 get more tired over the next minute?"),
+        ("A definition", "what does median frequency mean?"),
+    ]
+    return {"content": text, "suggestions": suggestions}
 
 
-def _subject_menu(subject: int) -> str:
+def _subject_menu(subject: int) -> dict:
     """What can be asked about one subject.
 
     Shown when a subject is named but nothing specific is asked. Answering
     that with one window's numbers guesses at the question; this states the
-    couple of facts that are cheap to get, then offers the real options in the
-    reader's words rather than ours.
+    couple of facts that are cheap to get, then offers the real options.
+
+    The options come back as (label, prompt) pairs rather than baked into the
+    markdown, so the UI can offer them as buttons that fill the draft box.
     """
     duration = _duration_of(subject, "R")
     length = (f"Their right-arm recording is {duration:.0f} seconds long"
               if duration else "I have a right and a left arm recording for them")
-    return (
+    other = 9 if subject != 9 else 5
+    text = (
         f"**Subject {subject}** — what would you like to know?\n\n"
         f"{length}, and it's an effort held until exhaustion, so they start "
         "fresh and fatigue as it goes.\n\n"
-        "- **Are they fatigued at a particular moment?** — *\"is subject "
-        f"{subject} fatigued at 60 seconds?\"* or *\"subject {subject} near "
-        "the end\"*\n"
-        f"- **When did fatigue set in?** — *\"when did subject {subject} "
-        "start fatiguing?\"*\n"
-        f"- **How did the whole effort go?** — *\"summarise subject {subject}\"*\n"
-        f"- **Which arm held up better?** — *\"which arm is worse for subject "
-        f"{subject}?\"*\n"
-        f"- **What happens next?** — *\"will subject {subject} get more tired "
-        "over the next minute?\"*\n"
-        f"- **How do they compare?** — *\"compare subject {subject} and 9\"*\n\n"
-        "Or just ask in your own words.")
+        "Pick one below to fill it in — you can edit it before sending — or "
+        "just ask in your own words.")
+    suggestions = [
+        ("Fatigued at a moment?", f"is subject {subject} fatigued at 60 seconds?"),
+        ("How about near the end?", f"subject {subject} near the end"),
+        ("When did fatigue set in?", f"when did subject {subject} start fatiguing?"),
+        ("How did the whole effort go?", f"summarise subject {subject}"),
+        ("Which arm held up better?", f"which arm is worse for subject {subject}?"),
+        ("What happens next?",
+         f"will subject {subject} get more tired over the next minute?"),
+        ("How do they compare?", f"compare subject {subject} and {other}"),
+    ]
+    return {"content": text, "suggestions": suggestions}
+
+
+def _ranking_answer(ranking: dict) -> dict:
+    """The league table, rendered directly rather than phrased by the LLM.
+
+    An ordered ranking is data, not prose. Asked to restate one, llama3.2:3b
+    reliably mangled it -- it named "1, 4, 10" as the top three when the real
+    order was 1, 11, 2, and quoted drops of 20.0, 11.8, 15.0, which is not
+    even descending. Explicitly instructing it to preserve the order did not
+    fix that. Rendering it here makes the answer both correct and instant,
+    which is the same trade the catalogue and definitions already take.
+    """
+    results, ranked = ranking["results"], ranking["ranked"]
+    if not ranked:
+        return {"content": "I don't have enough usable recordings to rank."}
+
+    side = "right" if ranking["side"] == "R" else "left"
+    lines = [
+        f"Ranked by how far each subject's median frequency fell between "
+        f"{ranking['early_fraction'] * 100:.0f}% and "
+        f"{ranking['late_fraction'] * 100:.0f}% of their own recording "
+        f"({side} arm). A bigger fall means more fatigue developed over the "
+        "effort — the recordings differ in length, so comparing them at the "
+        "same fraction of each person's effort is fairer than at the same "
+        "absolute second.\n",
+    ]
+    for rank, s in enumerate(ranked, start=1):
+        r = results[s]
+        drop = r["mdf_drop"]
+        moved = (f"fell {drop:.1f} Hz" if drop > 0 else
+                 f"**rose** {-drop:.1f} Hz" if drop < 0 else "did not change")
+        state = "" if r["fatigue_label"] in (1, 2) else ", not fatigued at the late reading"
+        lines.append(f"{rank}. **Subject {s}** — {moved} "
+                     f"({r['mdf_early']:.1f} → {r['mdf_late']:.1f} Hz){state}")
+
+    top = ranked[0]
+    lines.append(f"\n**Subject {top}** fatigued the most, with a "
+                 f"{results[top]['mdf_drop']:.1f} Hz fall.")
+    if ranking.get("excluded"):
+        excluded = ", ".join(str(s) for s in ranking["excluded"])
+        lines.append(f"Excluded as too short to show a fatigue arc: "
+                     f"subject {excluded}.")
+    return {"content": "\n".join(lines)}
 
 
 def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
@@ -221,7 +282,7 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
     kind = intent.kind
 
     if kind == intent_router.CATALOGUE:
-        return {"content": _catalogue_text()}
+        return _catalogue_text()
 
     if kind == intent_router.MENU:
         subject = intent.subjects[0]
@@ -229,11 +290,11 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
             subs = _subjects()
             return {"content": f"I don't have subject {subject} -- the dataset "
                                f"has subjects {subs[0]}-{subs[-1]}."}
-        return {"content": _subject_menu(subject)}
+        return _subject_menu(subject)
 
     if kind == intent_router.EXPLAIN:
         text = analysis.define(intent.term)
-        return {"content": text} if text else {"content": _catalogue_text()}
+        return {"content": text} if text else _catalogue_text()
 
     if kind in (intent_router.ONSET, intent_router.OVERVIEW):
         subject = _subject_for(intent, previous)
@@ -257,6 +318,7 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
             "much of the recording was classified as fatigued.")
         return {"prompt": build_facts_prompt(
                     "Measured results:", facts, user_text, instruction),
+                "facts": facts,
                 "window": {"subject": subject, "side": side, "source": "dataset",
                            "kind": kind},
                 "user_text": user_text}
@@ -286,20 +348,31 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
     else:
         # a superlative over the whole field ("which subject fatigued most?")
         side = extract.side_from_text(user_text) or "R"
-        comparison = _cached_ranking(side)
-        facts = ranking_facts(comparison)
-        instruction = ("Answer in 3-5 sentences. Name the top few and the "
-                       "bottom few with their median-frequency drops, and "
-                       "state in one clause what the ranking is based on. "
-                       "Mention any excluded subject.")
+        return _ranking_answer(_cached_ranking(side))
 
     return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
                                          instruction),
+            "facts": facts, "window": None, "user_text": user_text}
+
+
+def _followup_turn(user_text: str) -> dict:
+    """"why?" / "explain that" -- re-explain the last answer, measure nothing new."""
+    last = st.session_state.last_answer
+    if not last or not last.get("answer"):
+        return {"content": (
+            "There's nothing to explain yet — ask me about a subject first, "
+            "then say \"why?\" and I'll unpack that answer.")}
+    return {"prompt": build_followup_prompt(
+                last.get("question") or "(their previous question)",
+                last["answer"], last.get("facts") or [], user_text),
             "window": None, "user_text": user_text}
 
 
 def _dataset_turn(user_text: str, previous: dict | None) -> dict:
     intent = intent_router.route(user_text)
+
+    if intent.kind == intent_router.FOLLOWUP:
+        return _followup_turn(user_text)
 
     # Mid-conversation, "what about subject 5?" is a follow-up asking for the
     # same reading on someone else, not a request to start over -- so the menu
@@ -468,11 +541,13 @@ def _finalize(turn: dict) -> dict:
                                        .split("User question:", 1)[0].strip())
         return {"content": content, "chart_html": turn.get("chart_html"),
                 "forecast_chart_html": None, "recommendation": None,
+                "facts": turn.get("facts"),
                 "user_text": turn.get("user_text"), "window": turn.get("window")}
 
     if "features" not in turn:
         return {"content": turn["content"], "chart_html": None,
-                "forecast_chart_html": None, "recommendation": None}
+                "forecast_chart_html": None, "recommendation": None,
+                "suggestions": turn.get("suggestions")}
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
     window = turn.get("window")
@@ -547,7 +622,16 @@ def _handle_turn(user_text: str, uploaded_file) -> None:
 
     chat_obj["messages"].append({"role": "assistant", **final})
     st.session_state.last_turn_context = final if "features" in final else None
-    # remember the resolved window so the next turn can say "and at 90 seconds?"
+    # Kept for every kind of answer, not just readings, so "why?" works after an
+    # onset or comparison too. A follow-up is not itself something to follow up
+    # on, so it does not overwrite the answer it was explaining.
+    if final.get("content") and not intent_router.is_followup(user_text or ""):
+        st.session_state.last_answer = {
+            "question": display_text,
+            "answer": final["content"],
+            "facts": (final.get("facts")
+                      or (final.get("reading") or {}).get("lines")),
+        }
     # remember the resolved window so the next turn can say "and at 90 seconds?".
     # Analysis turns (onset/overview) name a subject but no single time, so the
     # previous time is kept rather than dropped -- otherwise asking "summarise
@@ -657,7 +741,19 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 st.title("EMG Fatigue Chatbot")
 
-for msg in st.session_state.chat["messages"]:
+def _stage(prompt_text: str) -> None:
+    """Put a suggestion in the draft box rather than sending it.
+
+    st.chat_input has no `value` parameter in Streamlit 1.60, so a suggestion
+    cannot be typed into the real chat box. Staging it in an editable field
+    gives the same thing that actually matters: the wording is filled in for
+    you, and nothing is sent until you have read it and pressed send.
+    """
+    st.session_state.draft = prompt_text
+    st.session_state.draft_nonce += 1
+
+
+for i, msg in enumerate(st.session_state.chat["messages"]):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg.get("provenance"):
@@ -668,6 +764,14 @@ for msg in st.session_state.chat["messages"]:
             st.iframe(msg["forecast_chart_html"], height=420)
         if msg.get("recommendation"):
             st.info(msg["recommendation"])
+        suggestions = msg.get("suggestions") or []
+        if suggestions:
+            for row_start in range(0, len(suggestions), 3):
+                row = suggestions[row_start:row_start + 3]
+                for col, (label, prompt_text) in zip(st.columns(len(row)), row):
+                    col.button(label, key=f"sug_{i}_{row_start}_{label}",
+                               use_container_width=True,
+                               on_click=_stage, args=(prompt_text,))
 
 messages = st.session_state.chat["messages"]
 if (messages and messages[-1]["role"] == "assistant" and st.session_state.last_turn_context):
@@ -675,11 +779,29 @@ if (messages and messages[-1]["role"] == "assistant" and st.session_state.last_t
         _regenerate()
         st.rerun()
 
+# The staged suggestion: filled in, editable, and not sent until you say so.
+if st.session_state.draft is not None:
+    with st.container(border=True):
+        st.caption("Check or edit this, then send it:")
+        edited = st.text_input(
+            "Staged question", value=st.session_state.draft,
+            key=f"draft_box_{st.session_state.draft_nonce}",
+            label_visibility="collapsed")
+        col_send, col_cancel, _ = st.columns([1, 1, 4])
+        if col_send.button("Send", type="primary", use_container_width=True):
+            st.session_state.draft = None
+            _handle_turn(edited, None)
+            st.rerun()
+        if col_cancel.button("Cancel", use_container_width=True):
+            st.session_state.draft = None
+            st.rerun()
+
 chat_value = st.chat_input(
     "Ask about a subject, e.g. \"Is subject 13 fatigued at 60 seconds on the "
     "right side?\", or attach your own EMG recording (+ button).",
     accept_file=True, file_type=["csv"])
 
 if chat_value is not None:
+    st.session_state.draft = None
     _handle_turn(chat_value.text, chat_value.files[0] if chat_value.files else None)
     st.rerun()
