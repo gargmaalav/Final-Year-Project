@@ -20,12 +20,62 @@ don't have a forecast.
 """
 from __future__ import annotations
 
+import re
+
+# Labels that mark a fact as carrying an instruction to the model. The fact
+# itself is still readable once the label is gone.
+_FACT_LABELS = (
+    "CONCLUSION -- state this as the answer: ",
+    "CAVEAT -- state it exactly this way round: ",
+    "IMPORTANT: ",
+    "WARNING: ",
+)
+
+# Prefix for a "fact" that is purely an instruction about how to phrase the
+# others -- it states nothing measured, so the offline fallback drops it whole
+# rather than trying to salvage a sentence from it.
+MODEL_ONLY = "NOTE (phrasing, not for the reader): "
+
+# Sentences addressed to the model rather than to the reader. They exist
+# because the 3B model broke each of these rules at least once, but showing
+# them to a person -- which is what the offline fallback did -- reads as the
+# system talking to itself.
+_DIRECTIVE = re.compile(
+    r"^\s*(do not|don't|never|say (?:this|so|that)|state (?:this|that|it|the)|"
+    r"give this|call this|treat |mention |use only)", re.IGNORECASE)
+
+
+def readable_facts(facts: list[str]) -> list[str]:
+    """The measured facts with the model-facing instructions taken out.
+
+    Used when the LLM is unavailable and the raw numbers are shown directly.
+    Without this the fallback printed lines like "Do not reverse this, and do
+    not recompute it from the hertz values" straight to the reader.
+    """
+    out = []
+    for fact in facts or []:
+        if fact.startswith(MODEL_ONLY):
+            continue
+        for label in _FACT_LABELS:
+            if fact.startswith(label):
+                fact = fact[len(label):]
+                break
+        kept = [s for s in re.split(r"(?<=[.!?])\s+", fact.strip())
+                if s and not _DIRECTIVE.match(s)]
+        text = " ".join(kept).strip(" ,;-")
+        if text:
+            out.append(text)
+    return out
+
 
 def describe_window(window: dict | None) -> str:
     """Plain-English name for the window that was actually classified."""
     if not window:
         return ""
     if window.get("source") == "upload":
+        # a whole-recording answer (onset, summary) names no single moment
+        if window.get("t_start") is None:
+            return f"the uploaded recording ({window.get('name', 'your file')})"
         return f"the uploaded recording at {window['t_start']:.0f}s"
     side = "right" if window.get("side", "R").upper() == "R" else "left"
     return (f"subject {window['subject']}, {side} arm, "
@@ -85,12 +135,44 @@ def build_facts_prompt(heading: str, facts: list[str], user_query: str,
     )
 
 
+def _whose(summary: dict) -> str:
+    """Names the recording a whole-recording answer is about.
+
+    An upload has no subject number and no side -- it is one file someone
+    attached -- so the dataset phrasing cannot just be reused with a blank in
+    it.
+    """
+    if summary.get("subject") is None:
+        return summary.get("name") or "the uploaded recording"
+    side = "right" if summary.get("side") == "R" else "left"
+    return f"subject {summary['subject']}, {side} arm"
+
+
+# An uploaded file is measured against a baseline taken from its own opening
+# seconds, on the assumption the person started fresh. That assumption is
+# unverifiable here, and the accuracy figures quoted for the dataset subjects
+# were measured with stored baselines, so they do not carry over.
+def _self_calibration_facts(summary: dict) -> list[str]:
+    if not summary.get("self_calibrated"):
+        return []
+    return [
+        "this recording has no stored calibration, so its fresh reference was "
+        "computed from its own opening seconds, assuming the person started "
+        "unfatigued -- if they did not, every reading here is shifted",
+        MODEL_ONLY + "state that caveat in one short clause. Do not quote an "
+        "accuracy or error figure for this recording: none has been measured "
+        "for self-calibrated files",
+    ]
+
+
 def onset_facts(summary: dict) -> list[str]:
     onset = summary["onset"]
     facts = [
-        f"subject {summary['subject']}, {'right' if summary['side'] == 'R' else 'left'} arm",
+        _whose(summary),
         f"recording length: {summary['duration']:.0f}s",
-        f"scanned every {summary['step']:.0f}s ({summary['n_readings']} readings)",
+        # :g not :.0f -- the step is 2.5s, and rounding it to "every 2s" in the
+        # answer misstates the resolution the scan actually ran at
+        f"scanned every {summary['step']:g}s ({summary['n_readings']} readings)",
         f"fatigued for {summary['fraction_fatigued'] * 100:.0f}% of the recording",
     ]
     if onset["found"]:
@@ -98,14 +180,31 @@ def onset_facts(summary: dict) -> list[str]:
             f"fatigue first appears and holds at {onset['t_start']:.0f}s "
             f"(confidence {onset['confidence'] * 100:.0f}%), requiring "
             f"{onset['sustain']} consecutive fatigued readings to count")
-        # The honest figure is the measured error against ground truth, not
-        # the scan step -- the step is precision and is roughly four times
-        # tighter than the accuracy, so quoting it would overstate the answer.
-        facts.append(
-            f"checked against the dataset's own labels, this onset estimate is "
-            f"typically within about {onset.get('typical_error', 20):.0f}s of "
-            "the labelled transition, so give it as an approximate time and do "
-            "not imply it is accurate to the second")
+        if onset.get("error_measured", True):
+            # The honest figure is the measured error against ground truth, not
+            # the scan step -- the step is precision and is roughly four times
+            # tighter than the accuracy, so quoting it would overstate the answer.
+            facts.append(
+                f"checked against the dataset's own labels, this onset estimate is "
+                f"typically within about {onset.get('typical_error', 20):.0f}s of "
+                "the labelled transition, so give it as an approximate time and do "
+                "not imply it is accurate to the second")
+        else:
+            facts.append(
+                "give this as an approximate time only. How close it is to the "
+                "true transition has been measured for the dataset subjects but "
+                "NOT for uploaded recordings, so do not quote any error figure")
+        if onset.get("inside_baseline"):
+            # The reference was built from the opening seconds; an onset inside
+            # that span was detected against a stretch that already contained
+            # the fatigue it was meant to detect.
+            facts.append(
+                f"WARNING: this onset falls inside the first "
+                f"{onset['baseline_sec']:.0f}s, which is the very stretch used "
+                "as the fresh reference. That means the comparison is against a "
+                "period that already contained fatigue, so the time is "
+                "unreliable -- say clearly that it should not be trusted and "
+                "that a recording starting from genuine rest is needed")
     elif onset.get("fatigued_from_start"):
         facts.append(
             "this recording is already classified as fatigued at its very "
@@ -115,11 +214,10 @@ def onset_facts(summary: dict) -> list[str]:
     else:
         facts.append("fatigue never appears and holds for consecutive readings "
                      "anywhere in this recording")
-    return facts
+    return facts + _self_calibration_facts(summary)
 
 
 def overview_facts(summary: dict) -> list[str]:
-    side = "right" if summary["side"] == "R" else "left"
     # Stated as "fell by X" / "rose by X" rather than a signed number.
     # mdf_drop is start-minus-end, so a *positive* value means the frequency
     # went DOWN -- handing "+10.2 Hz" to the model got it phrased as an
@@ -143,8 +241,10 @@ def overview_facts(summary: dict) -> list[str]:
         change = "median frequency did not change from start to end"
 
     facts = [
-        f"subject {summary['subject']}, {side} arm, {summary['duration']:.0f}s long",
-        f"scanned every {summary['step']:.0f}s ({summary['n_readings']} readings)",
+        f"{_whose(summary)}, {summary['duration']:.0f}s long",
+        # :g not :.0f -- the step is 2.5s, and rounding it to "every 2s" in the
+        # answer misstates the resolution the scan actually ran at
+        f"scanned every {summary['step']:g}s ({summary['n_readings']} readings)",
         f"median frequency at the start: {summary['mdf_start']:.1f} Hz",
         f"median frequency at the end: {summary['mdf_end']:.1f} Hz",
         change,
@@ -163,11 +263,105 @@ def overview_facts(summary: dict) -> list[str]:
     elif onset.get("fatigued_from_start"):
         facts.append("already classified as fatigued at the very first "
                      "reading, so no onset time can be given for it")
-    return facts
+    return facts + _self_calibration_facts(summary)
+
+
+def _drop_phrase(r: dict) -> str:
+    """"down 12% from their own fresh level of 70.1 Hz", or the rise case."""
+    drop = r.get("drop_percent")
+    if drop is None:
+        return ""
+    if drop >= 0:
+        return (f", down {drop:.0f}% from their own fresh level of "
+                f"{r['fresh_mdf']:.1f} Hz")
+    return (f", UP {abs(drop):.0f}% on their own fresh level of "
+            f"{r['fresh_mdf']:.1f} Hz (not the fatigue direction)")
+
+
+def _verdict(entries: list[tuple[str, dict]], close_within: float = 2.0) -> list[str]:
+    """Who is more fatigued, decided in Python and handed over as the answer.
+
+    Asked to work this out from two rows of similar-looking numbers,
+    llama3.2:3b got it wrong in a way that is not a phrasing slip: given 21%
+    and 4%, it reported "8% and 4%" -- inventing one of the two values -- and
+    then attached the wrong caveat to the wrong party. It is the same failure
+    the ranking answer had. A comparison between measured values is arithmetic,
+    so it is done here, and the model is left only to phrase a conclusion it
+    has been given.
+    """
+    scored = [(name, r["drop_percent"]) for name, r in entries
+              if r.get("drop_percent") is not None]
+    if len(scored) < 2:
+        return []
+    scored.sort(key=lambda e: -e[1])
+    (top, top_drop), (bottom, bottom_drop) = scored[0], scored[-1]
+
+    if abs(top_drop - bottom_drop) < close_within:
+        # Inside the noise the classifier itself carries; naming a winner here
+        # would be reporting a difference the measurement cannot support.
+        return [f"CONCLUSION -- state this as the answer: {top} and {bottom} "
+                f"are close ({top_drop:.0f}% and {bottom_drop:.0f}% below "
+                "their own fresh levels). That gap is too small to call one "
+                "more fatigued than the other, so say they are similar"]
+    return [f"CONCLUSION -- state this as the answer: {top} is further from "
+            f"their own fresh level than {bottom} ({top_drop:.0f}% below "
+            f"versus {bottom_drop:.0f}% below), so {top} is the more "
+            "fatigued of the two. Do not reverse this, and do not recompute "
+            "it from the hertz values"]
 
 
 def compare_facts(comparison: dict) -> list[str]:
     facts = []
+    if comparison["kind"] == "upload_vs_subject":
+        up, s = comparison["upload"], comparison["subject_result"]
+        side = "right" if comparison["side"] == "R" else "left"
+        subject = comparison["subject"]
+        # "your recording", not "the uploaded recording": the file belongs to
+        # the person asking, and they ask in the first person ("how do I
+        # compare to subject 1?"). Given the detached label the model lost
+        # track of whose numbers were whose and answered that it did not have
+        # the user's results -- while they were listed directly above.
+        facts = [
+            f"your recording (the file you uploaded) compared against subject "
+            f"{subject} ({side} arm)",
+            MODEL_ONLY + "'your recording' means the person asking this "
+            "question. Address them as 'you' and 'your'",
+            f"both read at {comparison['fraction'] * 100:.0f}% of the way "
+            "through their own recording, because the two recordings are "
+            "different lengths",
+            "IMPORTANT: compare them on how far each has dropped from their "
+            "OWN fresh level, never on their raw hertz values -- everyone "
+            "starts at a different level, so a higher or lower reading than "
+            "someone else means nothing by itself",
+        ]
+        entries = [("your recording", up), (f"subject {subject}", s)]
+        for label, r in entries:
+            state = "fatigued" if r["fatigue_label"] in (1, 2) else "not fatigued"
+            facts.append(
+                f"{label} (recording {r['duration']:.0f}s, read at "
+                f"{r['t_start']:.0f}s): {state}, median frequency "
+                f"{r['mdf_hz']:.1f} Hz{_drop_phrase(r)}, confidence "
+                f"{r['confidence'] * 100:.0f}%")
+        # A wider "too close to call" band than the dataset comparison uses.
+        # There, both fresh levels are measured. Here one of them is an
+        # assumption about the file's opening seconds, and a few percentage
+        # points of difference cannot outrank that uncertainty.
+        facts += _verdict(entries, close_within=5.0)
+        # The asymmetry is the whole caveat, and it runs in ONE direction. The
+        # model stated it backwards -- crediting the dataset subject with the
+        # assumed baseline -- so it is worded to name only the upload.
+        facts.append(
+            "CAVEAT -- state it exactly this way round: your recording's "
+            "fresh level was assumed from its own opening seconds, so if you "
+            "did not start rested, your drop is understated. Subject "
+            f"{subject}'s fresh level is not assumed; it comes from the "
+            "labelled dataset. Never say the dataset subject's baseline was "
+            "assumed or estimated")
+        if comparison.get("short"):
+            facts.append("the uploaded recording is also too short to show a "
+                         "full fatigue arc, so treat it with extra caution")
+        return facts
+
     if comparison["kind"] == "sides":
         facts.append(f"subject {comparison['subject']}, both arms compared at "
                      f"{comparison['t_start']:.0f}s")
@@ -205,17 +399,12 @@ def compare_facts(comparison: dict) -> list[str]:
     facts.append(f"{side} arm")
     for s, r in comparison["results"].items():
         state = "fatigued" if r["fatigue_label"] in (1, 2) else "not fatigued"
-        drop = r.get("drop_percent")
-        drop_txt = ""
-        if drop is not None:
-            drop_txt = (f", down {drop:.0f}% from their own fresh level of "
-                        f"{r['fresh_mdf']:.1f} Hz" if drop >= 0 else
-                        f", UP {abs(drop):.0f}% on their own fresh level of "
-                        f"{r['fresh_mdf']:.1f} Hz (not the fatigue direction)")
         facts.append(f"subject {s} (recording {r['duration']:.0f}s, read at "
                      f"{r['t_start']:.0f}s): {state}, median frequency "
-                     f"{r['mdf_hz']:.1f} Hz{drop_txt}, confidence "
+                     f"{r['mdf_hz']:.1f} Hz{_drop_phrase(r)}, confidence "
                      f"{r['confidence'] * 100:.0f}%")
+    facts += _verdict([(f"subject {s}", r)
+                       for s, r in comparison["results"].items()])
     if comparison.get("clamped"):
         facts.append("recording shorter than the time asked about, so the last "
                      "window was used for subject(s): "

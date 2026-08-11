@@ -19,10 +19,25 @@ from __future__ import annotations
 
 import numpy as np
 
-from classify import (classify, classify_many, load_subject_segment,
-                      subject_reference)
+from classify import (FRESH_SEC, classify, classify_many, classify_upload_many,
+                      load_subject_segment, subject_reference)
 
-SCAN_STEP_SEC = 5.0        # resolution of a whole-recording scan
+# Both of these were guesses until scripts/tune_onset.py swept them against the
+# dataset's own labels. The step was 5 s, chosen to protect a latency budget
+# that turned out not to exist: the longest recording (subject 11, 491 s)
+# scans in 1.2 s at 2.5 s steps, against an LLM call of 12-25 s. Halving the
+# step more than halved the onset error:
+#
+#     step  sustain    MAE    mean   within 15s
+#      5.0        2   11.8s   +9.0s     8/11      (previous)
+#      2.5        2    5.3s   +2.9s    10/11      (current)
+#      2.5        1   12.1s   -6.1s     9/11
+#      2.5        3   10.9s   +8.8s     8/11
+#
+# Sustain 2 was right; the spacing between those two windows was the problem.
+# Sustain 1 flips the bias negative (it fires on noise, reporting onsets
+# early); 3 or more waits so long for confirmation that it reports late.
+SCAN_STEP_SEC = 2.5        # resolution of a whole-recording scan
 SUSTAIN_WINDOWS = 2        # consecutive fatigue readings before calling it onset
 FATIGUE_LABELS = {1, 2}    # matches app.py's _FATIGUE_STATE mapping
 
@@ -53,18 +68,43 @@ def scan_recording(subject: int, side: str = "R", seg=None, fs: int | None = Non
     times = scan_times(duration, step)
     readings = classify_many(subject, times, side, seg=seg, fs=fs)
     return {"subject": subject, "side": side, "duration": duration,
-            "step": step, "readings": readings}
+            "step": step, "readings": readings, "self_calibrated": False}
+
+
+def scan_upload(seg, fs: int, baseline: dict | None = None,
+                step: float = SCAN_STEP_SEC,
+                name: str = "your recording") -> tuple[dict, dict]:
+    """The same whole-recording scan for a file with no stored baseline.
+
+    Returns (scan, baseline) so the caller can hand the baseline back and
+    avoid recomputing it. The scan carries `self_calibrated`, because every
+    number derived from it is less trustworthy than its dataset equivalent:
+    the reference it is measured against came from this recording's own first
+    60 s, on the assumption that the person started fresh. Nothing here can
+    check that assumption, so it has to travel with the answer.
+    """
+    duration = _duration(seg)
+    times = scan_times(duration, step)
+    readings, baseline = classify_upload_many(seg, fs, times, baseline=baseline)
+    return ({"subject": None, "side": None, "name": name,
+             "duration": duration, "step": step, "readings": readings,
+             "self_calibrated": True,
+             "baseline_sec": float(baseline.get("fresh_sec", FRESH_SEC))},
+            baseline)
 
 
 # Measured against the dataset's own ground-truth labels (the end of the
-# non-fatigue span, per loader.fatigue_onsets): MAE 11.8 s over the 11 subjects
-# an onset is actually reported for, 8/11 within +/-15 s.
+# non-fatigue span, per loader.fatigue_onsets): MAE 5.3 s over the 11 subjects
+# an onset is actually reported for, 10/11 within +/-15 s.
 #
-# This number matters because it is NOT the scan step. A 5 s step gives 5 s of
-# *precision*, and quoting that as the answer's accuracy overstated it by more
-# than twofold. Reproduce with scripts/validate_onset.py.
-ONSET_MAE_SEC = 11.8
-ONSET_TYPICAL_ERROR_SEC = 12.0
+# This number matters because it is NOT the scan step. The step is *precision*;
+# quoting it as the answer's accuracy once overstated the estimate by more than
+# twofold. The quoted figure is rounded up from the measured MAE rather than
+# down, so the answer never claims to be better than it was measured to be.
+# Reproduce with scripts/validate_onset.py; re-derive the settings with
+# scripts/tune_onset.py.
+ONSET_MAE_SEC = 5.3
+ONSET_TYPICAL_ERROR_SEC = 6.0
 
 
 def find_onset(scan: dict, sustain: int = SUSTAIN_WINDOWS) -> dict:
@@ -79,6 +119,13 @@ def find_onset(scan: dict, sustain: int = SUSTAIN_WINDOWS) -> dict:
     flags = [r["fatigue_label"] in FATIGUE_LABELS for r in readings]
     base = {"sustain": sustain, "step": scan["step"],
             "typical_error": ONSET_TYPICAL_ERROR_SEC,
+            # The 11.8 s figure was measured on the dataset subjects, against
+            # their stored baselines. A self-calibrated upload classifies ~3pp
+            # worse per window and its reference is an assumption about the
+            # file's own opening, so that error bar does not transfer.
+            "error_measured": not scan.get("self_calibrated"),
+            "self_calibrated": bool(scan.get("self_calibrated")),
+            "baseline_sec": scan.get("baseline_sec"),
             "fraction_fatigued": sum(flags) / len(flags) if flags else 0.0}
 
     for i in range(len(flags) - sustain + 1):
@@ -92,9 +139,16 @@ def find_onset(scan: dict, sustain: int = SUSTAIN_WINDOWS) -> dict:
             # validation, and stating it as a time is what made it wrong.
             if i == 0:
                 return {**base, "found": False, "fatigued_from_start": True}
+            # An upload's reference is built from its own first `baseline_sec`
+            # seconds, taken on faith as fresh. An onset landing inside that
+            # span means the reading is being compared against a stretch that
+            # already contained the fatigue it is supposed to detect, so the
+            # time is not trustworthy even though the scan produced one.
+            inside = bool(base["self_calibrated"] and base["baseline_sec"]
+                          and r["t_start"] < base["baseline_sec"])
             return {**base, "found": True, "t_start": r["t_start"],
                     "confidence": r["confidence"], "mdf_hz": r["mdf_hz"],
-                    "fatigued_from_start": False}
+                    "inside_baseline": inside, "fatigued_from_start": False}
 
     return {**base, "found": False, "fatigued_from_start": False}
 
@@ -108,6 +162,8 @@ def summarise(scan: dict) -> dict:
 
     return {
         "subject": scan["subject"], "side": scan["side"],
+        "name": scan.get("name"),
+        "self_calibrated": bool(scan.get("self_calibrated")),
         "duration": scan["duration"], "step": scan["step"],
         "n_readings": len(readings),
         "mdf_start": mdf[0] if mdf else None,
@@ -203,6 +259,54 @@ def compare_subjects(subjects: list[int], t_start: float | None = None,
             "durations": durations, "clamped": clamped,
             "short": [s for s in subjects if durations[s] < MIN_MEANINGFUL_SEC],
             "results": results}
+
+
+def compare_upload_to_subject(seg, fs: int, subject: int,
+                              baseline: dict | None = None, side: str = "R",
+                              fraction: float = LATE_FRACTION) -> tuple[dict, dict]:
+    """The uploaded recording against one dataset subject.
+
+    Both are read at the same fraction of their own recording, and both are
+    reported as a percentage below their own fresh level -- the only basis on
+    which two people's EMG can be compared at all, since a raw hertz value
+    means nothing across people.
+
+    The two fresh levels are not equally trustworthy and the answer has to say
+    so: the subject's comes from the labelled dataset, while the upload's is
+    assumed from its own opening seconds. If the person did not start the
+    recording rested, their "drop" is understated by however much fatigue was
+    already there.
+    """
+    from classify import classify_upload, upload_reference
+
+    up_duration = _duration(seg)
+    up_when = up_duration * fraction
+    up_result, baseline = classify_upload(seg, fs, up_when, baseline=baseline)
+    up_ref = upload_reference(baseline)
+    up_result["t_start"] = up_when
+    up_result["duration"] = up_duration
+    up_result["fresh_mdf"] = up_ref.get("fresh_mdf")
+    up_result["drop_percent"] = (
+        (up_ref["fresh_mdf"] - up_result["mdf_hz"]) / up_ref["fresh_mdf"] * 100.0
+        if up_ref.get("fresh_mdf") else None)
+
+    seg_s, fs_s = load_subject_segment(subject, side)
+    s_duration = _duration(seg_s)
+    s_when = s_duration * fraction
+    s_result = classify(subject, s_when, side, seg=seg_s, fs=fs_s)
+    s_result["t_start"] = s_when
+    s_result["duration"] = s_duration
+    try:
+        ref = subject_reference(subject)
+        s_result["fresh_mdf"] = ref["fresh_mdf"]
+        s_result["drop_percent"] = ((ref["fresh_mdf"] - s_result["mdf_hz"])
+                                    / ref["fresh_mdf"] * 100.0) if ref["fresh_mdf"] else None
+    except Exception:
+        s_result["fresh_mdf"] = s_result["drop_percent"] = None
+
+    return ({"kind": "upload_vs_subject", "subject": subject, "side": side,
+             "fraction": fraction, "upload": up_result, "subject_result": s_result,
+             "short": up_duration < MIN_MEANINGFUL_SEC}, baseline)
 
 
 def rank_subjects(subjects: list[int], side: str = "R") -> dict:

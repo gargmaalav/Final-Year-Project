@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import extract          # noqa: E402
 import intent           # noqa: E402
+import recommend        # noqa: E402
 
 SUBJECTS = list(range(1, 14))
 DURATION = 200.0        # stand-in recording length for the anchor cases
@@ -117,6 +118,46 @@ MUST_ASK = [
     "is it fatigued?",
 ]
 
+# After a file is uploaded, the next question arrives with no file attached.
+# It must still be answered about that recording, unless it names a subject or
+# asks something the dataset owns.
+STAYS_ON_UPLOAD = [
+    ("when did I start fatiguing?", True),
+    ("summarise my recording", True),
+    ("am I fatigued at 100 seconds", True),
+    ("how did it go overall", True),
+    ("what about near the end", True),
+    ("recommend a training plan", True),
+    # names a subject, but the upload is the other half of the comparison
+    ("compare me to subject 5", True),
+    ("how do I compare to subject 9", True),
+    # back to the dataset
+    ("is subject 13 fatigued at 60 seconds", False),
+    ("compare subject 5 and 9", False),
+    ("which arm is worse for subject 4", False),
+    ("what does median frequency mean?", False),
+    ("what data do you have?", False),
+    ("why?", False),
+    ("explain that", False),
+]
+
+# The sport/training block is gated on keywords, and several of those words
+# have a second, machine-learning meaning. "What training data was used" is a
+# question about the project; answering it with a diet plan is the kind of
+# thing that makes the tool look unserious in a demo.
+RECOMMEND = [
+    ("what sport would suit me", True),
+    ("recommend a training plan", True),
+    ("any diet suggestions for subject 4", True),
+    ("what gym work should I do", True),
+    ("what training data was used?", False),
+    ("how was the model trained", False),
+    ("which subjects were in the training set", False),
+    ("what was it trained on", False),
+    ("is subject 13 fatigued at 60 seconds", False),
+    ("when did subject 4 start fatiguing", False),
+]
+
 # Out-of-range input must produce a stated correction, not a silent fallback
 # to the previous turn's window.
 MUST_FLAG = [
@@ -187,6 +228,22 @@ def main() -> int:
             failed += 1
             failures.append(f"  {question!r} invented {resolved.params} instead "
                             "of asking")
+
+    for question, want in STAYS_ON_UPLOAD:
+        if intent.stays_on_upload(question) == want:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r} after an upload should have gone "
+                            f"to the {'upload' if want else 'dataset'}")
+
+    for question, want in RECOMMEND:
+        if recommend.wants_recommendation(question) == want:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r} should {'' if want else 'not '}"
+                            "have triggered the sport/training block")
 
     for question, expect_in_message in MUST_FLAG:
         resolved = extract.resolve_query(question, {"subject": 13, "t_start": 60.0,

@@ -12,6 +12,14 @@ general fitness/sports knowledge turns those into suggestions -- same
 already applies to plain fatigue answers, extended to a richer prompt that's
 explicit about which parts are measured and which are the LLM's general
 knowledge.
+
+What it hands the model is the *interpreted* reading (interpret.py), not the
+raw figures. Handing over "median frequency 51.2 Hz" invited exactly the
+mistake the comparison answers made: 51.2 Hz means nothing on its own -- fresh
+subjects in this dataset sit between 59 and 81 Hz -- so a model reasoning
+about "endurance" from an absolute value is reasoning from a number that has
+no scale. Percentage below that person's own fresh level does have a scale,
+and that is what a training suggestion can defensibly rest on.
 """
 from __future__ import annotations
 
@@ -21,35 +29,115 @@ _KEYWORDS = re.compile(
     r"\b(sport|recommend|suggest|suggestion|plan|diet|nutrition|gym|"
     r"training|workout|exercise|good at|suitable|suited)\b", re.IGNORECASE)
 
+# The same words in their machine-learning sense. "What training data was
+# used?" and "how was the model trained?" are questions about the project, and
+# answering them with a diet plan is the kind of thing that makes the whole
+# tool look unserious in a demo.
+_DATA_SENSE = re.compile(
+    r"\b(training|test|validation|holdout)\s+(data|set|split|sample\w*|"
+    r"subject\w*|window\w*)\b|"
+    r"\bhow (?:was|is|did you) .{0,20}train\w*\b|\btrained on\b|"
+    r"\btrain(?:ed|ing)? the (?:model|classifier|network|lstm)\b",
+    re.IGNORECASE)
+
 
 def wants_recommendation(text: str) -> bool:
+    text = text or ""
+    if _DATA_SENSE.search(text):
+        return False
     return bool(_KEYWORDS.search(text))
+
+
+DISCLAIMER = ("_This is a general, educational suggestion from a single "
+              "biceps EMG reading — not medical, professional coaching, or "
+              "nutrition advice._")
+
+
+def ensure_disclaimer(text: str) -> str:
+    """Append the disclaimer when the model left it out.
+
+    The prompt asks for it and usually gets it, but "usually" is not a
+    standard to hold this to: llama3.2:3b dropped it outright on one of three
+    sampled answers. It is a fixed string, so there is no reason for it to
+    depend on the model complying.
+    """
+    if not text:
+        return text
+    if "not medical" in text.lower():
+        return text
+    return f"{text.rstrip()}\n\n{DISCLAIMER}"
+
+
+def _measured_block(features: dict, reading: dict | None,
+                    forecast: dict | None) -> str:
+    """The measured facts, stated the way a non-specialist can use them."""
+    lines = []
+
+    if reading and reading.get("lines"):
+        lines += [f"- {line}" for line in reading["lines"]]
+    else:
+        # No stored baseline for this recording, so there is no fresh level to
+        # measure against and the hertz figure carries no scale. Say so rather
+        # than presenting it as if it were interpretable.
+        lines.append(f"- fatigue state: {features['fatigue_state']}")
+        lines.append(
+            f"- median frequency {features['mdf_hz']:.1f} Hz, with no fresh "
+            "baseline available for this recording, so this figure cannot be "
+            "read as high or low and must not be described as either")
+        lines.append(
+            f"- the model's own certainty in that call is "
+            f"{features['confidence'] * 100:.0f}%")
+
+    if forecast and forecast.get("ok") and forecast.get("summary"):
+        lines.append(f"- fatigue trend: {forecast['summary']}")
+
+    return "\n".join(lines)
 
 
 def build_recommendation_prompt(features: dict, forecast: dict | None,
                                 user_query: str,
-                                athlete_note: str | None = None) -> str:
-    forecast_line = (forecast.get("summary", "") if forecast and forecast.get("ok")
-                     else "No fatigue-trend forecast available for this reading.")
-    note_line = (f"The user says: \"{athlete_note}\"\n" if athlete_note else "")
+                                athlete_note: str | None = None,
+                                reading: dict | None = None) -> str:
+    note_line = (f"They also say: \"{athlete_note}\"\n\n" if athlete_note else "")
 
     return (
-        "You are a fitness-education assistant. A single-arm biceps EMG "
-        "reading was just measured. Here is the measured data -- treat these "
-        "specific numbers as fact, do not change or re-derive them:\n\n"
-        f"- fatigue state: {features['fatigue_state']}\n"
-        f"- median frequency: {features['mdf_hz']:.1f} Hz\n"
-        f"- model confidence: {features['confidence'] * 100:.1f}%\n"
-        f"- fatigue trend: {forecast_line}\n\n"
+        "You are a fitness-education assistant talking to someone with no "
+        "background in signal processing. One biceps EMG reading from one arm "
+        "has just been measured. These measured facts are already worked out "
+        "-- restate them as given, do not recalculate or reinterpret them:\n\n"
+        f"{_measured_block(features, reading, forecast)}\n\n"
         f"{note_line}"
-        f"User question: {user_query}\n\n"
-        "Using your own general knowledge of sports science, fitness and "
-        "nutrition (there is no dataset backing sport-suitability claims, so "
-        "this part is genuinely your general knowledge, not measured data), "
-        "suggest: (1) what kind of sports/activities might suit someone with "
-        "this muscle's endurance/fatigue profile, and (2) a general gym "
-        "training and diet direction to build on it. Keep it to a short "
-        "paragraph or a few bullet points.\n\n"
+        f"Their question: {user_query}\n\n"
+        "Answer in two short parts:\n"
+        "1. In one or two sentences, what this reading says about this "
+        "muscle right now. Start by saying whether it is showing signs of "
+        "fatigue, exactly as the facts above state it. Restate those facts in "
+        "plain words -- do not add your own explanation of what the signal is "
+        "or how it works.\n"
+        "2. Using your own general knowledge of sports science, fitness and "
+        "nutrition, what kinds of activity and what general training and diet "
+        "direction would suit that profile.\n\n"
+        "Rules:\n"
+        "- Part 2 is your general knowledge, not measurement. Say so plainly "
+        "in one short phrase; there is no data in this project linking EMG "
+        "patterns to sport suitability.\n"
+        "- Do not put any hertz figure or percentage in part 2. A training "
+        "suggestion does not follow from those numbers, and restating them "
+        "there implies it does.\n"
+        "- Use only the numbers given above, and keep each one attached to "
+        "the label it was given with. Do not swap the current value and the "
+        "fresh value, and do not invent figures.\n"
+        "- Do not compare this person's numbers to other people, to athletes, "
+        "or to any typical or normal value. The only meaningful reference is "
+        "their own fresh level, which is already accounted for above.\n"
+        "- A percentage stays a percentage. Do not convert it to a fraction "
+        "or a word like 'half' or 'three-quarters'.\n"
+        "- Do not overturn the fatigue verdict given above.\n"
+        "- A falling signal means the muscle's electrical activity has "
+        "shifted towards lower frequencies. Do not describe it as less muscle "
+        "activity, weaker contraction, lower energy, or reduced effort -- it "
+        "is none of those.\n"
+        "- Keep the whole answer under 130 words.\n\n"
         "End with exactly one line stating this is a general, educational "
         "suggestion from a single biceps EMG reading -- not medical, "
         "professional coaching, or nutrition advice."

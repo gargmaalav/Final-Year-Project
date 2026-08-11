@@ -334,6 +334,43 @@ def classify_upload(seg, fs: int, t_start: float, fresh_sec: float = FRESH_SEC,
     return result, baseline
 
 
+def classify_upload_many(seg, fs: int, t_starts, fresh_sec: float = FRESH_SEC,
+                         baseline: dict | None = None) -> tuple[list[dict], dict]:
+    """classify_upload() at several times, computing the baseline once.
+
+    The dataset counterpart of this is classify_many(). Without it, scanning an
+    uploaded recording to answer "when did I start fatiguing?" would recompute
+    the fresh baseline from scratch for every window -- 40-odd feature
+    extractions over the first 60 s each time, for a baseline that cannot
+    change between windows of the same file.
+    """
+    bundle, model = _load()
+    cfg = bundle["config"]
+    base_feats = bundle["base_feats"]
+
+    if baseline is None:
+        baseline = compute_fresh_baseline(seg, fs, cfg, base_feats, fresh_sec)
+    mu, sd = np.array(baseline["mu"], float), np.array(baseline["sd"], float)
+
+    calibration = {
+        "kind": "self-calibrated",
+        "fresh_sec": baseline.get("fresh_sec", fresh_sec),
+        "n_windows": baseline.get("n_windows"),
+        "note": ("baseline computed from this recording's own first "
+                 f"{baseline.get('fresh_sec', fresh_sec):.0f}s, not from a "
+                 "stored per-athlete calibration"),
+    }
+
+    out = []
+    for t_start in t_starts:
+        result = _classify_window(seg, fs, float(t_start), mu, sd, cfg,
+                                  base_feats, model)
+        result["t_start"] = float(t_start)
+        result["calibration"] = calibration
+        out.append(result)
+    return out, baseline
+
+
 if __name__ == "__main__":
     # smoke test -- needs fatigue_model.pt (train_model.py) + the dataset present.
     # subject 13 is held out of training, so this is a genuine unseen-subject demo.

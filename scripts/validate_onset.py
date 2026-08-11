@@ -11,7 +11,7 @@ The dataset carries its own ground truth: loader.fatigue_onsets() returns the
 end of the labelled non-fatigue span, which is the paper's own marker for when
 fatigue begins. So the estimate can simply be scored against it.
 
-Two findings drove code changes:
+Three findings drove code changes:
 
   - +/-5 s was an overclaim. analysis.ONSET_TYPICAL_ERROR_SEC now carries the
     measured figure and the answer quotes that instead.
@@ -20,19 +20,24 @@ Two findings drove code changes:
     find_onset() now reports that as "fatigued from the start" rather than as
     an onset time, since these protocols begin fresh and a time of 0 s is
     almost certainly wrong rather than merely imprecise.
+  - The remaining error was almost all late bias, and it was the scan step
+    causing it, not the sustain count. scripts/tune_onset.py swept both;
+    halving the step to 2.5 s more than halved the MAE.
 
-Before those changes: n=12, MAE 19.3 s, 8/12 within +/-15 s.
-After (right arm, 5 s scan step, 2 sustained windows):
+    original                   n=12, MAE 19.3 s, 8/12 within +/-15 s
+    after the first two fixes  n=11, MAE 11.8 s, 8/11, mean +9.0 s
+    after the step change      n=11, MAE  5.3 s, 10/11, mean +2.9 s
+
+Current (right arm, 2.5 s scan step, 2 sustained windows):
 
     n = 11 subjects an onset is reported for
-    mean error   +9.0 s
-    median       +2.1 s
-    MAE          11.8 s
-    within +/-15 s   8/11
+    mean error   +2.9 s
+    median       +1.0 s
+    MAE           5.3 s
+    within +/-15 s  10/11
 
-The median is far below the mean, so most subjects are close and a few are
-badly late (subjects 1, 8 and 9 are 24-36 s late). That tail, not the typical
-case, is where the remaining error lives.
+The tail that used to dominate is gone: subjects 1 and 9 were 24-36 s late and
+now sit within 2 s. Subject 8 (+20.7 s) is the only one outside 15 s.
 
 Subject 6 is excluded: its right-arm sEMG file is 24.5 s while its label file
 runs to 221 s, so the two do not describe the same recording.

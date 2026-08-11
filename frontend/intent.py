@@ -143,6 +143,33 @@ def is_followup(text: str) -> bool:
     return bool(_FOLLOWUP_RE.match(text or ""))
 
 
+def stays_on_upload(user_query: str) -> bool:
+    """True when a question with no file attached is still about the upload.
+
+    Streamlit only hands a file over on the turn it is attached, so after
+    "[uploaded run1.csv]" the obvious next question -- "when did I start
+    fatiguing?" -- arrived with no file and fell through to the dataset path,
+    which asked which subject was meant. The conversation should stay on the
+    recording it was last about.
+
+    Two things move it back to the dataset: naming a subject, or asking
+    something the dataset owns. "why?" goes back too, because a follow-up is
+    re-explained from the previous answer's own facts and needs no recording.
+
+    The one exception is "compare me to subject 5": it names a subject but is
+    still about the upload, since the upload is the other half of the
+    comparison. Naming two subjects, or asking about one subject's two arms,
+    is a dataset question again.
+    """
+    intent = route(user_query or "")
+    if intent.kind in (CATALOGUE, EXPLAIN, FOLLOWUP):
+        return False
+    if not intent.subjects:
+        return True
+    return (intent.kind == COMPARE and not intent.both_sides
+            and len(intent.subjects) == 1)
+
+
 def route(user_query: str) -> Intent:
     """Classify one message. Precedence is deliberate and top-to-bottom."""
     text = user_query or ""

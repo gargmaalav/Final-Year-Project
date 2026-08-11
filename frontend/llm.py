@@ -11,7 +11,13 @@ import requests
 
 OLLAMA_BASE = "http://localhost:11434"
 MODEL = "llama3.2:3b"
-TIMEOUT_SEC = 60
+
+# Warm calls to llama3.2:3b measured 12-25 s on a laptop. The risk is not the
+# warm case but the first call after `ollama serve` starts, which also loads
+# the model into memory and can take minutes. 60 s was tight enough to turn
+# that into a visible error in the opening seconds of a demo; a slow answer is
+# better than a failed one, and the timeout message now says which happened.
+TIMEOUT_SEC = 120
 
 
 class LLMError(Exception):
@@ -28,6 +34,7 @@ def chat(messages: list[dict], *, model: str | None = None,
         know whether Ollama is answering at all should pass a short one
         rather than blocking the caller for the full default.
     """
+    waited = TIMEOUT_SEC if timeout is None else timeout
     try:
         r = requests.post(
             f"{OLLAMA_BASE}/api/chat",
@@ -37,8 +44,24 @@ def chat(messages: list[dict], *, model: str | None = None,
                 "stream": False,
                 "options": {"temperature": temperature},
             },
-            timeout=TIMEOUT_SEC if timeout is None else timeout,
+            timeout=waited,
         )
+    # These three failures need three different things from the reader, and
+    # they all used to arrive as the same "could not reach Ollama" wrapped
+    # around a requests traceback -- which reads like the server is down even
+    # when it is running fine and merely loading a model.
+    except requests.Timeout as e:
+        raise LLMError(
+            f"the model did not answer within {waited:.0f}s. The first request "
+            "after starting Ollama also loads the model, which is slow; try "
+            "again and it should be quicker. The measurement above is already "
+            "done either way -- only the wording of the answer is missing"
+        ) from e
+    except requests.ConnectionError as e:
+        raise LLMError(
+            f"nothing is answering at {OLLAMA_BASE}. Start it with `ollama "
+            "serve`, then check the model is pulled with `ollama list`"
+        ) from e
     except requests.RequestException as e:
         raise LLMError(f"could not reach Ollama at {OLLAMA_BASE} ({e})") from e
 

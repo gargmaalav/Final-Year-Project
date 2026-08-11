@@ -49,8 +49,9 @@ from llm import LLMError, chat, list_models      # noqa: E402
 from prompt import (build_facts_prompt, build_followup_prompt,  # noqa: E402
                     build_prompt,
                     compare_facts, describe_window, onset_facts,
-                    overview_facts, ranking_facts)
-from recommend import build_recommendation_prompt, wants_recommendation  # noqa: E402
+                    overview_facts, ranking_facts, readable_facts)
+from recommend import (build_recommendation_prompt,  # noqa: E402
+                       ensure_disclaimer, wants_recommendation)
 from upload import UploadError, load_uploaded_segment, parse_uploaded_csv  # noqa: E402
 
 # matches models/serve.py's _STATE mapping, kept in sync manually since this
@@ -74,7 +75,14 @@ if "sample_rate" not in st.session_state:
 if "athlete_note" not in st.session_state:
     st.session_state.athlete_note = ""
 if "uploads" not in st.session_state:
-    st.session_state.uploads = {}          # key -> {"seg", "fs", "baseline"}
+    st.session_state.uploads = {}          # key -> {"seg", "fs", "baseline", ...}
+if "last_upload" not in st.session_state:
+    # the uploads key of the file most recently attached, so questions on
+    # later turns can still be about it -- Streamlit only hands the file over
+    # on the turn it is actually attached
+    st.session_state.last_upload = None
+if "last_source" not in st.session_state:
+    st.session_state.last_source = None    # "upload" or "dataset"
 if "confirm_clear" not in st.session_state:
     st.session_state.confirm_clear = False
 if "last_turn_context" not in st.session_state:
@@ -277,6 +285,140 @@ def _ranking_answer(ranking: dict) -> dict:
     return {"content": "\n".join(lines)}
 
 
+def _comparison_answer(comparison: dict) -> dict:
+    """A comparison rendered directly, not phrased by the LLM.
+
+    Comparisons have now gone wrong three separate ways in live testing, and
+    none of them was a phrasing slip:
+
+      1. handed two raw hertz values, it concluded the subject with the HIGHER
+         median frequency was more fatigued -- backwards
+      2. handed two drop percentages (21% and 4%), it reported "8% and 4%",
+         inventing one of the two numbers
+      3. handed a pre-computed "these two are too close to call", it ignored
+         that and declared a winner from the percentages anyway
+
+    Fixing 1 and 2 in the prompt worked. 3 did not, and it is the same thing
+    that made the ranking answer deterministic: a 3B model will not decline to
+    draw a conclusion when the numbers to draw it from are in front of it.
+    Deciding in Python and rendering the result makes the answer correct and
+    instant. compare_facts() is still built, so a following "why?" has the
+    measured values to work from.
+    """
+    if comparison["kind"] == "sides":
+        results = comparison["results"]
+        # Both arms are scored against the same stored per-subject baseline,
+        # so here -- and only here -- the raw values are directly comparable.
+        lines = [f"**Subject {comparison['subject']}**, both arms at "
+                 f"{comparison['t_start']:.0f}s "
+                 f"(the length of the shorter recording).\n"]
+        for side in ("R", "L"):
+            r = results.get(side)
+            if not r:
+                continue
+            state = ("**fatigued**" if r["fatigue_label"] in (1, 2)
+                     else "not fatigued")
+            lines.append(f"- **{'Right' if side == 'R' else 'Left'} arm** — "
+                         f"{state}, median frequency {r['mdf_hz']:.1f} Hz "
+                         f"(model confidence {r['confidence'] * 100:.0f}%)")
+        left, right = results.get("L"), results.get("R")
+        if left and right:
+            gap = abs(left["mdf_hz"] - right["mdf_hz"])
+            if gap < 1.0:
+                lines.append("\nThe two arms are level — that difference is "
+                             "too small to read anything into.")
+            else:
+                lower = "left" if left["mdf_hz"] < right["mdf_hz"] else "right"
+                lines.append(
+                    f"\nThe **{lower} arm** is further along, by {gap:.1f} Hz. "
+                    "Both arms are measured against this subject's own stored "
+                    "baseline, so the two figures can be compared directly.")
+        return {"content": "\n".join(lines)}
+
+    # (title, mid-sentence form, possessive, result) -- the uploaded recording
+    # belongs to the person asking, so it is addressed in the second person
+    # while a dataset subject is a third party
+    if comparison["kind"] == "upload_vs_subject":
+        subject = comparison["subject"]
+        entries = [("Your recording", "your recording", "your",
+                    comparison["upload"]),
+                   (f"Subject {subject}", f"subject {subject}", "their",
+                    comparison["subject_result"])]
+        close_within = 5.0
+        head = (f"**Your recording vs. subject {subject}** "
+                f"({'right' if comparison['side'] == 'R' else 'left'} arm), "
+                f"both read {comparison['fraction'] * 100:.0f}% of the way "
+                "through their own recording — the two are different lengths, "
+                "so the same absolute second would not be a fair comparison.\n")
+        tail = [
+            f"\n_Your recording has no stored calibration, so its fresh level "
+            f"was taken from its own first seconds, assuming you started "
+            f"rested. If you did not, your drop is understated. Subject "
+            f"{subject}'s fresh level comes from the labelled dataset._"]
+        if comparison.get("short"):
+            tail.append("_Your recording is also short enough that it may not "
+                        "show a full fatigue arc._")
+    else:
+        results = comparison["results"]
+        entries = [(f"Subject {s}", f"subject {s}", "their", r)
+                   for s, r in results.items()]
+        close_within = 2.0
+        if comparison.get("fraction") is not None:
+            head = (f"Read at {comparison['fraction'] * 100:.0f}% of the way "
+                    "through each subject's own recording — these are efforts "
+                    "to exhaustion and the recordings differ in length, so "
+                    "that is a fairer comparison than the same absolute "
+                    "second.\n")
+        else:
+            head = f"All read at {comparison['t_start']:.0f}s.\n"
+        tail = []
+        if comparison.get("clamped"):
+            tail.append("_Shorter than the time asked about, so the last "
+                        "window was used: subject "
+                        + ", ".join(str(s) for s in comparison["clamped"]) + "._")
+        if comparison.get("short"):
+            tail.append("_Too short to show a fatigue arc, treat with caution: "
+                        "subject "
+                        + ", ".join(str(s) for s in comparison["short"]) + "._")
+
+    lines = [head]
+    for title, _mid, possessive, r in entries:
+        state = "**fatigued**" if r["fatigue_label"] in (1, 2) else "not fatigued"
+        drop = r.get("drop_percent")
+        if drop is None:
+            moved = "no fresh level available to measure against"
+        elif drop >= 0:
+            moved = (f"**{drop:.0f}% below** {possessive} own fresh level "
+                     f"({r['fresh_mdf']:.1f} → {r['mdf_hz']:.1f} Hz)")
+        else:
+            moved = (f"**{abs(drop):.0f}% above** {possessive} own fresh level "
+                     f"({r['fresh_mdf']:.1f} → {r['mdf_hz']:.1f} Hz), which is "
+                     "not the direction fatigue moves it")
+        lines.append(f"- **{title}** — {state}, {moved}")
+
+    scored = sorted(((t, m, p, r["drop_percent"]) for t, m, p, r in entries
+                     if r.get("drop_percent") is not None),
+                    key=lambda e: -e[3])
+    if len(scored) >= 2:
+        (top, top_mid, top_poss, top_drop) = scored[0]
+        (_bottom, bottom_mid, _bp, bottom_drop) = scored[-1]
+        if abs(top_drop - bottom_drop) < close_within:
+            lines.append(f"\n{top_mid.capitalize()} and {bottom_mid} are "
+                         f"level — {top_drop:.0f}% against {bottom_drop:.0f}% "
+                         "is too small a gap to call one more fatigued than "
+                         "the other.")
+        else:
+            lines.append(f"\n**{top}** is the more fatigued of the two — "
+                         f"{top_drop:.0f}% below {top_poss} own fresh level "
+                         f"against {bottom_drop:.0f}%.")
+        lines.append("\nThey're compared on how far each has fallen from "
+                     "their *own* fresh level, not on the raw hertz: everyone "
+                     "starts somewhere different, so one person's reading "
+                     "being higher than another's means nothing by itself.")
+
+    return {"content": "\n".join(lines + tail)}
+
+
 def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
     """Handle every question that isn't a single-window reading."""
     kind = intent.kind
@@ -323,15 +465,17 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
                            "kind": kind},
                 "user_text": user_text}
 
-    # comparisons
+    # comparisons -- rendered directly, see _comparison_answer for why. The
+    # facts still travel so a following "why?" has the measured values.
     if intent.both_sides:
         subject = _subject_for(intent, previous)
         if subject is None:
             return {"content": _needs_subject_msg()}
+        if subject not in _subjects():
+            subs = _subjects()
+            return {"content": f"I don't have subject {subject} -- the dataset "
+                               f"has subjects {subs[0]}-{subs[-1]}."}
         comparison = _cached_compare_sides(subject, None)
-        facts = compare_facts(comparison)
-        instruction = ("Answer in 2-4 sentences. Say which arm is more "
-                       "fatigued and by how much, or that they are similar.")
     elif len(intent.subjects) >= 2:
         subjects = [s for s in intent.subjects if s in _subjects()]
         if len(subjects) < 2:
@@ -340,19 +484,13 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
         side = extract.side_from_text(user_text) or "R"
         t_start = extract.t_start_from_text(user_text, None)
         comparison = _cached_compare_subjects(tuple(subjects), t_start, side)
-        facts = compare_facts(comparison)
-        instruction = ("Answer in 2-4 sentences. Say which subject is more "
-                       "fatigued and on what basis. If the subjects were read "
-                       "at a fraction of their own recordings rather than the "
-                       "same absolute time, say so in one clause.")
     else:
         # a superlative over the whole field ("which subject fatigued most?")
         side = extract.side_from_text(user_text) or "R"
         return _ranking_answer(_cached_ranking(side))
 
-    return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
-                                         instruction),
-            "facts": facts, "window": None, "user_text": user_text}
+    return {**_comparison_answer(comparison), "facts": compare_facts(comparison),
+            "window": None, "user_text": user_text}
 
 
 def _followup_turn(user_text: str) -> dict:
@@ -464,9 +602,111 @@ def _upload_turn(user_text: str, uploaded_file) -> dict:
         except Exception as e:      # malformed CSVs must not crash the app
             return {"content": f"Couldn't read that file ({type(e).__name__}: {e})"}
         fs = int(getattr(seg, "eff_fs", 250))
-        cache = {"seg": seg, "fs": fs, "baseline": None}
+        cache = {"seg": seg, "fs": fs, "baseline": None, "name": uploaded_file.name,
+                 "scan": None}
         st.session_state.uploads[key] = cache
 
+    # Remembered so the NEXT question can still be about this file. Streamlit
+    # only hands the file over on the turn it is attached, so without this
+    # "when did I start fatiguing?" straight after an upload fell through to
+    # the dataset path and asked which subject was meant.
+    st.session_state.last_upload = key
+    return _upload_question(user_text, cache)
+
+
+def _upload_question(user_text: str, cache: dict) -> dict:
+    """Any question about an already-loaded uploaded recording."""
+    intent = intent_router.route(user_text or "")
+    if intent.kind in (intent_router.ONSET, intent_router.OVERVIEW):
+        return _upload_analysis(user_text, cache, intent.kind)
+    if intent.kind == intent_router.COMPARE:
+        return _upload_compare(user_text, cache, intent)
+    return _upload_reading(user_text, cache)
+
+
+def _upload_compare(user_text: str, cache: dict, intent) -> dict:
+    """The uploaded recording against one named dataset subject.
+
+    Only that shape. An upload is a single channel, so there is no second arm
+    to put it against, and ranking it inside the dataset league table would
+    put an assumed baseline alongside twelve measured ones as if they were
+    equivalent.
+    """
+    subjects = [s for s in intent.subjects if s in _subjects()]
+    if intent.both_sides or len(subjects) != 1:
+        return {"content": (
+            "For an uploaded recording I can only compare it against one "
+            "dataset subject at a time — try \"compare this to subject 5\". "
+            "There's no second arm in the file to compare against, and I "
+            "won't rank it inside the dataset table: those subjects have "
+            "measured baselines and this file's is assumed from its own "
+            "opening seconds, so they aren't like for like.")}
+
+    side = extract.side_from_text(user_text) or "R"
+    try:
+        comparison, baseline = analysis.compare_upload_to_subject(
+            cache["seg"], cache["fs"], subjects[0],
+            baseline=cache["baseline"], side=side)
+    except ValueError as e:
+        return {"content": f"I can't compare that file reliably: {e}"}
+    except Exception as e:
+        return {"content": f"Couldn't run that comparison ({type(e).__name__}: {e})"}
+    cache["baseline"] = baseline
+
+    return {**_comparison_answer(comparison),
+            "facts": compare_facts(comparison), "user_text": user_text,
+            "chart_html": _upload_chart(cache),
+            "window": {"source": "upload", "name": cache["name"],
+                       "kind": "compare"}}
+
+
+def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
+    """Onset and whole-recording summary for an uploaded file.
+
+    Cached on the upload itself rather than through st.cache_data: the segment
+    is a live object in session state, not a hashable cache key, and the scan
+    is the expensive part of both answers.
+    """
+    if cache.get("scan") is None:
+        try:
+            scan, baseline = analysis.scan_upload(
+                cache["seg"], cache["fs"], baseline=cache["baseline"],
+                name=f"the uploaded recording ({cache['name']})")
+        except ValueError as e:
+            return {"content": f"I can't scan that file reliably: {e}"}
+        except Exception as e:
+            return {"content": f"Couldn't scan that recording ({type(e).__name__}: {e})"}
+        cache["baseline"] = baseline
+        cache["scan"] = analysis.summarise(scan)
+
+    summary = cache["scan"]
+    facts = (onset_facts(summary) if kind == intent_router.ONSET
+             else overview_facts(summary))
+    instruction = (
+        "Answer in 2-4 sentences. Say when fatigue set in and how sure the "
+        "reading is, and state plainly that it is approximate."
+        if kind == intent_router.ONSET else
+        "Answer in 3-5 sentences. Describe how the recording develops from "
+        "start to finish, quoting the median frequency at each end and how "
+        "much of the recording was classified as fatigued.")
+    return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
+                                         instruction),
+            "facts": facts, "user_text": user_text,
+            "chart_html": _upload_chart(cache),
+            "window": {"source": "upload", "name": cache["name"], "kind": kind}}
+
+
+def _upload_chart(cache: dict):
+    try:
+        mdf_t, mdf_v, _ = data_loader.mdf_trend(cache["seg"], fs=cache["fs"])
+        return charts.raw_and_mdf_figure(cache["seg"], mdf_t, mdf_v,
+                                         title=f"Uploaded: {cache['name']}")
+    except Exception:
+        return None      # chart is additive; never block the text answer
+
+
+def _upload_reading(user_text: str, cache: dict) -> dict:
+    uploaded_name = cache["name"]
     seg, fs = cache["seg"], cache["fs"]
     duration = float(seg.t[-1]) if seg.t.size else 0.0
     # duration is passed so "near the end" / "halfway" resolve on an upload
@@ -486,10 +726,6 @@ def _upload_turn(user_text: str, uploaded_file) -> dict:
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
 
-    mdf_t, mdf_v, _ = data_loader.mdf_trend(seg, fs=fs)
-    chart_html = charts.raw_and_mdf_figure(
-        seg, mdf_t, mdf_v, title=f"Uploaded: {uploaded_file.name}")
-
     forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
     try:
         reference = upload_reference(cache["baseline"])
@@ -499,10 +735,10 @@ def _upload_turn(user_text: str, uploaded_file) -> dict:
                              "This recording")
 
     return {"features": result, "reading": reading,
-            "chart_html": chart_html, "forecast": forecast,
+            "chart_html": _upload_chart(cache), "forecast": forecast,
             "forecast_chart_html": forecast_chart_html, "user_text": user_text,
             "window": {"t_start": t_start, "source": "upload",
-                       "name": uploaded_file.name}}
+                       "name": uploaded_name}}
 
 
 def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
@@ -536,17 +772,26 @@ def _finalize(turn: dict) -> dict:
             content = chat([{"role": "user", "content": turn["prompt"]}],
                            model=st.session_state.model)
         except LLMError as e:
-            content = (f"[LLM phrasing unavailable: {e}]\n\n"
-                       + turn["prompt"].split("Measured results:", 1)[-1]
-                                       .split("User question:", 1)[0].strip())
+            # Everything above was measured in Python, so the answer is not
+            # lost when the model is -- only its wording is. State the numbers.
+            lines = readable_facts(turn.get("facts") or [])
+            content = ("\n".join(f"- {line}" for line in lines)
+                       + f"\n\n_Couldn't phrase this in prose: {e}_")
         return {"content": content, "chart_html": turn.get("chart_html"),
                 "forecast_chart_html": None, "recommendation": None,
                 "facts": turn.get("facts"),
                 "user_text": turn.get("user_text"), "window": turn.get("window")}
 
     if "features" not in turn:
-        return {"content": turn["content"], "chart_html": None,
+        # Already-final text: the catalogue, a definition, the ranking table,
+        # a comparison, or an error. It still carries its chart, its measured
+        # facts (so a following "why?" has them) and its window (so the next
+        # turn knows whether the conversation is on an upload or the dataset).
+        return {"content": turn["content"],
+                "chart_html": turn.get("chart_html"),
                 "forecast_chart_html": None, "recommendation": None,
+                "facts": turn.get("facts"), "window": turn.get("window"),
+                "user_text": turn.get("user_text"),
                 "suggestions": turn.get("suggestions")}
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
@@ -575,9 +820,11 @@ def _finalize(turn: dict) -> dict:
     recommendation = None
     if wants_recommendation(user_text):
         try:
-            recommendation = chat([{"role": "user", "content": build_recommendation_prompt(
-                features, forecast, user_text, st.session_state.athlete_note or None)}],
-                model=st.session_state.model)
+            recommendation = ensure_disclaimer(chat(
+                [{"role": "user", "content": build_recommendation_prompt(
+                    features, forecast, user_text,
+                    st.session_state.athlete_note or None, turn.get("reading"))}],
+                model=st.session_state.model))
         except LLMError as e:
             recommendation = f"[Recommendation unavailable: {e}]"
 
@@ -610,14 +857,28 @@ def _provenance(window: dict | None, features: dict) -> str | None:
     return " ".join(parts)
 
 
+def _followup_upload(user_text: str) -> dict | None:
+    """The upload this question is still about, or None for the dataset."""
+    if st.session_state.last_source != "upload":
+        return None
+    cache = st.session_state.uploads.get(st.session_state.last_upload)
+    if cache is None:
+        return None
+    return cache if intent_router.stays_on_upload(user_text) else None
+
+
 def _handle_turn(user_text: str, uploaded_file) -> None:
     chat_obj = st.session_state.chat
     display_text = user_text or (f"[uploaded {uploaded_file.name}]" if uploaded_file else "")
     chat_obj["messages"].append({"role": "user", "content": display_text or "(empty message)"})
 
     with st.spinner("Working on it..."):
-        turn = (_upload_turn(user_text, uploaded_file) if uploaded_file is not None
-               else _dataset_turn(user_text, st.session_state.last_params))
+        if uploaded_file is not None:
+            turn = _upload_turn(user_text, uploaded_file)
+        else:
+            cache = _followup_upload(user_text)
+            turn = (_upload_question(user_text, cache) if cache
+                    else _dataset_turn(user_text, st.session_state.last_params))
         final = _finalize(turn)
 
     chat_obj["messages"].append({"role": "assistant", **final})
@@ -637,6 +898,10 @@ def _handle_turn(user_text: str, uploaded_file) -> None:
     # previous time is kept rather than dropped -- otherwise asking "summarise
     # subject 7" mid-conversation would strand the follow-up.
     window = final.get("window")
+    # Which thread the conversation is on now. Only a turn that actually read a
+    # recording moves it -- a definition or a "why?" leaves it where it was.
+    if window and window.get("source") in ("upload", "dataset"):
+        st.session_state.last_source = window["source"]
     if window and window.get("source") == "dataset":
         prev = st.session_state.last_params or {}
         st.session_state.last_params = {
