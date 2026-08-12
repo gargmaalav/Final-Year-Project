@@ -315,19 +315,36 @@ def _():
     assert out.endswith("during an effort."), out
 
 
-@check("a paraphrase of the finding is left alone, not treated as an echo")
+@check("a paragraph opening with the subject's name is a restatement")
 def _():
-    # Only verdict-phrased restatements are stripped. A paragraph that
-    # paraphrases the measurement is mild duplication, and widening the
-    # pattern to catch it would also delete real reasoning -- a genuinely
-    # useful answer opened "This reading falls within their normal fresh
-    # range, indicating that ..."
+    # observed live, duplicating the rendered verdict directly above it
     prose = ("Subject 13 is showing a muscle signal slightly below their "
              "fresh level, which puts this reading within their normal "
              "range.\n\n"
              "For it to count as fatigue the signal would have to fall much "
              "further.")
+    out = interpret.strip_verdict_echo(prose, "Subject 13")
+    assert out.startswith("For it to count"), out
+    # ...and without knowing the name there is nothing safe to match on
     assert interpret.strip_verdict_echo(prose) == prose
+
+
+@check("content-shaped openings survive even with the name known")
+def _():
+    # widening the pattern by wording would have deleted this -- a genuinely
+    # useful answer that opens the same way the restatements describe things
+    prose = ("This reading falls within their normal fresh range, indicating "
+             "the signal has barely moved.\n\n"
+             "They could keep going at this intensity.")
+    assert interpret.strip_verdict_echo(prose, "Subject 13") == prose
+
+
+@check("an upload's answers are de-duplicated too")
+def _():
+    prose = ("This recording is showing a signal below its fresh level.\n\n"
+             "The drop is large enough to count as fatigue.")
+    out = interpret.strip_verdict_echo(prose, "This recording")
+    assert out.startswith("The drop is large"), out
 
 
 @check("stripping echoes never empties an answer")
@@ -506,6 +523,71 @@ def _():
         prompt.overview_facts(_summary(75.0, 57.0, _onset()))))
     assert "FELL by 18.0 Hz" in shown, shown
     assert "Never describe" not in shown, shown
+
+
+# --- conversation state -----------------------------------------------------
+# "+ New chat" cleared two session keys by hand and missed four. A fresh chat
+# inherited the previous one's last answer, so "why?" as the very first
+# message produced a confident explanation of a conversation the reader had
+# never had, quoting figures from it. app.py imports streamlit, so this is
+# checked against the source rather than by running it.
+
+# Session keys that survive a chat change on purpose. Anything NOT listed here
+# must appear in _CONVERSATION_KEYS, which is what forces the choice to be
+# made deliberately.
+_KEEPS_ACROSS_CHATS = {
+    "chat",           # replaced by the caller, not reset
+    "model",          # a UI preference
+    "sample_rate",    # a UI preference
+    "athlete_note",   # a UI preference
+    "uploads",        # a cache keyed by file, unreachable once last_upload goes
+    "confirm_clear",  # transient UI state for one button
+    "draft_nonce",    # bumped rather than cleared, to force the box to redraw
+}
+
+
+@check("every conversation-scoped session key is cleared on a new chat")
+def _():
+    import re as _re
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "app.py"), encoding="utf-8").read()
+    initialised = set(_re.findall(r'if "(\w+)" not in st\.session_state', src))
+    block = _re.search(r"_CONVERSATION_KEYS = \{(.*?)\n\}", src, _re.S)
+    assert block, "could not find _CONVERSATION_KEYS in app.py"
+    reset = set(_re.findall(r'"(\w+)":', block.group(1)))
+
+    missed = initialised - reset - _KEEPS_ACROSS_CHATS
+    assert not missed, (f"session key(s) {sorted(missed)} are never cleared "
+                        "when the chat changes -- add them to "
+                        "_CONVERSATION_KEYS, or to _KEEPS_ACROSS_CHATS here "
+                        "if they genuinely should survive")
+    stale = reset - initialised
+    assert not stale, f"_CONVERSATION_KEYS lists unknown key(s) {sorted(stale)}"
+
+
+@check("both chat-switch paths reset through the shared helper")
+def _():
+    import re as _re
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "app.py"), encoding="utf-8").read()
+    # The original bug was clearing keys inline, one at a time. First-time
+    # initialisers look identical, so only flag an assignment that is NOT
+    # guarded by its own "if not in st.session_state" check.
+    lines = src.splitlines()
+    inline = []
+    for i, line in enumerate(lines):
+        m = _re.match(r"\s*st\.session_state\.(last_\w+) = None\s*$", line)
+        if not m:
+            continue
+        guard = f'if "{m.group(1)}" not in st.session_state:'
+        preceding = [l for l in lines[max(0, i - 6):i]
+                     if l.strip() and not l.strip().startswith("#")]
+        if not preceding or guard not in preceding[-1]:
+            inline.append(line.strip())
+    assert not inline, (f"{inline} cleared inline; use _reset_conversation() "
+                        "so no key is forgotten")
+    assert src.count("_reset_conversation()") >= 4, \
+        "expected the helper at its definition and every chat-switch path"
 
 
 def main() -> int:

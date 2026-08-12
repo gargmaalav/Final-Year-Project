@@ -159,7 +159,8 @@ def _plain_reading(result: dict, reference: dict | None, t_start: float | None,
         return {"lines": interpret.plain_lines(described, who),
                 "prose": interpret.prose_notes(described, who),
                 "verdict": interpret.verdict_sentence(described, who),
-                "technical": interpret.technical_line(described)}
+                "technical": interpret.technical_line(described),
+                "who": who}
     except Exception:
         return None
 
@@ -588,6 +589,31 @@ def _dataset_turn(user_text: str, previous: dict | None) -> dict:
             "window": window}
 
 
+# Everything that describes "the conversation so far". All of it has to be
+# cleared when the chat changes, and listing it in one place is the point:
+# "+ New chat" used to clear two of these by hand and miss the rest, so a
+# fresh chat inherited the previous one's last answer and "why?" explained
+# something that was never said in it -- quoting figures from another
+# conversation entirely. `uploads` is deliberately NOT here: it is a cache
+# keyed by file, expensive to rebuild, and unreachable once last_upload is
+# cleared.
+_CONVERSATION_KEYS = {
+    "last_turn_context": None,   # last single-window reading
+    "last_params": None,         # last resolved subject/time/side
+    "last_answer": None,         # what "why?" refers to
+    "last_upload": None,         # which uploaded file questions are about
+    "last_source": None,         # "upload" or "dataset"
+    "draft": None,               # a staged suggestion, unsent
+}
+
+
+def _reset_conversation() -> None:
+    """Forget the current conversation. Called whenever the chat changes."""
+    for key, value in _CONVERSATION_KEYS.items():
+        st.session_state[key] = value
+    st.session_state.draft_nonce += 1
+
+
 def _upload_key(f) -> str:
     return f"{f.name}:{f.size}"
 
@@ -816,7 +842,7 @@ def _finalize(turn: dict) -> dict:
             # numeric it produces is fabricated -- drop those sentences
             # before the reader ever sees them.
             cleaned, invented = interpret.strip_invented_numbers(
-                interpret.strip_verdict_echo(prose))
+                interpret.strip_verdict_echo(prose, (reading or {}).get("who")))
             content = f"{verdict}\n\n{cleaned}" if cleaned else verdict
         else:
             content = prose
@@ -966,8 +992,7 @@ with st.sidebar:
 
     if st.button("+ New chat", use_container_width=True):
         st.session_state.chat = history.new_chat()
-        st.session_state.last_turn_context = None
-        st.session_state.last_params = None
+        _reset_conversation()
         st.rerun()
 
     st.caption("Chats")
@@ -978,13 +1003,13 @@ with st.sidebar:
         if col_open.button(("• " if is_active else "") + label,
                            key=f"open_{c['id']}", use_container_width=True):
             st.session_state.chat = c
-            st.session_state.last_turn_context = None
-            st.session_state.last_params = None
+            _reset_conversation()
             st.rerun()
         if col_del.button("🗑", key=f"del_{c['id']}"):
             history.delete_chat(c["id"])
             if is_active:
                 st.session_state.chat = history.new_chat()
+                _reset_conversation()
             st.rerun()
         st.caption(history.relative_time(c.get("updated_at", "")))
 

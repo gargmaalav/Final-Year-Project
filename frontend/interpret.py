@@ -314,7 +314,7 @@ _ECHO = re.compile(
 _ECHO_MAX_WORDS = 30
 
 
-def strip_verdict_echo(prose: str) -> str:
+def strip_verdict_echo(prose: str, who: str | None = None) -> str:
     """Drop opening or closing paragraphs that only repeat the rendered verdict.
 
     The verdict is printed directly above the model's text and the prompt says
@@ -322,6 +322,14 @@ def strip_verdict_echo(prose: str) -> str:
     for a not-fatigued reading it restated it at BOTH ends, sandwiching two
     useful sentences between "Subject 13 is showing a muscle signal slightly
     below their fresh level" and "The subject is not fatigued at 65 seconds".
+
+    `who` ("Subject 13", "This recording") catches the rest. A paragraph that
+    opens by naming the subject is restating the finding -- the sentences that
+    actually add something all begin "This reading...", "This small
+    deviation...", "For a change to count...". That is a far better signal
+    than wording, which could not be widened safely: a genuinely useful answer
+    opened "This reading falls within their normal fresh range, indicating
+    that ...", which any content-based pattern would have deleted.
 
     Only short paragraphs that are nothing but the verdict go, and never the
     last remaining one, so this cannot empty an answer or quietly delete
@@ -331,8 +339,13 @@ def strip_verdict_echo(prose: str) -> str:
         return prose
     paras = [p.strip() for p in re.split(r"\n\s*\n", prose.strip()) if p.strip()]
 
+    names = re.compile(rf"^{re.escape(who)}\b\s*('s|is|was|has|shows|had)\b",
+                       re.IGNORECASE) if who else None
+
     def _is_echo(p: str) -> bool:
-        return len(p.split()) <= _ECHO_MAX_WORDS and bool(_ECHO.search(p))
+        if len(p.split()) > _ECHO_MAX_WORDS:
+            return False
+        return bool(_ECHO.search(p)) or bool(names and names.match(p))
 
     while len(paras) > 1 and _is_echo(paras[0]):
         paras.pop(0)
