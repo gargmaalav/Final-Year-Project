@@ -141,6 +141,22 @@ STAYS_ON_UPLOAD = [
     ("explain that", False),
 ]
 
+# An explicit reference to the uploaded file must win over whatever the
+# conversation was last about. "summarise my recording", asked straight after
+# a dataset question, was answered with a dataset subject's numbers.
+NAMES_OWN_RECORDING = [
+    ("summarise my recording", True),
+    ("when did I start fatiguing?", True),
+    ("how do I compare to subject 1", True),
+    ("am I fatigued yet", True),
+    ("what does my file show", True),
+    ("summarise the uploaded recording", True),
+    ("summarise subject 7", False),
+    ("when did subject 4 start fatiguing?", False),
+    ("compare subject 5 and 9", False),
+    ("what does median frequency mean?", False),
+]
+
 # The sport/training block is gated on keywords, and several of those words
 # have a second, machine-learning meaning. "What training data was used" is a
 # question about the project; answering it with a diet plan is the kind of
@@ -236,6 +252,14 @@ def main() -> int:
             failed += 1
             failures.append(f"  {question!r} after an upload should have gone "
                             f"to the {'upload' if want else 'dataset'}")
+
+    for question, want in NAMES_OWN_RECORDING:
+        if intent.names_own_recording(question) == want:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r} should {'' if want else 'not '}"
+                            "have been read as naming the uploaded recording")
 
     for question, want in RECOMMEND:
         if recommend.wants_recommendation(question) == want:

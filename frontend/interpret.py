@@ -305,7 +305,11 @@ def verdict_sentence(reading: dict, who: str) -> str:
 
 _ECHO = re.compile(
     r"(sign|signs) of fatigue|is (not )?fatigued|no signs? of|"
-    r"showing (no|signs)", re.IGNORECASE)
+    # "within their normal fresh range" is deliberately NOT here: a genuinely
+    # useful answer opened "This reading falls within their normal fresh
+    # range, indicating that ...", and the test for that caught this when it
+    # was tried.
+    r"showing (no|signs)|no indication of fatigue", re.IGNORECASE)
 
 
 # A paragraph longer than this is assumed to carry detail beyond the verdict
@@ -354,15 +358,7 @@ def strip_verdict_echo(prose: str, who: str | None = None) -> str:
     return "\n\n".join(paras)
 
 
-# A measurement in the prose: a hertz value, a percentage, a z-score, or any
-# decimal. The model is handed none of these for a reading, so every one of
-# them is fabricated by construction -- no judgement call is involved.
-_INVENTED = re.compile(
-    r"\d+(?:\.\d+)?\s*(?:Hz|hz|%|percent)|\d+\.\d+|"
-    r"\d+(?:\.\d+)?\s*standard deviation", re.IGNORECASE)
-
-
-def strip_invented_numbers(prose: str) -> tuple[str, list[str]]:
+def strip_invented_numbers(prose: str, who: str | None = None) -> tuple[str, list[str]]:
     """Drop sentences quoting measurements the model was never given.
 
     Returns (cleaned prose, the removed sentences).
@@ -374,17 +370,30 @@ def strip_invented_numbers(prose: str) -> tuple[str, list[str]]:
     grounding architecture exists to prevent, so it is removed rather than
     argued with.
 
-    Only whole sentences carrying a fabricated measurement go. A sentence that
+    ANY digit counts, not just one carrying a unit. Restricting it to hertz,
+    percentages and decimals let through "The person's current reading is
+    200s, which is outside their normal fresh range" -- a timestamp lifted
+    from the provenance line and reported as a measurement. The model is told
+    to write in words only, so a bare number is as wrong as a units one.
+
+    `who` is exempted, because the subject's own name legitimately contains
+    digits ("Subject 13"). Only whole sentences go, and a sentence that
     reasons in words survives untouched, which is all the prose is for.
     """
     if not prose:
         return prose, []
 
+    def _has_number(sentence: str) -> bool:
+        probe = sentence
+        if who:
+            probe = re.sub(re.escape(who), "", probe, flags=re.IGNORECASE)
+        return bool(re.search(r"\d", probe))
+
     kept, removed = [], []
     for para in re.split(r"\n\s*\n", prose.strip()):
         sentences = re.split(r"(?<=[.!?])\s+", para.strip())
-        good = [s for s in sentences if not _INVENTED.search(s)]
-        removed += [s for s in sentences if _INVENTED.search(s)]
+        good = [s for s in sentences if not _has_number(s)]
+        removed += [s for s in sentences if _has_number(s)]
         if good:
             kept.append(" ".join(good))
     return "\n\n".join(kept).strip(), removed

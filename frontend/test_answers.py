@@ -402,15 +402,31 @@ def _():
     assert len(invented) == 1, invented
 
 
-@check("percentages and z-scores are stripped too")
+@check("percentages, z-scores and bare numbers are stripped too")
 def _():
     for bad in ("It has fallen by 7% from their fresh level.",
                 "The reading sits at 1.2 standard deviations.",
-                "Their signal is now 58.2 below where it started."):
+                "Their signal is now 58.2 below where it started.",
+                # a timestamp lifted from the provenance line and reported as
+                # a measurement -- observed on an uploaded recording
+                "The person's current reading is 200s, which is outside "
+                "their normal fresh range."):
         cleaned, invented = interpret.strip_invented_numbers(
             "Their muscle signal is below its fresh level. " + bad)
         assert invented, bad
         assert cleaned == "Their muscle signal is below its fresh level.", cleaned
+
+
+@check("the subject's own name may contain digits without being stripped")
+def _():
+    prose = "Subject 13 has moved well outside their usual range."
+    cleaned, invented = interpret.strip_invented_numbers(prose, "Subject 13")
+    assert cleaned == prose, cleaned
+    assert not invented, invented
+    # ...but a real number in the same sentence still goes
+    prose2 = "Subject 13 has fallen to 51 below their usual range."
+    cleaned2, invented2 = interpret.strip_invented_numbers(prose2, "Subject 13")
+    assert not cleaned2 and invented2, (cleaned2, invented2)
 
 
 @check("word-only reasoning is never stripped")

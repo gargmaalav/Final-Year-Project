@@ -841,8 +841,9 @@ def _finalize(turn: dict) -> dict:
             # The model is given no figures for a reading, so anything
             # numeric it produces is fabricated -- drop those sentences
             # before the reader ever sees them.
+            who = (reading or {}).get("who")
             cleaned, invented = interpret.strip_invented_numbers(
-                interpret.strip_verdict_echo(prose, (reading or {}).get("who")))
+                interpret.strip_verdict_echo(prose, who), who)
             content = f"{verdict}\n\n{cleaned}" if cleaned else verdict
         else:
             content = prose
@@ -913,12 +914,17 @@ def _provenance(window: dict | None, features: dict,
 
 def _followup_upload(user_text: str) -> dict | None:
     """The upload this question is still about, or None for the dataset."""
-    if st.session_state.last_source != "upload":
-        return None
     cache = st.session_state.uploads.get(st.session_state.last_upload)
     if cache is None:
         return None
-    return cache if intent_router.stays_on_upload(user_text) else None
+    if not intent_router.stays_on_upload(user_text):
+        return None
+    # Normally the conversation stays on whatever it was last about. But
+    # "summarise my recording" names the file outright, and following the
+    # previous turn instead answered it with a dataset subject's numbers.
+    if intent_router.names_own_recording(user_text):
+        return cache
+    return cache if st.session_state.last_source == "upload" else None
 
 
 def _handle_turn(user_text: str, uploaded_file) -> None:

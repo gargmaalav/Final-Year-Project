@@ -143,6 +143,25 @@ def is_followup(text: str) -> bool:
     return bool(_FOLLOWUP_RE.match(text or ""))
 
 
+# First person, or a direct reference to the attached file. A dataset subject
+# is always a third party -- "subject 4", "they", "their arm" -- so "my", "I"
+# and "me" can only mean the person's own uploaded recording.
+_OWN_RECORDING = re.compile(
+    r"\b(i|me|my|mine|i'?m|i'?ve|myself)\b|"
+    r"\b(the )?upload(ed)?\b|\bmy file\b", re.IGNORECASE)
+
+
+def names_own_recording(user_query: str) -> bool:
+    """True when the question explicitly asks about the uploaded file.
+
+    "summarise my recording" was answered with a dataset subject's numbers,
+    because the previous question had been about the dataset and the routing
+    followed that rather than the words in front of it. An explicit reference
+    outranks whatever the conversation was last about.
+    """
+    return bool(_OWN_RECORDING.search(user_query or ""))
+
+
 def stays_on_upload(user_query: str) -> bool:
     """True when a question with no file attached is still about the upload.
 
