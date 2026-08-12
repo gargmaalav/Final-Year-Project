@@ -245,6 +245,11 @@ def _subject_menu(subject: int) -> dict:
     return {"content": text, "suggestions": suggestions}
 
 
+# Percentage points. Below this two subjects are not meaningfully apart --
+# the same threshold the two-subject comparison uses to decline a winner.
+RANK_TIE_PERCENT = 2.0
+
+
 def _ranking_answer(ranking: dict) -> dict:
     """The league table, rendered directly rather than phrased by the LLM.
 
@@ -261,26 +266,42 @@ def _ranking_answer(ranking: dict) -> dict:
 
     side = "right" if ranking["side"] == "R" else "left"
     lines = [
-        f"Ranked by how far each subject's median frequency fell between "
-        f"{ranking['early_fraction'] * 100:.0f}% and "
-        f"{ranking['late_fraction'] * 100:.0f}% of their own recording "
-        f"({side} arm). A bigger fall means more fatigue developed over the "
-        "effort — the recordings differ in length, so comparing them at the "
-        "same fraction of each person's effort is fairer than at the same "
-        "absolute second.\n",
+        f"Ranked by how far each subject's median frequency has fallen from "
+        f"**their own fresh level**, read "
+        f"{ranking['late_fraction'] * 100:.0f}% of the way through their own "
+        f"recording ({side} arm). The recordings differ in length, so reading "
+        "them at the same fraction of each person's effort is fairer than at "
+        "the same absolute second — and the fall is given as a percentage "
+        "because everyone starts at a different level, so the same drop in "
+        "hertz does not mean the same thing for two people.\n",
     ]
     for rank, s in enumerate(ranked, start=1):
         r = results[s]
-        drop = r["mdf_drop"]
-        moved = (f"fell {drop:.1f} Hz" if drop > 0 else
-                 f"**rose** {-drop:.1f} Hz" if drop < 0 else "did not change")
+        pct = r["drop_percent"]
+        moved = (f"**{pct:.0f}% below** their fresh level" if pct >= 1 else
+                 f"**{abs(pct):.0f}% above** their fresh level" if pct <= -1 else
+                 "**level with** their fresh level")
         state = "" if r["fatigue_label"] in (1, 2) else ", not fatigued at the late reading"
         lines.append(f"{rank}. **Subject {s}** — {moved} "
-                     f"({r['mdf_early']:.1f} → {r['mdf_late']:.1f} Hz){state}")
+                     f"({r['fresh_mdf']:.1f} → {r['mdf_late']:.1f} Hz){state}")
 
+    # The top of this table is tight -- 25.0%, 24.8%, 24.1% for the leading
+    # three -- and naming a single winner across gaps like that asserts a
+    # precision the per-window classifier does not have. Same threshold the
+    # two-way comparison uses.
     top = ranked[0]
-    lines.append(f"\n**Subject {top}** fatigued the most, with a "
-                 f"{results[top]['mdf_drop']:.1f} Hz fall.")
+    top_pct = results[top]["drop_percent"]
+    tied = [s for s in ranked
+            if abs(results[s]["drop_percent"] - top_pct) < RANK_TIE_PERCENT]
+    if len(tied) > 1:
+        names = ", ".join(f"**subject {s}**" for s in tied[:-1])
+        lines.append(f"\n{names} and **subject {tied[-1]}** are level at the "
+                     f"top — {top_pct:.0f}% against "
+                     f"{results[tied[-1]]['drop_percent']:.0f}% is too small a "
+                     "gap to separate them.")
+    else:
+        lines.append(f"\n**Subject {top}** fatigued the most, "
+                     f"{top_pct:.0f}% below their own fresh level.")
     if ranking.get("excluded"):
         excluded = ", ".join(str(s) for s in ranking["excluded"])
         lines.append(f"Excluded as too short to show a fatigue arc: "

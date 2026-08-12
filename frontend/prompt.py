@@ -429,24 +429,28 @@ def ranking_facts(ranking: dict) -> list[str]:
     side = "right" if ranking["side"] == "R" else "left"
     facts = [
         f"{side} arm, {len(ranking['ranked'])} subjects ranked",
-        f"ranked by the fall in median frequency between "
-        f"{ranking['early_fraction'] * 100:.0f}% and "
-        f"{ranking['late_fraction'] * 100:.0f}% of each subject's own recording "
-        "-- a bigger fall means more fatigue developed over the effort",
-        "median frequency drop is used rather than the classifier's "
-        "confidence, because confidence is not a severity score",
+        f"ranked by how far each subject's median frequency has fallen from "
+        f"their OWN fresh level, read at "
+        f"{ranking['late_fraction'] * 100:.0f}% of the way through their own "
+        "recording -- a bigger fall means more fatigue developed",
+        "the fall is a percentage of each person's own fresh level, not a "
+        "drop in hertz: everyone starts at a different level, so the same "
+        "number of hertz does not mean the same thing for two people",
+        "median frequency is used rather than the classifier's confidence, "
+        "because confidence is not a severity score",
     ]
     for rank, s in enumerate(ranking["ranked"], start=1):
         r = ranking["results"][s]
         state = "fatigued" if r["fatigue_label"] in (1, 2) else "not fatigued"
-        # "fell by" / "rose by", never a signed "drop", for the same reason as
-        # overview_facts(): a signed number labelled "drop" gets phrased as an
+        # "fell by" / "rose by", never a signed number, for the same reason as
+        # overview_facts(): a signed value labelled "drop" gets phrased as an
         # increase about half the time.
-        drop = r["mdf_drop"]
-        moved = (f"fell by {drop:.1f} Hz" if drop > 0 else
-                 f"ROSE by {-drop:.1f} Hz" if drop < 0 else "did not change")
+        pct = r["drop_percent"]
+        moved = (f"fell to {pct:.0f}% below it" if pct >= 1 else
+                 f"ROSE to {abs(pct):.0f}% above it" if pct <= -1 else
+                 "did not change")
         facts.append(
-            f"{rank}. subject {s}: median frequency {r['mdf_early']:.1f} -> "
+            f"{rank}. subject {s}: fresh level {r['fresh_mdf']:.1f} Hz -> "
             f"{r['mdf_late']:.1f} Hz ({moved}), {state} at the late reading")
     if ranking.get("excluded"):
         facts.append("excluded as too short to show a fatigue arc: subject(s) "

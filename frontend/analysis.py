@@ -310,17 +310,33 @@ def compare_upload_to_subject(seg, fs: int, subject: int,
 
 
 def rank_subjects(subjects: list[int], side: str = "R") -> dict:
-    """Order subjects by how much their fatigue marker fell over the effort.
+    """Order subjects by how far their fatigue marker fell from their own fresh
+    level, as a percentage.
 
-    Ranked on the drop in MDF between an early and a late reading, rather than
-    on the classifier's confidence at one moment. MDF drop is the physical
-    fatigue signal the whole project is built on, and a confidence score is
-    not a severity score -- the calibration work showed confidence barely
-    moves even when the label is wrong, so ordering by it would be ranking
-    noise.
+    Ranked on MDF rather than on the classifier's confidence at one moment:
+    MDF is the physical fatigue signal the whole project is built on, and a
+    confidence score is not a severity score -- the calibration work showed
+    confidence barely moves even when the label is wrong, so ordering by it
+    would be ranking noise.
 
-    Two readings per subject rather than a full scan each, to keep this fast
-    enough to sit behind a chat message.
+    Two things about *how* the fall is measured, both changed after the
+    ranking was read next to the other answers:
+
+    1. The starting point is the stored fresh baseline, not a single early
+       window. The early window is one 2-second sample and it is noisy --
+       subject 13's read 57.8 Hz against a stored baseline of 62.7 Hz, which
+       understated their fall by roughly half. It also meant the ranking and
+       the comparison answers quoted different starting figures for the same
+       subject (74.8 vs 73.3 Hz for subject 5), which is indefensible when
+       both are on screen in the same conversation.
+
+    2. The ranking is by percentage, not hertz. Subjects start anywhere from
+       57 to 77 Hz, so a 15 Hz fall is a much bigger deal for one than for
+       another -- ranking on absolute hertz is the same category error as
+       comparing two people's raw median frequencies, which this code already
+       refuses to do everywhere else.
+
+    One reading per subject now instead of two, so it is also faster.
     """
     loaded, durations = _load_all(subjects, side)
     results = {}
@@ -328,23 +344,28 @@ def rank_subjects(subjects: list[int], side: str = "R") -> dict:
     for s, (seg, fs) in loaded.items():
         if durations[s] < MIN_MEANINGFUL_SEC:
             continue          # too short to show an arc; excluded, and said so
-        early = classify(s, durations[s] * EARLY_FRACTION, side, seg=seg, fs=fs)
         late = classify(s, durations[s] * LATE_FRACTION, side, seg=seg, fs=fs)
+        try:
+            fresh = subject_reference(s)["fresh_mdf"]
+        except Exception:
+            fresh = None
+        if not fresh:
+            continue          # no baseline, so no comparable starting point
         results[s] = {
-            "mdf_early": early["mdf_hz"], "mdf_late": late["mdf_hz"],
-            "mdf_drop": early["mdf_hz"] - late["mdf_hz"],
+            "fresh_mdf": fresh, "mdf_late": late["mdf_hz"],
+            "mdf_drop": fresh - late["mdf_hz"],
+            "drop_percent": (fresh - late["mdf_hz"]) / fresh * 100.0,
             "fatigue_label": late["fatigue_label"],
             "confidence": late["confidence"],
             "duration": durations[s],
-            "t_early": durations[s] * EARLY_FRACTION,
             "t_late": durations[s] * LATE_FRACTION,
         }
 
-    ranked = sorted(results, key=lambda s: -results[s]["mdf_drop"])
+    ranked = sorted(results, key=lambda s: -results[s]["drop_percent"])
     return {"kind": "ranking", "side": side, "ranked": ranked,
             "results": results, "durations": durations,
             "excluded": [s for s in subjects if s not in results],
-            "early_fraction": EARLY_FRACTION, "late_fraction": LATE_FRACTION}
+            "late_fraction": LATE_FRACTION}
 
 
 # ---------------------------------------------------------------------------
