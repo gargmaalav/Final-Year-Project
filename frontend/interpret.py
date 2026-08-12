@@ -24,6 +24,8 @@ alongside for the technical read.
 """
 from __future__ import annotations
 
+import re
+
 # How far outside the fresh range a reading sits, in that person's own
 # standard deviations. Bands are deliberately coarse: the underlying
 # classifier is ~88% accurate per window, so finer gradations would imply a
@@ -35,6 +37,12 @@ _BANDS = [
     (1.0, "within their normal fresh range"),
 ]
 _ABOVE = "above their fresh level, which is not the fatigue direction"
+
+# Above this, the reading is inside the person's normal fresh range -- the
+# same boundary the last _BANDS entry uses. A fatigued verdict here is not
+# wrong, but it is contested, and saying so is the difference between a reader
+# distrusting the tool and understanding it.
+CONFLICT_Z = -1.0
 
 
 def _band(z: float | None) -> str | None:
@@ -74,8 +82,13 @@ def describe_reading(features: dict, reference: dict | None,
             "percent": min(100.0, (t_start / duration) * 100.0),
         }
 
-    # fatigued verdict, but the fatigue marker has not actually fallen
-    conflict = bool(fatigued and z is not None and z > 0)
+    # A fatigued verdict while the fatigue marker still sits inside the
+    # person's normal fresh range. The threshold is -1.0, not 0, because -1.0
+    # is where _BANDS stops saying "below their normal fresh range" and starts
+    # saying "within" it: a reading at z = -0.2 produced "the muscle signal is
+    # fatigued ... which is within their normal range", which reads as a
+    # contradiction unless the disagreement is named.
+    conflict = bool(fatigued and z is not None and z > CONFLICT_Z)
 
     return {
         "fatigued": fatigued,
@@ -99,25 +112,46 @@ def plain_lines(reading: dict, who: str) -> list[str]:
     """
     lines = []
 
+    # The verdict gets its own line, and the negative case is shouted. Asked to
+    # phrase "Subject 13 is not showing signs of fatigue 65 seconds into a 218
+    # second effort", llama3.2:3b answered "subject 13's right arm is fatigued
+    # at 65 seconds" -- it dropped the "not". A single unstressed negation
+    # buried mid-sentence, surrounded by four lines about falling signals and
+    # fatigue, is the easiest word in the answer to lose, and losing it inverts
+    # the result.
+    if reading["fatigued"]:
+        lines.append(f"{who} IS showing signs of fatigue")
+    else:
+        lines.append(f"{who} is NOT fatigued at this point -- the correct "
+                     "answer to give is that they are not showing signs of "
+                     "fatigue")
+
     position = reading["position"]
     if position:
         lines.append(
-            f"{who} is {reading['verdict']} {position['t_start']:.0f} seconds "
-            f"into a {position['duration']:.0f} second effort, which is "
+            f"this reading is {position['t_start']:.0f} seconds into a "
+            f"{position['duration']:.0f} second effort, which is "
             f"{position['percent']:.0f}% of the way through the recording")
-    else:
-        lines.append(f"{who} is {reading['verdict']}")
 
     if reading["drop_percent"] is not None:
         fell = reading["drop_percent"] >= 0
-        gloss = ("a falling signal is what muscle fatigue looks like" if fell
-                 else "it has risen rather than fallen, which is not the "
-                      "direction fatigue moves it")
+        # The gloss follows the verdict, not just the direction. Telling the
+        # reader "a falling signal is what muscle fatigue looks like" under a
+        # NOT-fatigued verdict argues against the verdict it is attached to,
+        # which is exactly the push that made the model invert it.
+        if not fell:
+            gloss = ("it has risen rather than fallen, which is not the "
+                     "direction fatigue moves it")
+        elif reading["fatigued"]:
+            gloss = "a falling signal is what muscle fatigue looks like"
+        else:
+            gloss = ("a small drop like this is normal variation, not enough "
+                     "to count as fatigue")
         lines.append(
             f"their muscle signal is {abs(reading['drop_percent']):.0f}% "
             f"{'below' if fell else 'above'} their own fresh level "
-            f"({reading['mdf_hz']:.1f} Hz now, {reading['fresh_mdf']:.1f} Hz "
-            f"when fresh) -- {gloss}")
+            f"(now {reading['mdf_hz']:.1f} Hz, against "
+            f"{reading['fresh_mdf']:.1f} Hz when fresh) -- {gloss}")
 
     if reading["band"]:
         lines.append(f"that puts this reading {reading['band']}"
@@ -130,11 +164,14 @@ def plain_lines(reading: dict, who: str) -> list[str]:
     # one, so it is not a bug; but presenting the verdict without the
     # disagreement would let a reader take a contested call as settled.
     if reading["conflict"]:
+        moved = ("has not fallen at all" if (reading["z"] or 0) >= 0
+                 else "has barely moved")
         lines.append(
-            "worth flagging: the classifier calls this fatigued, but the "
-            "median-frequency marker has not fallen, so the two disagree "
-            "here -- the model weighs eight signal features and this is only "
-            "one of them, but treat this particular reading as less settled")
+            f"worth flagging: the classifier calls this fatigued, but the "
+            f"median-frequency marker {moved} and is still inside their "
+            "normal fresh range, so the two disagree here -- the model weighs "
+            "eight signal features and this is only one of them, but treat "
+            "this particular reading as less settled")
 
     if reading["confidence"] is not None:
         lines.append(
@@ -143,6 +180,201 @@ def plain_lines(reading: dict, who: str) -> list[str]:
             "is, not how accurate it is known to be")
 
     return lines
+
+
+# How big a move from someone's own fresh level is, in words. The boundaries
+# are the same coarse bands _BANDS uses, expressed as a percentage so they can
+# be stated without a z-score.
+_SIZE = [
+    (1.0, "essentially unchanged from their own fresh level"),
+    (5.0, "a little below their own fresh level"),
+    (12.0, "clearly below their own fresh level"),
+]
+_FAR = "far below their own fresh level"
+
+
+def _size_words(drop: float) -> str:
+    if drop < 0:
+        return ("slightly above their own fresh level, which is not the "
+                "direction fatigue moves it")
+    for threshold, text in _SIZE:
+        if drop < threshold:
+            return text
+    return _FAR
+
+
+def _when_words(position: dict | None) -> str | None:
+    if not position:
+        return None
+    pct = position["percent"]
+    if pct < 15:
+        return "this reading is early in the effort"
+    if pct < 50:
+        return "this reading is in the first half of the effort"
+    if pct < 85:
+        return "this reading is well into the effort"
+    return "this reading is near the end of the effort"
+
+
+def prose_notes(reading: dict, who: str) -> list[str]:
+    """The reading with every number removed.
+
+    This is what the LLM gets. It is not a stylistic choice: given figures,
+    llama3.2:3b has reported the current reading as the fresh baseline (twice),
+    quoted "1.2 standard deviations" as proof the reading was *within* a range
+    the facts described it as below, and pasted a z-score into the answer as a
+    "Caveat". Each was fixed by a rule and each came back somewhere else.
+
+    Every number the reader needs is already rendered by verdict_sentence()
+    and carried on the technical line beneath the answer, both built in Python.
+    So the model is given none, and the class of error disappears rather than
+    being argued with.
+    """
+    notes = [f"{who} is "
+             + ("SHOWING signs of fatigue" if reading["fatigued"]
+                else "NOT showing signs of fatigue")]
+
+    when = _when_words(reading["position"])
+    if when:
+        notes.append(when)
+
+    if reading["drop_percent"] is not None:
+        notes.append(f"their muscle signal is {_size_words(reading['drop_percent'])}")
+
+    if reading["band"]:
+        notes.append(f"that puts this reading {reading['band']}")
+
+    if reading["conflict"]:
+        notes.append(
+            "worth flagging: the classifier calls this fatigued, but the "
+            "median-frequency marker has barely moved and is still inside "
+            "their normal fresh range, so the two disagree here -- the model "
+            "weighs eight signal features and this is only one of them, but "
+            "treat this particular reading as less settled")
+
+    return notes
+
+
+def verdict_sentence(reading: dict, who: str) -> str:
+    """The finding, written here rather than by the model.
+
+    Every prompt rule aimed at protecting this sentence has only half-held. A
+    3B model asked to phrase "Subject 13 is not showing signs of fatigue"
+    answered "subject 13's right arm is fatigued"; told explicitly never to
+    drop the negation, it produced "showing signs of fatigue, but only
+    slightly ... not yet fatigued" -- opening with the wrong verdict and
+    closing with the right one. It also twice reported the current reading as
+    the fresh baseline.
+
+    So the verdict and the two numbers it rests on are rendered directly, and
+    the model is left to add context around a sentence it cannot alter. This
+    is the same move that fixed the ranking table and the comparisons.
+    """
+    where = ""
+    position = reading["position"]
+    if position:
+        where = (f", {position['t_start']:.0f}s into a "
+                 f"{position['duration']:.0f}s effort "
+                 f"({position['percent']:.0f}% of the way through)")
+
+    if reading["fatigued"]:
+        head = f"**{who} is showing signs of fatigue**{where}."
+    else:
+        head = f"**{who} is not showing signs of fatigue**{where}."
+
+    drop = reading["drop_percent"]
+    if drop is None:
+        return head
+
+    if drop < 0:
+        detail = (f" Their muscle signal is {abs(drop):.0f}% **above** their "
+                  f"own fresh level ({reading['fresh_mdf']:.1f} Hz fresh → "
+                  f"{reading['mdf_hz']:.1f} Hz now), which is not the "
+                  "direction fatigue moves it.")
+    elif drop < 1.0:
+        # "0% below" reads as a measurement failure rather than as a result
+        detail = (f" Their muscle signal is essentially unchanged from their "
+                  f"own fresh level ({reading['fresh_mdf']:.1f} Hz fresh → "
+                  f"{reading['mdf_hz']:.1f} Hz now).")
+    else:
+        detail = (f" Their muscle signal is {drop:.0f}% below their own fresh "
+                  f"level ({reading['fresh_mdf']:.1f} Hz fresh → "
+                  f"{reading['mdf_hz']:.1f} Hz now).")
+    return head + detail
+
+
+_ECHO = re.compile(
+    r"(sign|signs) of fatigue|is (not )?fatigued|no signs? of|"
+    r"showing (no|signs)", re.IGNORECASE)
+
+
+# A paragraph longer than this is assumed to carry detail beyond the verdict
+# and is never dropped. Set from observation: the restatements ran 8-25 words,
+# while the shortest paragraph that genuinely added something ran 33.
+_ECHO_MAX_WORDS = 30
+
+
+def strip_verdict_echo(prose: str) -> str:
+    """Drop opening or closing paragraphs that only repeat the rendered verdict.
+
+    The verdict is printed directly above the model's text and the prompt says
+    not to restate it. It restated it anyway in every sampled reading -- and
+    for a not-fatigued reading it restated it at BOTH ends, sandwiching two
+    useful sentences between "Subject 13 is showing a muscle signal slightly
+    below their fresh level" and "The subject is not fatigued at 65 seconds".
+
+    Only short paragraphs that are nothing but the verdict go, and never the
+    last remaining one, so this cannot empty an answer or quietly delete
+    reasoning.
+    """
+    if not prose:
+        return prose
+    paras = [p.strip() for p in re.split(r"\n\s*\n", prose.strip()) if p.strip()]
+
+    def _is_echo(p: str) -> bool:
+        return len(p.split()) <= _ECHO_MAX_WORDS and bool(_ECHO.search(p))
+
+    while len(paras) > 1 and _is_echo(paras[0]):
+        paras.pop(0)
+    while len(paras) > 1 and _is_echo(paras[-1]):
+        paras.pop()
+    return "\n\n".join(paras)
+
+
+# A measurement in the prose: a hertz value, a percentage, a z-score, or any
+# decimal. The model is handed none of these for a reading, so every one of
+# them is fabricated by construction -- no judgement call is involved.
+_INVENTED = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:Hz|hz|%|percent)|\d+\.\d+|"
+    r"\d+(?:\.\d+)?\s*standard deviation", re.IGNORECASE)
+
+
+def strip_invented_numbers(prose: str) -> tuple[str, list[str]]:
+    """Drop sentences quoting measurements the model was never given.
+
+    Returns (cleaned prose, the removed sentences).
+
+    Withholding the figures stopped the model misattributing them and started
+    it inventing them instead: "The current reading of 12 Hz is lower than the
+    subject's fresh level of 15 Hz", where the real values were 58.2 and 62.7
+    and neither was in its prompt. That is the exact failure this project's
+    grounding architecture exists to prevent, so it is removed rather than
+    argued with.
+
+    Only whole sentences carrying a fabricated measurement go. A sentence that
+    reasons in words survives untouched, which is all the prose is for.
+    """
+    if not prose:
+        return prose, []
+
+    kept, removed = [], []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        sentences = re.split(r"(?<=[.!?])\s+", para.strip())
+        good = [s for s in sentences if not _INVENTED.search(s)]
+        removed += [s for s in sentences if _INVENTED.search(s)]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip(), removed
 
 
 def technical_line(reading: dict) -> str:

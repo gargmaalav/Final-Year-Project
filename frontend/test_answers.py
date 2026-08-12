@@ -21,6 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import interpret       # noqa: E402
 import prompt          # noqa: E402
 
 
@@ -150,6 +151,18 @@ def _():
     assert "2s of the labelled" not in text, "quoted the scan step as accuracy"
 
 
+@check("the scan step is withheld from answers that state an error bar")
+def _():
+    # Given the step, the model multiplied it and reported "a +/-12.5-second
+    # margin of error" beside the measured "about 6 seconds" -- two error bars
+    # in one answer, the invented one wrong.
+    for facts in (prompt.onset_facts(_summary(75.0, 57.0, _onset())),
+                  prompt.overview_facts(_summary(75.0, 57.0, _onset()))):
+        text = " ".join(facts)
+        assert "2.5s" not in text and "every 2.5" not in text, text
+        assert "80 readings" in text, text
+
+
 @check("an uploaded onset quotes no error figure at all")
 def _():
     facts = prompt.onset_facts(_summary(
@@ -187,6 +200,284 @@ def _():
     assert prompt._whose(_summary(75.0, 57.0, _onset())) == "subject 13, right arm"
     assert prompt._whose(_summary(75.0, 57.0, _onset(), self_calibrated=True)) \
         == "the uploaded recording"
+
+
+# --- the verdict ------------------------------------------------------------
+# The worst failure found in live testing: handed "Subject 13 is not showing
+# signs of fatigue", the model answered "subject 13's right arm is fatigued".
+# It dropped the "not", inverting the result.
+
+def _reading(mdf, fresh, sd, label, t=65.0, duration=218.0):
+    return interpret.describe_reading(
+        {"mdf_hz": mdf, "fatigue_label": label, "confidence": 0.98},
+        {"fresh_mdf": fresh, "sd_mdf": sd}, t, duration)
+
+
+@check("a not-fatigued verdict is stated on its own line and stressed")
+def _():
+    lines = interpret.plain_lines(_reading(61.8, 62.7, 3.8, 0), "Subject 13")
+    assert "NOT fatigued" in lines[0], lines
+    assert "not showing signs of fatigue" in lines[0], lines
+    # the position must not share the line -- burying the negation mid-sentence
+    # is what let it get lost
+    assert "seconds into" not in lines[0], lines[0]
+
+
+@check("a fatigued verdict is stated on its own line too")
+def _():
+    lines = interpret.plain_lines(_reading(58.2, 62.7, 3.8, 1), "Subject 13")
+    assert "IS showing signs of fatigue" in lines[0], lines
+    assert "NOT" not in lines[0], lines[0]
+
+
+@check("a small drop under a not-fatigued verdict is not glossed as fatigue")
+def _():
+    # "a falling signal is what muscle fatigue looks like", printed under a
+    # NOT-fatigued verdict, argues against the verdict it is attached to
+    lines = interpret.plain_lines(_reading(61.8, 62.7, 3.8, 0), "Subject 13")
+    drop = [l for l in lines if "below their own fresh level" in l][0]
+    assert "not enough to count as fatigue" in drop, drop
+    assert "what muscle fatigue looks like" not in drop, drop
+
+
+@check("current and fresh values are labelled so they cannot be swapped")
+def _():
+    # the model reported "decreased by 1.7 Hz from its initial fresh level of
+    # 61.8 Hz" -- 61.8 was the current value, and 1.7 Hz was invented
+    lines = interpret.plain_lines(_reading(61.8, 62.7, 3.8, 0), "Subject 13")
+    drop = [l for l in lines if "below their own fresh level" in l][0]
+    assert "now 61.8 Hz" in drop, drop
+    assert "62.7 Hz when fresh" in drop, drop
+
+
+@check("the rendered verdict sentence states the finding in both directions")
+def _():
+    not_fat = interpret.verdict_sentence(_reading(61.8, 62.7, 3.8, 0), "Subject 13")
+    assert "is not showing signs of fatigue" in not_fat, not_fat
+    fat = interpret.verdict_sentence(_reading(58.2, 62.7, 3.8, 1), "Subject 13")
+    assert "is showing signs of fatigue" in fat, fat
+    assert "not showing" not in fat, fat
+
+
+@check("the rendered verdict never swaps the fresh and current values")
+def _():
+    s = interpret.verdict_sentence(_reading(61.8, 62.7, 3.8, 0), "Subject 13")
+    assert "62.7 Hz fresh" in s and "61.8 Hz now" in s, s
+    assert s.index("62.7") < s.index("61.8"), "fresh must precede current"
+
+
+@check("an unchanged signal is not reported as '0% below'")
+def _():
+    # subject 7 sits 0.1 Hz off its fresh level; "0% below their own fresh
+    # level" reads as a broken measurement rather than as a result
+    s = interpret.verdict_sentence(_reading(77.0, 77.1, 2.5, 1), "Subject 7")
+    assert "essentially unchanged" in s, s
+    assert "0% below" not in s and "0% above" not in s, s
+
+
+@check("a duplicate opening restatement of the verdict is dropped")
+def _():
+    # observed in all five sampled readings, under a rendered verdict line
+    # that already said it
+    prose = ("Subject 13 is showing no signs of fatigue at this point.\n\n"
+             "This reading falls within their normal fresh range, so they can "
+             "keep going at this intensity.")
+    out = interpret.strip_verdict_echo(prose)
+    assert out.startswith("This reading falls"), out
+    assert "showing no signs" not in out, out
+
+
+@check("prose that adds detail is never stripped, even if it mentions fatigue")
+def _():
+    prose = ("Subject 13 is showing signs of fatigue, and the drop has been "
+             "steady since the 80 second mark rather than sudden, which is "
+             "the usual pattern for a sustained effort like this one.\n\n"
+             "They are close to the end of the recording.")
+    assert interpret.strip_verdict_echo(prose) == prose
+
+
+@check("a single-paragraph answer is never stripped to nothing")
+def _():
+    prose = "Subject 13 is showing signs of fatigue."
+    assert interpret.strip_verdict_echo(prose) == prose
+
+
+@check("a trailing restatement is dropped as well as a leading one")
+def _():
+    # the not-fatigued answers restated the verdict at BOTH ends, sandwiching
+    # the sentences that actually said something
+    prose = ("Subject 13 is showing no signs of fatigue.\n\n"
+             "This small deviation does not indicate fatigue because it falls "
+             "within the expected variation during an effort.\n\n"
+             "The subject is not fatigued at 65 seconds.")
+    out = interpret.strip_verdict_echo(prose)
+    assert out.startswith("This small deviation"), out
+    assert out.endswith("during an effort."), out
+
+
+@check("a paraphrase of the finding is left alone, not treated as an echo")
+def _():
+    # Only verdict-phrased restatements are stripped. A paragraph that
+    # paraphrases the measurement is mild duplication, and widening the
+    # pattern to catch it would also delete real reasoning -- a genuinely
+    # useful answer opened "This reading falls within their normal fresh
+    # range, indicating that ..."
+    prose = ("Subject 13 is showing a muscle signal slightly below their "
+             "fresh level, which puts this reading within their normal "
+             "range.\n\n"
+             "For it to count as fatigue the signal would have to fall much "
+             "further.")
+    assert interpret.strip_verdict_echo(prose) == prose
+
+
+@check("stripping echoes never empties an answer")
+def _():
+    prose = ("Subject 13 is not fatigued.\n\nThey show no signs of fatigue.")
+    out = interpret.strip_verdict_echo(prose)
+    assert out.strip(), "stripped the answer to nothing"
+
+
+@check("confidence and the raw figures are withheld from the prose")
+def _():
+    # Given the confidence the model called it certainty -- "extremely sure",
+    # "100% certain". Given the technical line it wrote "with a z-score of
+    # -1.2 and confidence level of 100.0%" into an answer meant for a
+    # non-specialist. Neither reaches it now; both are rendered under the
+    # answer instead.
+    described = _reading(58.2, 62.7, 3.8, 1)
+    lines = interpret.plain_lines(described, "Subject 13")
+    assert any("certainty in the fatigued" in l for l in lines), lines
+    built = prompt.build_prompt(
+        {"mdf_hz": 58.2, "fatigue_label": 1, "confidence": 0.98,
+         "fatigue_state": "fatigue"},
+        "is subject 13 fatigued?", None, None,
+        {"lines": lines, "technical": interpret.technical_line(described)})
+    assert "certainty in the fatigued" not in built, built
+    assert "z = " not in built and "confidence 98" not in built, built
+
+
+@check("the prose notes contain no numbers at all")
+def _():
+    # every figure given to the model came back misattributed somewhere: the
+    # current reading reported as the baseline, "1.2 standard deviations"
+    # quoted as proof a reading was *within* a range it was below, a z-score
+    # pasted in as a "Caveat"
+    import re as _re
+    for mdf, fresh, label in ((61.8, 62.7, 0), (58.2, 62.7, 1),
+                              (77.0, 77.1, 1), (56.5, 70.8, 1)):
+        notes = interpret.prose_notes(_reading(mdf, fresh, 3.8, label),
+                                      "Subject 13")
+        joined = " ".join(notes)
+        digits = _re.sub(r"Subject 13|eight", "", joined)
+        assert not _re.search(r"\d", digits), f"number leaked: {joined}"
+
+
+@check("fabricated measurements are stripped from the prose")
+def _():
+    # observed verbatim: the real values were 58.2 and 62.7 Hz, and the model
+    # was given neither
+    prose = ("This reading indicates that their muscle signal has dropped "
+             "below their normal fresh level. The current reading of 12 Hz is "
+             "lower than the subject's fresh level of 15 Hz.")
+    cleaned, invented = interpret.strip_invented_numbers(prose)
+    assert "12 Hz" not in cleaned and "15 Hz" not in cleaned, cleaned
+    assert cleaned.startswith("This reading indicates"), cleaned
+    assert len(invented) == 1, invented
+
+
+@check("percentages and z-scores are stripped too")
+def _():
+    for bad in ("It has fallen by 7% from their fresh level.",
+                "The reading sits at 1.2 standard deviations.",
+                "Their signal is now 58.2 below where it started."):
+        cleaned, invented = interpret.strip_invented_numbers(
+            "Their muscle signal is below its fresh level. " + bad)
+        assert invented, bad
+        assert cleaned == "Their muscle signal is below its fresh level.", cleaned
+
+
+@check("word-only reasoning is never stripped")
+def _():
+    prose = ("This drop is small enough to sit inside their normal range, so "
+             "it does not count as fatigue.\n\nFor it to count, the signal "
+             "would have to fall considerably further.")
+    cleaned, invented = interpret.strip_invented_numbers(prose)
+    assert cleaned == prose, cleaned
+    assert not invented, invented
+
+
+@check("the prose notes still carry the verdict, size and any conflict")
+def _():
+    notes = interpret.prose_notes(_reading(56.5, 70.8, 3.8, 1), "Subject 1")
+    joined = " ".join(notes)
+    assert "SHOWING signs of fatigue" in joined, joined
+    assert "far below their own fresh level" in joined, joined
+
+    notes = interpret.prose_notes(_reading(61.8, 62.7, 3.8, 0), "Subject 13")
+    joined = " ".join(notes)
+    assert "NOT showing signs of fatigue" in joined, joined
+    assert "a little below their own fresh level" in joined, joined
+
+    notes = interpret.prose_notes(_reading(77.0, 77.1, 2.5, 1), "Subject 7")
+    assert any("the two disagree here" in n for n in notes), notes
+
+
+@check("build_prompt prefers the numberless notes over the full lines")
+def _():
+    described = _reading(58.2, 62.7, 3.8, 1)
+    built = prompt.build_prompt(
+        {"mdf_hz": 58.2, "fatigue_label": 1, "confidence": 0.98,
+         "fatigue_state": "fatigue"},
+        "is subject 13 fatigued?", None, None,
+        {"lines": interpret.plain_lines(described, "Subject 13"),
+         "prose": interpret.prose_notes(described, "Subject 13"),
+         "technical": interpret.technical_line(described)})
+    assert "58.2" not in built and "62.7" not in built, built
+    assert "standard deviations" not in built, built
+
+
+@check("a not-fatigued reading is not asked a question that invites fatigue")
+def _():
+    # "what does this mean in practical terms" about a not-fatigued reading
+    # produced "their muscles are starting to feel fatigued", under a rendered
+    # line saying they were not
+    not_fat = prompt.build_prompt(
+        {"mdf_hz": 61.8, "fatigue_label": 0, "confidence": 0.98,
+         "fatigue_state": "non-fatigue"}, "is subject 13 fatigued?")
+    assert "does not count as fatigue" in not_fat, not_fat
+    assert "starting to fatigue" in not_fat, "missing the anti-hedge rule"
+
+    fat = prompt.build_prompt(
+        {"mdf_hz": 58.2, "fatigue_label": 1, "confidence": 0.98,
+         "fatigue_state": "fatigue"}, "is subject 13 fatigued?")
+    assert "practical terms" in fat, fat
+    assert "does not count as fatigue" not in fat, fat
+
+
+@check("the prose is told not to predict the future without a forecast")
+def _():
+    # "The trend in fatigue suggests that it will likely continue to worsen"
+    # -- with nothing in the answer measuring the future
+    built = prompt.build_prompt(
+        {"mdf_hz": 56.5, "fatigue_label": 1, "confidence": 1.0,
+         "fatigue_state": "fatigue"},
+        "is subject 1 fatigued?", None, None, None)
+    assert "Nothing here measures the future" in built, built
+
+
+@check("a fatigued verdict inside the normal range is flagged as contested")
+def _():
+    # subject 7 at z = -0.04: fatigued, but the marker has not moved
+    r = _reading(77.0, 77.1, 2.5, 1)
+    assert r["conflict"], r
+    lines = interpret.plain_lines(r, "Subject 7")
+    assert any("the two disagree here" in l for l in lines), lines
+
+
+@check("a clearly fatigued reading is not flagged as contested")
+def _():
+    r = _reading(50.0, 62.7, 3.8, 1)      # z well below -1
+    assert not r["conflict"], r
 
 
 # --- the offline fallback ---------------------------------------------------

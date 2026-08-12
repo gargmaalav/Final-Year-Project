@@ -157,6 +157,8 @@ def _plain_reading(result: dict, reference: dict | None, t_start: float | None,
     try:
         described = interpret.describe_reading(result, reference, t_start, duration)
         return {"lines": interpret.plain_lines(described, who),
+                "prose": interpret.prose_notes(described, who),
+                "verdict": interpret.verdict_sentence(described, who),
                 "technical": interpret.technical_line(described)}
     except Exception:
         return None
@@ -797,25 +799,42 @@ def _finalize(turn: dict) -> dict:
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
     window = turn.get("window")
 
+    # The finding leads, written in Python so it cannot be inverted, and the
+    # model's prose follows it. Handed the verdict to phrase, llama3.2:3b
+    # inverted a "not fatigued" into "is fatigued" and twice reported the
+    # current reading as the fresh baseline -- with prompt rules in place
+    # forbidding both. Rendering the sentence is the only thing that held.
+    reading = turn.get("reading")
+    verdict = (reading or {}).get("verdict")
     try:
-        content = chat([{"role": "user",
-                        "content": build_prompt(features, user_text, forecast,
-                                                window, turn.get("reading"))}],
-                       model=st.session_state.model)
+        prose = chat([{"role": "user",
+                       "content": build_prompt(features, user_text, forecast,
+                                               window, reading)}],
+                     model=st.session_state.model)
+        if verdict:
+            # The model is given no figures for a reading, so anything
+            # numeric it produces is fabricated -- drop those sentences
+            # before the reader ever sees them.
+            cleaned, invented = interpret.strip_invented_numbers(
+                interpret.strip_verdict_echo(prose))
+            content = f"{verdict}\n\n{cleaned}" if cleaned else verdict
+        else:
+            content = prose
     except LLMError as e:
-        # The fallback is what a reader actually sees whenever Ollama is slow,
-        # missing, or not yet installed on the server -- so it states the
-        # plain-language reading too, not a bare dump of hertz.
-        reading = turn.get("reading")
-        if reading and reading.get("lines"):
+        # Ollama slow, missing, or not installed on the server yet. The
+        # measurement is unaffected -- only the prose around it is lost.
+        if verdict:
+            content = (f"{verdict}\n\n_Couldn't add the plain-English notes: "
+                       f"{e}_")
+        elif reading and reading.get("lines"):
             content = ("\n".join(f"- {line}" for line in reading["lines"])
                        + f"\n\n_{reading['technical']}_"
-                       + f"\n\n[LLM phrasing unavailable: {e}]")
+                       + f"\n\n_Couldn't phrase this in prose: {e}_")
         else:
             content = (f"{features['fatigue_state']} "
                       f"(median frequency {features['mdf_hz']:.1f} Hz, "
                       f"confidence {features['confidence'] * 100:.1f}%). "
-                      f"[LLM phrasing unavailable: {e}]")
+                      f"_Couldn't phrase this in prose: {e}_")
 
     recommendation = None
     if wants_recommendation(user_text):
@@ -830,16 +849,22 @@ def _finalize(turn: dict) -> dict:
 
     return {"content": content, "chart_html": turn.get("chart_html"),
             "forecast_chart_html": turn.get("forecast_chart_html"),
-            "recommendation": recommendation, "provenance": _provenance(window, features),
+            "recommendation": recommendation,
+            "provenance": _provenance(window, features, reading),
             "features": features, "reading": turn.get("reading"),
             "forecast": forecast, "user_text": user_text, "window": window}
 
 
-def _provenance(window: dict | None, features: dict) -> str | None:
+def _provenance(window: dict | None, features: dict,
+                reading: dict | None = None) -> str | None:
     """One line naming exactly what was measured, shown under every answer.
 
     Without it the reader cannot tell which window the model actually scored,
-    so a mis-resolved follow-up looks identical to a correct one.
+    so a mis-resolved follow-up looks identical to a correct one. It also
+    carries the raw figures, which are no longer given to the model at all --
+    it wove them into the prose as "a z-score of -1.2 and confidence level of
+    100.0%", which is jargon in the middle of an answer written for someone
+    who is not a specialist. Here they are out of the way but still checkable.
     """
     if not window:
         return None
@@ -854,6 +879,9 @@ def _provenance(window: dict | None, features: dict) -> str | None:
         parts.append(f"· self-calibrated from the first {cal['fresh_sec']:.0f}s "
                     f"({cal['n_windows']} baseline windows) — less reliable than "
                     "a stored calibration")
+    technical = (reading or {}).get("technical")
+    if technical:
+        parts.append(f"· {technical}")
     return " ".join(parts)
 
 
@@ -1023,10 +1051,18 @@ for i, msg in enumerate(st.session_state.chat["messages"]):
         st.markdown(msg["content"])
         if msg.get("provenance"):
             st.caption(msg["provenance"])
+        # Collapsed, not removed. The signal viewer is three stacked technical
+        # panels (raw EMG, an MDF scatter, an FFT spectrum) with a scrubber --
+        # genuinely useful to us and to a supervisor, and unreadable to the
+        # non-technical reader this chatbot is for. Open by default it also
+        # pushed the actual answer off the top of the screen. It stays one
+        # click away.
         if msg.get("chart_html"):
-            st.iframe(msg["chart_html"], height=600)
+            with st.expander("Show the signal (technical view)"):
+                st.iframe(msg["chart_html"], height=600)
         if msg.get("forecast_chart_html"):
-            st.iframe(msg["forecast_chart_html"], height=420)
+            with st.expander("Show the forecast chart"):
+                st.iframe(msg["forecast_chart_html"], height=420)
         if msg.get("recommendation"):
             st.info(msg["recommendation"])
         suggestions = msg.get("suggestions") or []

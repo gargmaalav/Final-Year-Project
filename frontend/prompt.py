@@ -170,9 +170,13 @@ def onset_facts(summary: dict) -> list[str]:
     facts = [
         _whose(summary),
         f"recording length: {summary['duration']:.0f}s",
-        # :g not :.0f -- the step is 2.5s, and rounding it to "every 2s" in the
-        # answer misstates the resolution the scan actually ran at
-        f"scanned every {summary['step']:g}s ({summary['n_readings']} readings)",
+        # The scan step is deliberately NOT given here. This answer states an
+        # error bar, and handed a step of 2.5 s alongside it the model did
+        # arithmetic on it -- inventing "a +/-12.5-second margin of error" in
+        # the same paragraph as the measured "about 6 seconds", contradicting
+        # itself with a figure nobody computed. The step is an implementation
+        # detail; the accuracy is measured and stated on its own below.
+        f"{summary['n_readings']} readings taken across the recording",
         f"fatigued for {summary['fraction_fatigued'] * 100:.0f}% of the recording",
     ]
     if onset["found"]:
@@ -180,6 +184,10 @@ def onset_facts(summary: dict) -> list[str]:
             f"fatigue first appears and holds at {onset['t_start']:.0f}s "
             f"(confidence {onset['confidence'] * 100:.0f}%), requiring "
             f"{onset['sustain']} consecutive fatigued readings to count")
+        facts.append(
+            MODEL_ONLY + "state at most ONE margin of error, and only the one "
+            "given below. Do not calculate an error figure of your own from "
+            "the number of readings or from anything else here")
         if onset.get("error_measured", True):
             # The honest figure is the measured error against ground truth, not
             # the scan step -- the step is precision and is roughly four times
@@ -242,9 +250,10 @@ def overview_facts(summary: dict) -> list[str]:
 
     facts = [
         f"{_whose(summary)}, {summary['duration']:.0f}s long",
-        # :g not :.0f -- the step is 2.5s, and rounding it to "every 2s" in the
-        # answer misstates the resolution the scan actually ran at
-        f"scanned every {summary['step']:g}s ({summary['n_readings']} readings)",
+        # step omitted for the same reason as onset_facts: this answer also
+        # quotes an approximate onset time, and a step figure sitting beside it
+        # gets turned into a fabricated margin of error
+        f"{summary['n_readings']} readings taken across the recording",
         f"median frequency at the start: {summary['mdf_start']:.1f} Hz",
         f"median frequency at the end: {summary['mdf_end']:.1f} Hz",
         change,
@@ -484,15 +493,48 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
     # project cannot do anything with "51.2 Hz", because median frequency has
     # no absolute meaning across people. What they can use is how far the
     # person has moved from their own fresh state.
-    plain = reading.get("lines") if reading else None
+    # interpret.prose_notes(): the reading with every number stripped out. See
+    # its docstring -- each figure handed to the model came back misattributed
+    # somewhere eventually, and the numbers are all rendered in Python anyway.
+    # Falls back to the full lines for callers that don't build prose notes.
+    plain = (reading.get("prose") or reading.get("lines")) if reading else None
+    if plain:
+        plain = [line for line in plain
+                 if "certainty in the fatigued" not in line]
     plain_block = ("\n".join(f"- {line}" for line in plain) + "\n") if plain else (
         f"- fatigue state: {features['fatigue_state']}\n"
         f"- median frequency: {features['mdf_hz']:.1f} Hz\n"
         f"- model confidence: {features['confidence'] * 100:.1f}%\n")
-    technical = reading.get("technical") if reading else None
-    technical_block = (f"\nRaw figures, secondary -- include at most one of "
-                       f"these and only if the question asked for numbers:\n"
-                       f"- {technical}\n") if technical else ""
+    # The job depends on the verdict. Asked "what does this mean in practical
+    # terms" about a NOT-fatigued reading, the model went looking for fatigue
+    # to talk about and wrote "their muscles are starting to feel fatigued"
+    # directly under a rendered line saying they were not -- a question whose
+    # natural answer contradicts the finding. For a not-fatigued reading it is
+    # asked to explain why the change is too small to count instead, which is
+    # a question the finding actually answers.
+    if features.get("fatigue_label") in (1, 2):
+        task = ("Write 1-3 short sentences that go after it: what this "
+                "reading means for the person in practical terms. Your first "
+                "sentence must NOT be about whether they are fatigued -- that "
+                f"is already written. {say_calib}")
+    else:
+        task = ("Write 1-3 short sentences that go after it, explaining why a "
+                "change this small does not count as fatigue, and roughly "
+                "what would have to change for it to count. Do NOT say they "
+                "are starting to fatigue, beginning to tire, that fatigue is "
+                "setting in or developing, or that they may be affected -- "
+                "the measurement says they are not fatigued and your text "
+                f"must not undercut that. {say_calib}")
+
+    # The raw figures (z-score, confidence) are NOT given to the model at all.
+    # They used to travel as "secondary figures, include at most one", and the
+    # model duly worked them into the prose -- "with a z-score of -1.2 and
+    # confidence level of 100.0%" -- which is jargon to the reader this answer
+    # is written for, and reintroduced the confidence-as-certainty problem
+    # after it had been removed from the plain lines. They are rendered
+    # directly under the answer instead, where a technical reader can find
+    # them and a non-technical one can ignore them.
+    technical_block = ""
 
     return (
         "You are an assistant reporting the result of a lab sensor reading "
@@ -511,22 +553,40 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         f"{forecast_line}"
         f"{technical_block}\n"
         f"User question: {user_query}\n\n"
-        f"Answer in 2-4 sentences of plain English. {say_where}Say whether "
-        "the muscle is fatigued, how far through the effort the reading is, "
-        "and how far the signal has moved from that person's own fresh level. "
-        f"{say_calib}Mention the trend only if it's relevant to the question "
-        "or a forecast is provided above. If the question also asks for sport "
-        "or training suggestions, ignore that part here -- it is answered "
-        "separately; just report the measured fatigue result.\n\n"
-        "Three rules, each added after the model broke it:\n"
-        "1. Report the fatigue verdict as given. Do NOT argue with it, "
-        "soften it, or conclude the person is fine, performing well, or "
-        "unaffected when the verdict says fatigued. Where a note says the "
-        "verdict and the median-frequency marker disagree, report that as a "
-        "caveat ON the verdict -- the verdict still stands.\n"
-        "2. Never call the confidence figure certainty. Do not write 'the "
+        # The verdict and the two hertz figures are already rendered above the
+        # model's text by the caller. Asking it to restate them is what kept
+        # inverting them, so it is told they are written and its job starts
+        # after them.
+        f"IMPORTANT: the finding itself -- whether they are fatigued, how far "
+        "through the effort this is, and the two hertz figures -- has ALREADY "
+        "been written out and shown to the reader directly above your text. "
+        "Do NOT restate it, do not re-open with it, and above all do not "
+        "contradict it.\n\n"
+        f"{task}"
+        "Write in words only. Do NOT put any number, hertz value, percentage "
+        "or z-score in your text -- every figure is already shown to the "
+        "reader above and below it, and you have not been given any, so any "
+        "you write will be wrong.\n"
+        "Do NOT say what will happen next, that fatigue will continue, or "
+        "that it will get worse, unless a fatigue trend is given above. "
+        "Nothing here measures the future. If the question also asks for "
+        "sport or training suggestions, ignore that part -- it is answered "
+        "separately.\n\n"
+        "Four rules, each added after the model broke it:\n"
+        "1. Report the fatigue verdict as given, in BOTH directions. If the "
+        "measurement says NOT fatigued, your answer must say they are not "
+        "fatigued -- never drop the 'not'. If it says fatigued, do not argue "
+        "with it, soften it, or conclude the person is fine, performing well, "
+        "or unaffected. Where a note says the verdict and the "
+        "median-frequency marker disagree, report that as a caveat ON the "
+        "verdict -- the verdict still stands.\n"
+        "2. Keep each number with the label it was given. The value marked "
+        "'now' is the current reading and the value marked 'when fresh' is "
+        "the baseline; do not swap them, and do not work out a difference "
+        "between them that was not given to you.\n"
+        "3. Never call the confidence figure certainty. Do not write 'the "
         "model is 100% certain' or 'definitely'. It is the model's own "
         "confidence in its call, and it is not a measure of correctness.\n"
-        "3. Use the percentages exactly as written. Do not convert them into "
+        "4. Use the percentages exactly as written. Do not convert them into "
         "fractions or approximations -- 89% must not become 'three-quarters'."
     )
