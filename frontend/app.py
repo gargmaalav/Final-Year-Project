@@ -60,6 +60,25 @@ from upload import UploadError, load_uploaded_segment, parse_uploaded_csv  # noq
 _FATIGUE_STATE = {0: "non-fatigue", 1: "fatigue", 2: "fatigue"}
 DATA_ROOT = os.path.join(_REPO_ROOT, "zenodo_biceps", "sEMG_data")
 
+# Charts still render on every reading (the numbers underneath are cheap and
+# the LLM prose needs them anyway), but they no longer display open: three
+# stacked technical panels under a one-line answer read as clutter, not help,
+# and pushed the actual answer off the top of the screen. They're collapsed
+# into a "Show the signal" expander instead (see the render loop below), one
+# click away, with a plain-language caption so the panels don't need to be
+# self-explanatory to someone who isn't a signal-processing specialist.
+_READING_CHART_CAPTION = (
+    "Top: the raw EMG signal at this moment. Middle: median frequency over "
+    "time, colour-coded by fatigue stage -- the trend the reading is based "
+    "on. Bottom: the frequency spectrum of this specific window.")
+_UPLOAD_CHART_CAPTION = (
+    "Top: your uploaded signal. Bottom: median frequency over time -- this "
+    "trend is what the fatigue reading above is based on.")
+_FORECAST_CHART_CAPTION = (
+    "Grey dots are the measured median frequency so far. The dashed line "
+    "projects the trend forward; the shaded bands show the typical and 95% "
+    "uncertainty range around that projection.")
+
 st.set_page_config(page_title="EMG Fatigue Chatbot", layout="wide")
 
 
@@ -592,9 +611,10 @@ def _dataset_turn(user_text: str, previous: dict | None) -> dict:
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
 
-    chart_html = None
+    chart_html, chart_caption = None, None
     try:
         chart_html = render_window(subject, t_start, side)
+        chart_caption = _READING_CHART_CAPTION
     except Exception:
         pass  # chart is additive; never block the text answer
 
@@ -605,9 +625,10 @@ def _dataset_turn(user_text: str, previous: dict | None) -> dict:
                              f"Subject {subject}")
 
     return {"features": result, "reading": reading,
-            "chart_html": chart_html, "forecast": forecast,
-            "forecast_chart_html": forecast_chart_html, "user_text": user_text,
-            "window": window}
+            "chart_html": chart_html, "chart_caption": chart_caption,
+            "forecast": forecast, "forecast_chart_html": forecast_chart_html,
+            "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
+            "user_text": user_text, "window": window}
 
 
 # Everything that describes "the conversation so far". All of it has to be
@@ -775,6 +796,10 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
 
+    notes = []
+    chart_html = _upload_chart(cache)
+    chart_caption = _UPLOAD_CHART_CAPTION if chart_html else None
+
     forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
     try:
         reference = upload_reference(cache["baseline"])
@@ -784,10 +809,12 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
                              "This recording")
 
     return {"features": result, "reading": reading,
-            "chart_html": _upload_chart(cache), "forecast": forecast,
-            "forecast_chart_html": forecast_chart_html, "user_text": user_text,
+            "chart_html": chart_html, "chart_caption": chart_caption,
+            "forecast": forecast, "forecast_chart_html": forecast_chart_html,
+            "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
+            "user_text": user_text,
             "window": {"t_start": t_start, "source": "upload",
-                       "name": uploaded_name}}
+                       "name": uploaded_name, "notes": notes}}
 
 
 def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
@@ -827,8 +854,9 @@ def _finalize(turn: dict) -> dict:
             content = ("\n".join(f"- {line}" for line in lines)
                        + f"\n\n_Couldn't phrase this in prose: {e}_")
         return {"content": content, "chart_html": turn.get("chart_html"),
-                "forecast_chart_html": None, "recommendation": None,
-                "facts": turn.get("facts"),
+                "chart_caption": turn.get("chart_caption"),
+                "forecast_chart_html": None, "forecast_chart_caption": None,
+                "recommendation": None, "facts": turn.get("facts"),
                 "user_text": turn.get("user_text"), "window": turn.get("window")}
 
     if "features" not in turn:
@@ -838,13 +866,16 @@ def _finalize(turn: dict) -> dict:
         # turn knows whether the conversation is on an upload or the dataset).
         return {"content": turn["content"],
                 "chart_html": turn.get("chart_html"),
-                "forecast_chart_html": None, "recommendation": None,
+                "chart_caption": turn.get("chart_caption"),
+                "forecast_chart_html": None, "forecast_chart_caption": None,
+                "recommendation": None,
                 "facts": turn.get("facts"), "window": turn.get("window"),
                 "user_text": turn.get("user_text"),
                 "suggestions": turn.get("suggestions")}
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
     window = turn.get("window")
+    chart_shown = turn.get("chart_html") is not None
 
     # The finding leads, written in Python so it cannot be inverted, and the
     # model's prose follows it. Handed the verdict to phrase, llama3.2:3b
@@ -856,7 +887,7 @@ def _finalize(turn: dict) -> dict:
     try:
         prose = chat([{"role": "user",
                        "content": build_prompt(features, user_text, forecast,
-                                               window, reading)}],
+                                               window, reading, chart_shown)}],
                      model=st.session_state.model)
         if verdict:
             # The model is given no figures for a reading, so anything
@@ -896,7 +927,9 @@ def _finalize(turn: dict) -> dict:
             recommendation = f"[Recommendation unavailable: {e}]"
 
     return {"content": content, "chart_html": turn.get("chart_html"),
+            "chart_caption": turn.get("chart_caption"),
             "forecast_chart_html": turn.get("forecast_chart_html"),
+            "forecast_chart_caption": turn.get("forecast_chart_caption"),
             "recommendation": recommendation,
             "provenance": _provenance(window, features, reading),
             "features": features, "reading": turn.get("reading"),
@@ -1003,7 +1036,9 @@ def _regenerate() -> None:
     turn = {"features": ctx["features"], "forecast": ctx.get("forecast"),
            "reading": ctx.get("reading"),
            "user_text": ctx["user_text"], "chart_html": ctx.get("chart_html"),
+           "chart_caption": ctx.get("chart_caption"),
            "forecast_chart_html": ctx.get("forecast_chart_html"),
+           "forecast_chart_caption": ctx.get("forecast_chart_caption"),
            "window": ctx.get("window")}
     final = _finalize(turn)
     chat_obj["messages"].append({"role": "assistant", **final})
@@ -1111,9 +1146,13 @@ for i, msg in enumerate(st.session_state.chat["messages"]):
         # click away.
         if msg.get("chart_html"):
             with st.expander("Show the signal (technical view)"):
+                if msg.get("chart_caption"):
+                    st.caption(msg["chart_caption"])
                 st.iframe(msg["chart_html"], height=600)
         if msg.get("forecast_chart_html"):
             with st.expander("Show the forecast chart"):
+                if msg.get("forecast_chart_caption"):
+                    st.caption(msg["forecast_chart_caption"])
                 st.iframe(msg["forecast_chart_html"], height=420)
         if msg.get("recommendation"):
             st.info(msg["recommendation"])
@@ -1127,6 +1166,30 @@ for i, msg in enumerate(st.session_state.chat["messages"]):
                                on_click=_stage, args=(prompt_text,))
 
 messages = st.session_state.chat["messages"]
+
+# A blank chat window with nothing but a placeholder made the assistant look
+# narrower than it is -- someone has to guess a phrasing that happens to work.
+# One click on any of these runs the real question through the real pipeline,
+# it's not a canned reply -- so the range of examples doubles as an honest
+# demo of what the intent router (frontend/intent.py) actually covers.
+_SUGGESTIONS = [
+    "Is subject 13 fatigued at 60 seconds?",
+    "How about subject 5 near the end?",
+    "When did subject 13 start fatiguing?",
+    "Summarise subject 7",
+    "Compare subject 5 and 9",
+    "Which subject fatigued the most?",
+    "What does median frequency mean?",
+    "What data do you have?",
+]
+if not messages:
+    st.caption("Try asking:")
+    cols = st.columns(4)
+    for i, suggestion in enumerate(_SUGGESTIONS):
+        if cols[i % 4].button(suggestion, key=f"suggest_{i}", use_container_width=True):
+            _handle_turn(suggestion, None)
+            st.rerun()
+
 if (messages and messages[-1]["role"] == "assistant" and st.session_state.last_turn_context):
     if st.button("🔄 Regenerate"):
         _regenerate()

@@ -459,7 +459,8 @@ def ranking_facts(ranking: dict) -> list[str]:
 
 
 def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
-                 window: dict | None = None, reading: dict | None = None) -> str:
+                 window: dict | None = None, reading: dict | None = None,
+                 chart_shown: bool = False) -> str:
     """Build the grounding prompt.
 
     `window` names the reading's provenance (which subject/time/side, or that
@@ -471,6 +472,13 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
     ({"lines": [...], "technical": str}). Optional, so the contract's original
     signature still works; when absent the prompt falls back to stating the
     raw values as it always did.
+
+    `chart_shown` says whether the app actually produced a chart for this
+    turn (a reading normally does; an error or a plain analysis answer
+    doesn't). Left unstated, a question that mentions "graph" got answered
+    with "I don't have the capability to display graphs" even when a chart
+    was sitting right there in a collapsed expander -- the model has no way
+    to know the app's own behaviour unless it's told.
     """
     forecast_line = (
         f"- fatigue trend: {forecast['summary']}\n" if forecast and forecast.get("ok") else ""
@@ -490,6 +498,18 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         "Also mention in one short clause that the baseline was estimated from "
         "the uploaded recording itself, so the result is less reliable. "
         if calib else ""
+    )
+    chart_line = (
+        "A chart for this exact reading exists in a collapsed 'Show the "
+        "signal' section below your answer. You may refer to it (e.g. \"you "
+        "can expand the chart below to see it\"), but you cannot see its "
+        "contents yourself, so do not describe specific values shown in it "
+        "beyond what's given above.\n"
+        if chart_shown else
+        "No chart is available for this reading. If the question asked to "
+        "see a graph/chart/plot, say so in one short clause -- do NOT say "
+        "you are unable to display charts at all, since the app normally "
+        "can; this particular reading just doesn't have one.\n"
     )
 
     # The plain-language lines lead. Raw Hz and confidence are still handed
@@ -556,6 +576,7 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         f"{calib_line}"
         f"{forecast_line}"
         f"{technical_block}\n"
+        f"{chart_line}\n"
         f"User question: {user_query}\n\n"
         # The verdict and the two hertz figures are already rendered above the
         # model's text by the caller. Asking it to restate them is what kept

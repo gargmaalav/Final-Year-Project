@@ -529,12 +529,15 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         # cost the user zoom.
         dragmode="select", selectdirection="h",
     )
+    # Axis titles spell out the technical shorthand (MDF, a.u., norm.) rather
+    # than assuming the reader already knows it -- the panel titles above still
+    # carry the precise terms for anyone who wants them.
     fig.update_xaxes(title_text="Time in window (s)", range=[0, WIN_SEC], row=1, col=1)
-    fig.update_yaxes(title_text="EMG (a.u.)", range=[ylo, yhi], row=1, col=1)
+    fig.update_yaxes(title_text="Signal strength (a.u.)", range=[ylo, yhi], row=1, col=1)
     fig.update_xaxes(title_text="Time (s)", range=[float(t[0]), float(t[-1])], row=2, col=1)
-    fig.update_yaxes(title_text="MDF (Hz)", range=[mlo, mhi], row=2, col=1)
+    fig.update_yaxes(title_text="Median frequency (Hz)", range=[mlo, mhi], row=2, col=1)
     fig.update_xaxes(title_text="Frequency (Hz)", range=[0, fmax], row=3, col=1)
-    fig.update_yaxes(title_text="Power (norm.)", range=[0, 1.05], row=3, col=1)
+    fig.update_yaxes(title_text="Signal strength (normalised)", range=[0, 1.05], row=3, col=1)
 
     # Persistent "asked: t_start" marker on the MDF panel: a fixed vertical line
     # + label at the exact time the user asked about. Added as layout shapes/
