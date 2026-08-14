@@ -308,6 +308,40 @@ def _rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
+# Plotly's own legend used to sit in the figure's top margin, horizontally,
+# right above the row-1 subplot title. That's fine at full width, but this
+# chart is usually embedded in a narrower container (the chatbot's collapsed
+# "Show the signal" expander) -- there, the legend's ~5 entries wrapped onto a
+# second line and landed directly on top of the title text below it. A plain
+# HTML strip has no such failure mode: it wraps like any other paragraph, so
+# it can never overlap plot content regardless of the embedding width.
+def _key_html() -> str:
+    def _dot(color: str, label: str) -> str:
+        return (f'<span style="display:inline-flex;align-items:center;'
+                f'margin:2px 14px 2px 0;white-space:nowrap">'
+                f'<span style="display:inline-block;width:10px;height:10px;'
+                f'border-radius:50%;background:{color};margin-right:5px;'
+                f'flex:none"></span>{label}</span>')
+
+    def _line(color: str, label: str) -> str:
+        return (f'<span style="display:inline-flex;align-items:center;'
+                f'margin:2px 14px 2px 0;white-space:nowrap">'
+                f'<span style="display:inline-block;width:16px;height:0;'
+                f'border-top:2px dashed {color};margin-right:5px;'
+                f'flex:none"></span>{label}</span>')
+
+    items = (
+        _dot(LABEL_COLOR[0], LABEL_NAME[0])
+        + _dot(LABEL_COLOR[1], LABEL_NAME[1])
+        + _dot(LABEL_COLOR[2], LABEL_NAME[2])
+        + _line("#58a6ff", "fatigue trend")
+        + _line(ASK_COLOR, "time asked about")
+    )
+    return (f'<div style="font:12px -apple-system,sans-serif;color:#ccc;'
+            f'background:#161616;padding:8px 14px;display:flex;'
+            f'flex-wrap:wrap;border-bottom:1px solid #333">{items}</div>')
+
+
 def _single_subject_html(subject: int, t_start: float, side: str,
                          model_pred: dict | None = None) -> str:
     """Interactive 3-panel single-subject chart with scrub + playback.
@@ -498,10 +532,14 @@ def _single_subject_html(subject: int, t_start: float, side: str,
             ], layout=go.Layout(title=dict(text=_title(k)))))
         fig.frames = frames
 
+        # "Jump to asked time" reuses the exact same animate call the slider
+        # steps use (just aimed at k0), so it always lands on the frame the
+        # chatbot's text answer is actually describing -- the fast way back
+        # after scrubbing or playing away from it.
         fig.update_layout(
             updatemenus=[dict(
                 type="buttons", direction="left", showactive=False,
-                x=0.02, y=1.10, xanchor="left", yanchor="top",
+                x=0.02, y=1.10, xanchor="left", yanchor="top", pad=dict(r=10),
                 buttons=[
                     dict(label="▶ Play", method="animate",
                          args=[None, {"frame": {"duration": 120, "redraw": True},
@@ -509,21 +547,40 @@ def _single_subject_html(subject: int, t_start: float, side: str,
                     dict(label="⏸ Pause", method="animate",
                          args=[[None], {"frame": {"duration": 0, "redraw": False},
                                         "mode": "immediate", "transition": {"duration": 0}}]),
+                    dict(label="⏮ Jump to asked time", method="animate",
+                         args=[[str(k0)], {"frame": {"duration": 0, "redraw": True},
+                                           "mode": "immediate", "transition": {"duration": 0}}]),
                 ])],
             sliders=[dict(
                 active=k0, x=0.02, y=0, len=0.96, xanchor="left", yanchor="top",
                 pad=dict(t=40, b=10), currentvalue=dict(prefix="Time: ", font=dict(size=12)),
-                steps=[dict(method="animate", label=f"{mdf_t[k]:.0f}s",
+                # No per-step text label: with a couple hundred 2 s steps
+                # across a long recording, Plotly stacked every one of those
+                # labels along the track and they overlapped into an
+                # unreadable smear of digits. currentvalue above already
+                # shows the selected time, so the steps only need their tick.
+                steps=[dict(method="animate", label="",
                             args=[[str(k)], {"frame": {"duration": 0, "redraw": True},
                                              "mode": "immediate", "transition": {"duration": 0}}])
                        for k in range(n_frames)])])
 
+    # Reset-zoom restores every panel's original axis ranges in one click --
+    # the scroll-zoom + box-select drag mode makes it easy to zoom into a
+    # panel and then have no obvious way back short of a page reload.
     fig.update_layout(
-        template="plotly_dark", height=880 if animate else 820, showlegend=True,
+        updatemenus=list(fig.layout.updatemenus) + [dict(
+            type="buttons", direction="left", showactive=False,
+            x=0.98, y=1.10, xanchor="right", yanchor="top",
+            buttons=[dict(label="⤾ Reset zoom", method="relayout", args=[{
+                "xaxis.range": [0, WIN_SEC], "yaxis.range": [ylo, yhi],
+                "xaxis2.range": [float(t[0]), float(t[-1])], "yaxis2.range": [mlo, mhi],
+                "xaxis3.range": [0, fmax], "yaxis3.range": [0, 1.05],
+            }])])])
+
+    fig.update_layout(
+        template="plotly_dark", height=880 if animate else 820, showlegend=False,
         title=dict(text=_title(k0)),
-        margin=dict(t=110 if animate else 80, b=60),
-        legend=dict(orientation="h", yanchor="bottom", y=1.14 if animate else 1.02,
-                    xanchor="right", x=1.0),
+        margin=dict(t=110 if animate else 90, b=60),
         # box-select defaults to a horizontal (time) band for select-to-inspect
         # on the MDF panel; scroll-zoom stays available so select mode does not
         # cost the user zoom.
@@ -569,7 +626,8 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     # .animate() on load and scrolls the chart away from t_start immediately.
     chart = fig.to_html(full_html=False, auto_play=False, include_plotlyjs=False,
                         config={"responsive": True, "scrollZoom": True})
-    return _wrap_for_iframe(chart) + _select_inspect_html(mdf_t, mdf_v, mdf_labels)
+    return (_key_html() + _wrap_for_iframe(chart)
+            + _select_inspect_html(mdf_t, mdf_v, mdf_labels))
 
 
 def render_window(subject: int, t_start: float, side: str = "R",
