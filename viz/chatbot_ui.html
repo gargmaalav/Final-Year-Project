@@ -1119,7 +1119,7 @@
       '<div class="fig-caption" id="fig-caption"></div></div>';
     document.getElementById("fig-frame").srcdoc = html;
     document.getElementById("fig-caption").innerHTML =
-      'Figure 1. How tired subject ' + captionSubject + '’s muscle is over the session, ' +
+      'Figure 1. How tired subject ' + escapeHtml(String(captionSubject)) + '’s muscle is over the session, ' +
       'plus a close-up of the ' + (side === "L" ? "left" : "right") + '-side signal. Cursor at ' +
       '<span class="narrow">' + tStart.toFixed(1) + ' s</span>.';
     if (forecast) {
