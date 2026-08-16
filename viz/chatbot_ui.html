@@ -115,7 +115,7 @@
   #model-btn { display: flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 3px; padding: 6px 10px; font-size: 12.5px; color: var(--text-2); transition: border-color 120ms ease, background 120ms ease; }
   #model-btn:hover { border-color: var(--border-strong); background: var(--bg-1); }
   #model-btn.open { border-color: var(--border-strong); }
-  #model-btn .name { font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 12px; color: var(--text-1); }
+  #model-btn .name { font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 12px; color: var(--text-1); max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #model-btn svg { font-size: 14px; color: var(--text-3); }
   #show-figures-btn { width: 30px; height: 30px; border-radius: 3px; font-size: 16px; }
   #show-figures-btn:hover { background: var(--bg-1); color: var(--text-1); }
@@ -127,7 +127,7 @@
   .model-row:hover { background: var(--bg-2); }
   .model-row svg { font-size: 14px; color: transparent; }
   .model-row.selected svg { color: var(--accent); }
-  .model-row .name { flex: 1; font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 12.5px; color: var(--text-1); }
+  .model-row .name { flex: 1; min-width: 0; font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 12.5px; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .model-row .note { font-size: 11px; color: var(--text-3); }
 
   #thread { flex: 1; padding: 24px 40px; display: flex; flex-direction: column; gap: 26px; overflow-y: auto; }
@@ -404,10 +404,10 @@
     </div>
   </div>
 
-  <div id="fig-rail" class="hidden">
+  <button id="fig-rail" class="hidden" aria-label="Open figures panel">
     <svg class="icon"><use href="#i-panel-right-open"/></svg>
     <span class="label">Figures</span>
-  </div>
+  </button>
 
   <div id="fig-pane">
     <div id="fig-pane-header">
@@ -663,7 +663,10 @@
     try { STATE.chats = JSON.parse(localStorage.getItem("emg_chats") || "[]"); }
     catch (e) { STATE.chats = []; }
   }
-  function saveChats() { localStorage.setItem("emg_chats", JSON.stringify(STATE.chats)); }
+  function saveChats() {
+    try { localStorage.setItem("emg_chats", JSON.stringify(STATE.chats)); }
+    catch (e) { /* quota exceeded or private-mode storage -- chat still works this session */ }
+  }
 
   function fmtAgo(ts) {
     var s = (Date.now() - ts) / 1000;
@@ -749,10 +752,6 @@
   // ================= thread helpers =================
   function clearThread() { $("thread").innerHTML = ""; }
   function threadHasEmptyState() { return $("thread").querySelector("#empty-state") !== null; }
-  function showEmptyState() {
-    clearThread();
-    var el = document.getElementById("empty-state");
-  }
   var EMPTY_STATE_HTML = null;
   (function captureEmptyState() { EMPTY_STATE_HTML = $("empty-state").outerHTML; })();
 
@@ -762,16 +761,15 @@
     renderSuggestions();
   }
 
-  var lastSig = null;
-  function scrollIfNeeded(forceType) {
+  // measure "was the user already near the bottom" BEFORE appending -- an
+  // append always changes scrollHeight, so measuring after would always
+  // read as "near bottom" and force-scroll regardless of where the user
+  // actually was (spec's autoscroll-near-bottom rule).
+  function appendToThread(node) {
     var t = $("thread");
-    var last = t.lastElementChild;
-    var sig = t.children.length + ":" + forceType;
     var nearBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 220;
-    if (sig !== lastSig || nearBottom) {
-      lastSig = sig;
-      t.scrollTop = t.scrollHeight;
-    }
+    t.appendChild(node);
+    if (nearBottom) t.scrollTop = t.scrollHeight;
   }
 
   function appendUserBubble(text) {
@@ -783,8 +781,7 @@
     b.style.maxWidth = STATE.vw < 780 ? "88%" : "66%";
     b.textContent = text;
     row.appendChild(b);
-    $("thread").appendChild(row);
-    scrollIfNeeded("user");
+    appendToThread(row);
     return row;
   }
 
@@ -991,16 +988,32 @@
     copyBtn.className = "icon-btn";
     copyBtn.title = "Copy reply"; copyBtn.setAttribute("aria-label", "Copy reply");
     copyBtn.innerHTML = '<svg class="icon"><use href="#i-copy"/></svg>';
+    function showCopied() {
+      var flag = document.createElement("span");
+      flag.className = "copied-flag";
+      flag.innerHTML = '<svg class="icon"><use href="#i-check"/></svg>Copied';
+      right.insertBefore(flag, copyBtn);
+      setTimeout(function () { flag.remove(); }, 1600);
+    }
+    function fallbackCopy(text) {
+      // clipboard API is unavailable outside a secure context (e.g. a
+      // teammate opening this over plain http://<lan-ip>:8000)
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { if (document.execCommand("copy")) showCopied(); }
+      catch (e) { /* no copy mechanism available; leave silently as-is */ }
+      ta.remove();
+    }
     copyBtn.addEventListener("click", function () {
       var textToCopy = proseSource;
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(textToCopy).then(function () {
-          var flag = document.createElement("span");
-          flag.className = "copied-flag";
-          flag.innerHTML = '<svg class="icon"><use href="#i-check"/></svg>Copied';
-          right.insertBefore(flag, copyBtn);
-          setTimeout(function () { flag.remove(); }, 1600);
-        });
+        navigator.clipboard.writeText(textToCopy).then(showCopied, function () { fallbackCopy(textToCopy); });
+      } else {
+        fallbackCopy(textToCopy);
       }
     });
     var regenBtn = document.createElement("button");
@@ -1020,8 +1033,7 @@
     actions.appendChild(right);
     wrap.appendChild(actions);
 
-    $("thread").appendChild(wrap);
-    scrollIfNeeded("reading");
+    appendToThread(wrap);
     return wrap;
   }
 
@@ -1032,8 +1044,7 @@
       '<div class="row"><span class="dot"></span><span></span></div>' +
       '<div class="sweep-track"><span class="sweep-bar"></span></div>';
     wrap.querySelector(".row span:last-child").textContent = text;
-    $("thread").appendChild(wrap);
-    scrollIfNeeded("loading");
+    appendToThread(wrap);
     return wrap;
   }
 
@@ -1042,8 +1053,7 @@
     wrap.className = "msg-wrap msg-guidance";
     wrap.innerHTML = '<div class="guidance-rule"></div><p class="guidance-text"></p>';
     wrap.querySelector("p").innerHTML = boldNumbers(text);
-    $("thread").appendChild(wrap);
-    scrollIfNeeded("guidance");
+    appendToThread(wrap);
   }
 
   function renderUploadNotice(filename, detail) {
@@ -1068,8 +1078,7 @@
       $("sample-rate").focus();
     });
     wrap.appendChild(warn);
-    $("thread").appendChild(wrap);
-    scrollIfNeeded("upload");
+    appendToThread(wrap);
   }
 
   function renderFailure(userText, detail, retryFn) {
@@ -1095,8 +1104,7 @@
     card.querySelector(".failure-meta").textContent = new Date().toLocaleTimeString();
     card.querySelector(".retry-btn").addEventListener("click", retryFn);
     wrap.appendChild(card);
-    $("thread").appendChild(wrap);
-    scrollIfNeeded("failure");
+    appendToThread(wrap);
   }
 
   // ================= figures pane =================
@@ -1304,7 +1312,7 @@
       }
       loadingRow.remove();
       if (err && err.guidance) {
-        renderGuidance(err.detail);
+        renderGuidance(escapeHtml(err.detail || ""));
         figIdle();
       } else {
         renderFailure(null, "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
@@ -1319,7 +1327,7 @@
     apiRender(subject, tStart, side).then(function (html) {
       figShow(html, subject, side, tStart, forecast);
     }).catch(function () {
-      setFigStatus("No reading yet");
+      figIdle();
     });
     upsertChat(chatId, {
       title: "Subject " + subject + ", " + (side === "L" ? "left" : "right") + " side",
@@ -1337,7 +1345,7 @@
     function finishUpload(forecast) {
       apiRenderUpload(file, tStart, sampleRate).then(function (html) {
         figShow(html, file.name, "R", tStart, forecast);
-      }).catch(function () { setFigStatus("No reading yet"); });
+      }).catch(function () { figIdle(); });
       upsertChat(chatId, { title: file.name, subtitle: "Your recording", upload: true });
     }
 
@@ -1382,7 +1390,7 @@
           markSampleRateRequired(true);
           renderUploadNotice(file.name, err.detail);
         } else {
-          renderGuidance(err.detail);
+          renderGuidance(escapeHtml(err.detail || ""));
         }
         figIdle();
       } else {
@@ -1466,7 +1474,7 @@
     $("attach-row").innerHTML = "";
     var chip = document.createElement("div");
     chip.className = "attach-chip";
-    chip.innerHTML = '<svg class="icon"><use href="#i-file-spreadsheet"/></svg><span></span><span class="x-btn" role="button" tabindex="0" aria-label="Remove attachment"><svg class="icon"><use href="#i-x"/></svg></span>';
+    chip.innerHTML = '<svg class="icon"><use href="#i-file-spreadsheet"/></svg><span></span><button type="button" class="x-btn" aria-label="Remove attachment"><svg class="icon"><use href="#i-x"/></svg></button>';
     chip.querySelector("span").textContent = f.name;
     chip.querySelector(".x-btn").addEventListener("click", function () {
       STATE.pendingFile = null;
