@@ -780,6 +780,22 @@ def ranking_facts(ranking: dict) -> list[str]:
     return facts
 
 
+def _person_rule(window: dict | None) -> str:
+    """Whether the measurement belongs to the reader or to a third party.
+
+    An uploaded recording is the reader's own and "you" is right. A dataset
+    subject is somebody else entirely, and addressing the reader as them turns
+    a reading into a personal instruction: "you may need to adjust your grip
+    or technique", written about subject 11 to someone who is not subject 11.
+    """
+    if (window or {}).get("source") == "upload":
+        return ("The recording belongs to the person reading this, so address "
+                "them directly as 'you'.")
+    return ("The person measured is NOT the person reading this -- the reader "
+            "is looking at someone else's recording. Write about them in the "
+            "third person ('they', 'their'). Never write 'you' or 'your'.")
+
+
 def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
                  window: dict | None = None, reading: dict | None = None,
                  chart_shown: bool = False) -> str:
@@ -916,10 +932,18 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         # performance capacity"). A 3B model holds two or three prohibitions,
         # not twelve, so the list is short and the length limit is enforced in
         # code instead of asked for -- see interpret.trim_sentences().
-        "Write the way you would say it out loud to the person who did the "
-        "exercise: short sentences, everyday words. Never write 'indicating', "
-        "'indicative of', or 'deviation'. If one sentence covers it, stop at "
-        "one.\n\n"
+        "Write the way you would say it out loud: short sentences, everyday "
+        "words. Never write 'indicating', 'indicative of', or 'deviation'. If "
+        "one sentence covers it, stop at one.\n\n"
+        # This used to read "say it out loud TO THE PERSON WHO DID THE
+        # EXERCISE", which is true of an upload and false of a dataset subject
+        # -- and the model took it literally, answering a question about
+        # subject 11 with "you may need to adjust your grip". The reader is
+        # not subject 11. Both variants are fixed text and sit above the
+        # per-question block, so each still caches; there are simply two
+        # prefixes instead of one.
+        + _person_rule(window) +
+        "\n\n"
         # ORDER MATTERS FOR SPEED, not just for sense. Ollama reuses the KV
         # cache for whatever prefix a prompt shares with the previous one, and
         # on this CPU-only box prompt processing is the single biggest cost in
@@ -950,9 +974,20 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         "you write will be wrong.\n"
         "Do NOT say what will happen next, that fatigue will continue, or "
         "that it will get worse, unless a fatigue trend is given above. "
-        "Nothing here measures the future. If the question also asks for "
-        "sport or training suggestions, ignore that part -- it is answered "
-        "separately.\n\n"
+        "Nothing here measures the future.\n"
+        # The old wording only declined suggestions when they were ASKED for,
+        # and the model volunteered them unasked on a plain reading -- "they
+        # should take regular breaks to rest and recover", "you may need to
+        # adjust your grip or technique". None of that is measured, none of it
+        # was requested, and the recommendation path exists to answer it
+        # properly when it is. Enforced in code as well: see
+        # interpret.drop_advice().
+        "Do NOT give advice. No suggestions about resting, taking a break, "
+        "stopping, pacing, hydration, grip, technique, training or intensity "
+        "-- not even one clause, and not even if it seems helpful. Nothing "
+        "above measures whether any of that is warranted. Report what the "
+        "reading shows and stop. Suggestions are answered separately when "
+        "they are asked for.\n\n"
         "Four rules, each added after the model broke it:\n"
         "1. Report the fatigue verdict as given, in BOTH directions. If the "
         "measurement says NOT fatigued, your answer must say they are not "

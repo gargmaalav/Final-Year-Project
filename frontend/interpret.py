@@ -310,7 +310,10 @@ def verdict_sentence(reading: dict, who: str) -> str:
 
 
 _ECHO = re.compile(
-    r"(sign|signs) of fatigue|is (not )?fatigued|no signs? of|"
+    # "is fatigued" alone missed "This indicates they ARE fatigued", which was
+    # a paragraph of its own restating the rendered verdict and nothing else.
+    r"(sign|signs) of fatigue|(is|are|was|were|isn'?t|aren'?t) (not )?fatigued|"
+    r"no signs? of|"
     # "within their normal fresh range" is deliberately NOT here: a genuinely
     # useful answer opened "This reading falls within their normal fresh
     # range, indicating that ...", and the test for that caught this when it
@@ -603,6 +606,53 @@ def drop_hertz_comparisons(prose: str) -> str:
     for para in re.split(r"\n\s*\n", prose.strip()):
         good = [s for s in re.split(r"(?<=[.!?])\s+", para.strip())
                 if not _HZ_COMPARISON.search(s)]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip() or prose
+
+
+# Telling the reader to DO something. Two halves, and a sentence needs both:
+# a directive construction, and a thing to do that this measurement says
+# nothing about. "They should keep going" is advice; "the signal should be
+# read against their own baseline" is not, and only the first has a verb from
+# the second list.
+_DIRECTIVE = re.compile(
+    r"\b(should|shouldn'?t|ought to|need(?:s)? to|must|may want to|"
+    r"might want to|may need to|consider|try to|make sure|be sure to|"
+    r"it(?:'s| is) (?:important|advisable|worth) to|"
+    r"(?:i|we|you) (?:recommend|suggest|advise))\b", re.IGNORECASE)
+_ADVICE_TOPIC = re.compile(
+    r"\b(rest|resting|break|breaks|stop|stopping|pause|recover|recovery|"
+    r"hydrat\w+|drink|water|pace|pacing|slow down|ease off|back off|"
+    r"grip|technique|form|posture|intensity|workload|train\w*|exercis\w*|"
+    r"warm up|cool down|stretch\w*|sleep|nutrition|adjust\w*)\b",
+    re.IGNORECASE)
+
+
+def drop_advice(prose: str) -> str:
+    """Remove sentences telling the reader what to do about the reading.
+
+    A plain reading question got "they should take regular breaks to rest and
+    recover during exercise" and "you may need to adjust your grip or
+    technique to maintain control". Nothing in an EMG window measures whether
+    a break, a grip change or a lighter session is warranted -- the model is
+    filling a gap with generic coaching, and it reads as though the
+    measurement supports it.
+
+    This is only for answers where no recommendation was asked for. When one
+    IS asked for, recommend.py builds it deliberately, with its disclaimer,
+    and this must not run over that.
+
+    Never returns empty: if advice was the entire answer the caller still has
+    the rendered verdict above it, so an empty string here is safe, but the
+    prose is handed back rather than silently blanked.
+    """
+    if not prose:
+        return prose
+    kept = []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        good = [s for s in re.split(r"(?<=[.!?])\s+", para.strip())
+                if not (_DIRECTIVE.search(s) and _ADVICE_TOPIC.search(s))]
         if good:
             kept.append(" ".join(good))
     return "\n\n".join(kept).strip() or prose

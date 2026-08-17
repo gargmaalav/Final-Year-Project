@@ -27,7 +27,15 @@ import re
 
 _KEYWORDS = re.compile(
     r"\b(sport|recommend|suggest|suggestion|plan|diet|nutrition|gym|"
-    r"training|workout|exercise|good at|suitable|suited)\b", re.IGNORECASE)
+    r"training|workout|exercise|good at|suitable|suited|advice|advise)\b|"
+    # The plainest way to ask for one, and none of it was listed: "what should
+    # they do about it?" produced a bare re-explanation with no suggestion at
+    # all. Deliberately narrow -- "should I be worried?" is asking what the
+    # reading means, not what to do about it, and stays a follow-up.
+    r"\bwhat (?:should|shall|do|can|could) (?:i|we|they|he|she) do\b|"
+    r"\bwhat(?:'s| is| are)? (?:the )?next steps?\b|"
+    r"\bshould (?:i|we|they|he|she) (?:rest|stop|take a break|keep going|"
+    r"continue|carry on|push on|slow down|ease off)\b", re.IGNORECASE)
 
 # The same words in their machine-learning sense. "What training data was
 # used?" and "how was the model trained?" are questions about the project, and

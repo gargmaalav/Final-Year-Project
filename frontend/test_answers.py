@@ -1091,6 +1091,83 @@ def _():
 # Observed live: both figures real and correctly attributed, the relation
 # between them backwards. 66.8 is below 70.0, not above it.
 
+# A plain reading question came back with "they should take regular breaks to
+# rest and recover during exercise" and "you may need to adjust your grip or
+# technique". Nothing in an EMG window measures whether any of that is
+# warranted, and none of it was asked for.
+
+@check("coaching volunteered on a plain reading is removed")
+def _():
+    for advice in (
+            "They should take regular breaks to rest and recover.",
+            "You may need to adjust your grip or technique.",
+            "They ought to ease off the intensity for a while.",
+            "Consider stopping to rest before continuing.",
+            "We recommend they slow down and pace themselves."):
+        prose = "The signal has barely moved. " + advice
+        out = interpret.drop_advice(prose)
+        assert out == "The signal has barely moved.", (advice, out)
+
+
+@check("description that merely contains a directive word is not advice")
+def _():
+    for keep in ("The reading should be judged against their own fresh level.",
+                 "A drop this small does not need explaining.",
+                 "Their signal is holding steady this far into the effort.",
+                 "This is the point where fatigue usually starts to show."):
+        assert interpret.drop_advice(keep) == keep, keep
+
+
+@check("dropping advice never empties an answer")
+def _():
+    only = "They should take a break and rest."
+    assert interpret.drop_advice(only).strip(), "stripped the answer to nothing"
+
+
+@check("a reading about a dataset subject is told to stay in the third person")
+def _():
+    built = prompt.build_prompt(
+        {"mdf_hz": 66.8, "fatigue_label": 0, "confidence": 0.95,
+         "fatigue_state": "non-fatigue"}, "is subject 11 fatigued at 60s?",
+        None, {"subject": 11, "t_start": 60.0, "side": "R",
+               "source": "dataset"}, None, True)
+    assert "NOT the person reading this" in built, built
+    assert "Never write 'you' or 'your'" in built, built
+    # the instruction that caused it: it told the model to speak TO the subject
+    assert "out loud to the person who did the exercise" not in built, built
+
+
+@check("a reading about the reader's own upload keeps the second person")
+def _():
+    built = prompt.build_prompt(
+        {"mdf_hz": 66.8, "fatigue_label": 0, "confidence": 0.95,
+         "fatigue_state": "non-fatigue"}, "am I fatigued?", None,
+        {"t_start": 60.0, "source": "upload", "name": "run1.csv"}, None, True)
+    assert "address them directly as 'you'" in built, built
+    assert "NOT the person reading this" not in built, built
+
+
+@check("every reading is told not to volunteer advice")
+def _():
+    built = prompt.build_prompt(
+        {"mdf_hz": 66.8, "fatigue_label": 0, "confidence": 0.95,
+         "fatigue_state": "non-fatigue"}, "is subject 11 fatigued?", None,
+        {"subject": 11, "t_start": 60.0, "side": "R", "source": "dataset"},
+        None, True)
+    assert "Do NOT give advice" in built, built
+    assert "not even if it seems helpful" in built, built
+
+
+@check("a plural verdict restatement is caught as an echo")
+def _():
+    # "is fatigued" alone missed this -- its own paragraph, saying nothing else
+    prose = ("This reading was taken well into their effort.\n\n"
+             "This indicates they are fatigued.")
+    out = interpret.strip_verdict_echo(prose, "Subject 11")
+    assert "are fatigued" not in out, out
+    assert "well into their effort" in out, out
+
+
 @check("a follow-up placing one hertz figure above another loses that sentence")
 def _():
     prose = ("Their signal has eased off a little. Their current signal is "
