@@ -196,7 +196,17 @@ def classify_endpoint(subject: int, t_start: float, side: str = "R"):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Liveness plus readiness.
+
+    "ok" means the port is open; "warm" means the model is loaded and the
+    prompt prefix is cached, which is the difference between a ~13 s answer
+    and a ~27 s one. They are reported separately because a question asked
+    while warm-up is still running queues behind it -- so "wait for warm"
+    is real advice, not a nicety. See frontend/turn.py's warm_up().
+    """
+    return {"status": "ok",
+            "warm": bool(turn_engine.WARM.get("ready")),
+            "warm_error": turn_engine.WARM.get("error")}
 
 
 if __name__ == "__main__":

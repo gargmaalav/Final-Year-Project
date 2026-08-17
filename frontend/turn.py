@@ -29,6 +29,7 @@ import functools
 import os
 import re
 import sys
+import time
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (os.path.join(_REPO_ROOT, "models"),
@@ -81,6 +82,13 @@ _FORECAST_CHART_CAPTION = (
 # "llama3.2:3b" that every new session used, so changing the model in llm.py
 # alone had no effect on the app at all.
 DEFAULT_MODEL = llm_default_model
+
+# Whether the model is loaded and the prompt prefix is cached. Read by
+# serve.py's /health so a caller can wait for the fast path instead of
+# guessing: a question asked before this flips is not just un-warmed, it
+# queues BEHIND the warm-up (Ollama serialises requests) and so comes back
+# slower than if there had been no warm-up at all.
+WARM: dict = {"ready": False, "error": None}
 
 
 def new_session() -> dict:
@@ -1045,6 +1053,7 @@ def warm_up() -> None:
     Never raises: Ollama may not be running, and a demo server that refuses to
     start because a warm-up failed is worse than a slow first answer.
     """
+    started = time.time()
     try:
         features = {"mdf_hz": 60.0, "fatigue_label": 1, "confidence": 0.9,
                     "fatigue_state": "fatigue"}
@@ -1052,8 +1061,15 @@ def warm_up() -> None:
                               {"subject": 1, "t_start": 0.0, "side": "R",
                                "source": "dataset"}, None, True)
         chat([{"role": "user", "content": primer}], num_predict=1, timeout=180)
-    except Exception:
-        pass
+        WARM["ready"] = True
+        print(f"[warm-up] ready in {time.time() - started:.0f}s -- "
+              "answers should now take about 15s", flush=True)
+    except Exception as e:
+        # Cold is a valid state to serve in, it is just slower. Say so rather
+        # than leaving the reader wondering why the first answer took a minute.
+        WARM["error"] = str(e)
+        print(f"[warm-up] failed ({type(e).__name__}); the first question will "
+              "be slow but everything still works", flush=True)
 
 
 def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
