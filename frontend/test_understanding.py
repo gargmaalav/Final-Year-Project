@@ -123,6 +123,51 @@ FOLLOW_UPS = [
     ({"subject": 13, "t_start": 60.0, "side": "R"}, "how about subject 5?", 5, 60.0),
 ]
 
+# Questions about the answer just given, not about new data. A miss here is
+# not a small one: it falls through to READING, which re-classifies the same
+# window and prints the same rendered verdict back, so the reader asking about
+# an answer is handed a byte-identical copy of it. "so what does this mean"
+# missed on both the leading "so" and on "this" where only "that" was listed.
+# (question, expected followup_kind)
+ABOUT_LAST_ANSWER = [
+    ("why?", intent.WHY),
+    ("why is that?", intent.WHY),
+    ("how come?", intent.WHY),
+    ("ok why?", intent.WHY),
+    ("explain that", intent.WHY),
+    ("so what does this mean", intent.MEANING),
+    ("so, what does this mean?", intent.MEANING),
+    ("what does that mean?", intent.MEANING),
+    ("what does this mean for me", intent.MEANING),
+    ("what's that mean", intent.MEANING),
+    ("so what?", intent.MEANING),
+    ("meaning?", intent.MEANING),
+    ("is that bad?", intent.MEANING),
+    ("how serious is that?", intent.MEANING),
+    ("what should i make of that", intent.MEANING),
+    ("in simpler terms", intent.SIMPLER),
+    ("in plain english", intent.SIMPLER),
+    ("break that down", intent.SIMPLER),
+    ("i don't understand", intent.SIMPLER),
+    ("explain that in simpler terms", intent.SIMPLER),
+    ("tell me more", intent.MORE),
+    ("more", intent.MORE),
+    ("go on", intent.MORE),
+    ("elaborate", intent.MORE),
+]
+
+# ...and the widening must not swallow questions that DO name new data. Each
+# of these contains a follow-up phrase and is still a fresh measurement.
+NOT_ABOUT_LAST_ANSWER = [
+    "is subject 11 fatigued at 60s",
+    "what does median frequency mean?",
+    "what does that mean for subject 5",
+    "so what should i do",
+    "summarise subject 7",
+    "compare subject 5 and 9",
+    "why is subject 7 different",
+]
+
 # The invention failure this architecture exists to prevent: with no previous
 # turn to carry from, a follow-up must ask, never fill in a plausible window.
 MUST_ASK = [
@@ -252,6 +297,25 @@ def main() -> int:
             failed += 1
             failures.append(f"  {question!r}\n     wanted a both-sides compare, "
                             f"got {got.kind} both_sides={got.both_sides}")
+
+    for question, want_kind in ABOUT_LAST_ANSWER:
+        got = intent.route(question)
+        got_kind = intent.followup_kind(question)
+        if got.kind == intent.FOLLOWUP and got_kind == want_kind:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r}\n     wanted a {want_kind} "
+                            f"follow-up, got {got.kind}/{got_kind}")
+
+    for question in NOT_ABOUT_LAST_ANSWER:
+        got = intent.route(question)
+        if got.kind != intent.FOLLOWUP:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r}\n     names new data, but was read "
+                            "as a question about the previous answer")
 
     for previous, question, want_subject, want_t in FOLLOW_UPS:
         resolved = extract.resolve_query(question, previous, duration=DURATION,

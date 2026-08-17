@@ -131,16 +131,79 @@ def is_vague_subject_request(text: str, subjects: list[int]) -> bool:
 # routed as a fresh reading -- it re-classified the same window and restated
 # the same answer, never addressing what was asked. These are answered from the
 # previous turn's already-measured numbers instead.
+#
+# Conversational openers are stripped before matching. "so what does this
+# mean" is the single most natural thing to type after a reading and it missed
+# on both counts -- the leading "so", and "this" where only "that" was listed.
+# It fell through to READING, which re-classified the same window and printed
+# the same rendered verdict back, so the reader's follow-up was answered with a
+# byte-identical copy of the answer they were asking about.
+_FILLER = r"(?:(?:so|ok|okay|and|but|right|well|hmm+|uh+|um+|hey)[,\s]+)*"
+# "that", "this", "it" are the same referent here -- the answer just given.
+_IT = r"(?:that|this|it)"
+# "in simpler terms" both stands alone and tails another request ("explain
+# that in simpler terms"), which as separate alternatives matched neither.
+_PLAINLY = r"in (?:simpler|plain|simple|other) (?:terms|words|english)"
 _FOLLOWUP_RE = re.compile(
-    r"^\s*(why\??|why is that\??|why though\??|how come\??|"
+    r"^\s*" + _FILLER + r"(?:"
+    r"why\??|why " + _IT + r"\??|why is " + _IT + r"\??|why though\??|how come\??|"
     r"(?:can you |could you |please )?(?:explain|elaborate|expand)"
-    r"(?: (?:that|this|it|more|further|again))?\??|"
+    r"(?: (?:that|this|it|more|further|again))?(?: " + _PLAINLY + r")?\??|"
     r"(?:tell me |say )?more\??|say more|go on|"
-    r"what does that mean\??|what do you mean\??|"
-    r"in (?:simpler|plain|simple|other) (?:terms|words|english)\??|"
+    r"what does " + _IT + r" mean(?: for (?:them|him|her|me|us))?\??|"
+    r"what'?s " + _IT + r" mean\??|what do you mean\??|"
+    r"what does " + _IT + r" (?:tell|say to) (?:me|us)\??|"
+    r"so what\??|meaning\??|"
+    r"what (?:should|do) (?:i|we) (?:make of|take from) " + _IT + r"\??|"
+    r"is " + _IT + r" (?:bad|good|normal|serious|ok|okay|a problem|concerning)\??|"
+    r"how (?:bad|serious|significant) is " + _IT + r"\??|"
+    + _PLAINLY + r"\??|"
     r"simpler\??|simplify(?: that| this| it)?\??|"
     r"break (?:that|it) down\??|"
-    r"i don'?t (?:get|understand)(?: that| it)?\??)\s*$", re.IGNORECASE)
+    r"i don'?t (?:get|understand)(?: that| it)?\??"
+    r")\s*$", re.IGNORECASE)
+
+# Which kind of re-explanation was asked for. All four used to get one generic
+# "explain the reasoning" instruction, and the model answered every one of them
+# the same way: by restating the answer it was handed. What "why?" wants (the
+# causal chain) is not what "what does this mean?" wants (the implication), and
+# the prompt can only aim at one of them at a time -- so which one is decided
+# here rather than left to the model to infer from four words.
+WHY = "why"            # the causal chain behind the result
+MEANING = "meaning"    # what the reader should take away from it
+SIMPLER = "simpler"    # the same thing in plainer words
+MORE = "more"          # the detail the first answer left out
+
+_KIND_RES = [
+    # \bplain\b, not "plain": unanchored it matches inside "exPLAINed", which
+    # sent every "explain that" down the simplification branch.
+    (SIMPLER, re.compile(r"\bsimpl|\bplain\b|other words|"
+                         r"break (?:that|it) down|don'?t (?:get|understand)",
+                         re.IGNORECASE)),
+    (MORE, re.compile(r"\bmore\b|go on|elaborate|expand", re.IGNORECASE)),
+    (WHY, re.compile(r"\bwhy\b|how come|\bexplain\b", re.IGNORECASE)),
+    (MEANING, re.compile(r"\bmean|so what|make of|take from|"
+                         r"(?:that|this|it) (?:tell|say to) (?:me|us)|"
+                         r"\bis (?:that|this|it) (?:bad|good|normal|serious|ok|"
+                         r"okay|a problem|concerning)|how (?:bad|serious|"
+                         r"significant)", re.IGNORECASE)),
+]
+
+
+def followup_kind(text: str) -> str:
+    """Which of the four re-explanations "why?" / "what does this mean?" want.
+
+    Order matters, most specific first: "explain that in simpler terms" is a
+    simplification rather than a request for the causal chain, and "tell me
+    more" asks for the detail that was left out rather than for what the
+    result means. Anything unrecognised is treated as MEANING -- the most
+    generally useful of the four, and the one a bare "so?" is usually after.
+    """
+    probe = text or ""
+    for kind, pattern in _KIND_RES:
+        if pattern.search(probe):
+            return kind
+    return MEANING
 
 
 def is_followup(text: str) -> bool:
