@@ -47,7 +47,7 @@ import charts                                    # noqa: E402
 import extract                                   # noqa: E402
 import intent as intent_router                   # noqa: E402
 import interpret                                 # noqa: E402
-from llm import LLMError, chat                   # noqa: E402
+from llm import LLMError, chat, MODEL as llm_default_model  # noqa: E402
 from prompt import (build_facts_prompt, build_followup_prompt,  # noqa: E402
                     build_prompt,
                     compare_facts, describe_window, onset_facts,
@@ -76,7 +76,10 @@ _FORECAST_CHART_CAPTION = (
     "projects the trend forward; the shaded bands show the typical and 95% "
     "uncertainty range around that projection.")
 
-DEFAULT_MODEL = "llama3.2:3b"
+# Taken from llm.py rather than repeated: this was a second hardcoded
+# "llama3.2:3b" that every new session used, so changing the model in llm.py
+# alone had no effect on the app at all.
+DEFAULT_MODEL = llm_default_model
 
 
 def new_session() -> dict:
@@ -114,6 +117,19 @@ def _subjects() -> list[int]:
         return available_subjects()
     except Exception:
         return list(range(1, 14))
+
+
+# Rebuilding the figure costs ~2.2 s even when the underlying segment is
+# already cached -- the time is Plotly assembling ~130 animation frames and
+# serialising them, not reading the data. Asking the same question twice (or
+# re-opening a chat) paid it again every time. Keyed on the three arguments
+# this module actually passes; render_window's `model_pred` is unhashable and
+# no longer drawn, which is why the cache lives here rather than on it.
+#
+# maxsize is small on purpose: each entry is a ~3.3 MB HTML string.
+@functools.lru_cache(maxsize=8)
+def _cached_chart(subject: int, t_start: float, side: str) -> str:
+    return render_window(subject, t_start, side)
 
 
 @functools.lru_cache(maxsize=8)
@@ -574,7 +590,7 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
 
     chart_html, chart_caption = None, None
     try:
-        chart_html = render_window(subject, t_start, side)
+        chart_html = _cached_chart(subject, t_start, side)
         chart_caption = _READING_CHART_CAPTION
     except Exception:
         pass

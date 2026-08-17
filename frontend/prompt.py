@@ -780,14 +780,20 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         "exercise: short sentences, everyday words. Never write 'indicating', "
         "'indicative of', or 'deviation'. If one sentence covers it, stop at "
         "one.\n\n"
-        f"Measured result:\n"
-        f"{where_line}"
-        f"{plain_block}"
-        f"{calib_line}"
-        f"{forecast_line}"
-        f"{technical_block}\n"
-        f"{chart_line}\n"
-        f"User question: {user_query}\n\n"
+        # ORDER MATTERS FOR SPEED, not just for sense. Ollama reuses the KV
+        # cache for whatever prefix a prompt shares with the previous one, and
+        # on this CPU-only box prompt processing is the single biggest cost in
+        # a turn -- ~15 s of a ~26 s answer, three times what generating the
+        # text costs. Measured: an identical 572-token prefix evaluated in
+        # 13.71 s the first time and 0.30 s the second; the same text placed
+        # AFTER the variable part took the full 13.21 s again.
+        #
+        # So every fixed instruction is emitted first and the per-question
+        # material -- the measured values and the user's question -- goes last.
+        # Nothing below was reworded to achieve this; the blocks were only
+        # reordered. Keep it that way: moving a variable block up in front of
+        # a static one silently costs seconds per answer and nothing about the
+        # output changes to show it.
         # The verdict and the two hertz figures are already rendered above the
         # model's text by the caller. Asking it to restate them is what kept
         # inverting them, so it is told they are written and its job starts
@@ -824,4 +830,20 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         "confidence in its call, and it is not a measure of correctness.\n"
         "4. Use the percentages exactly as written. Do not convert them into "
         "fractions or approximations -- 89% must not become 'three-quarters'."
+        "\n\n"
+        # Everything above is identical for every reading and is therefore a
+        # cache hit after the first question of a session. Everything below
+        # changes per question, so it is the only part actually evaluated.
+        # `task` and `chart_line` sit here rather than higher up because both
+        # have two variants -- they cost a little to re-evaluate when the
+        # variant flips, and nothing when it does not.
+        f"{task}"
+        f"{chart_line}\n"
+        f"Measured result:\n"
+        f"{where_line}"
+        f"{plain_block}"
+        f"{calib_line}"
+        f"{forecast_line}"
+        f"{technical_block}\n"
+        f"User question: {user_query}"
     )

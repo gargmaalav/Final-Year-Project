@@ -10,7 +10,33 @@ from __future__ import annotations
 import requests
 
 OLLAMA_BASE = "http://localhost:11434"
-MODEL = "llama3.2:3b"
+# 1b generates about 2.5x faster than 3b (2.5 s vs 6.5 s for a typical answer)
+# and processes the prompt faster too. The model's job here is small by design:
+# every number, and the verdict itself, is rendered in Python -- it only writes
+# one or two sentences of connective prose.
+#
+# KNOWN WEAKNESS, measured before switching: 1b opened all four sampled
+# readings with "The person is not fatigued", including the two the classifier
+# called FATIGUED. It survives only because it writes that as its own short
+# paragraph and interpret.strip_verdict_echo drops it (tested), and because the
+# verdict the reader sees is rendered from the label in Python and cannot be
+# inverted. An echo written INLINE would get through -- see the two
+# strip_verdict_echo tests in test_answers.py. Put this back to "llama3.2:3b"
+# if answers start contradicting the verdict above them; 3b is still pulled.
+MODEL = "llama3.2:1b"
+
+# Ollama drops a model from memory 5 minutes after its last request, and
+# reloading llama3.2 off disk measured 6.7 s. Questions in a demo arrive
+# minutes apart, so nearly every one paid that -- the same question asked
+# twice in a row took 3.2 s the second time and 9.6 s after a gap. Half an
+# hour covers a session; the cost is the model staying resident in RAM.
+KEEP_ALIVE = "30m"
+
+# Answers are cut to two sentences in Python (interpret.trim_sentences), so
+# tokens generated past that are paid for at ~10 tok/s and then thrown away.
+# 160 leaves room for the longest answer we keep plus the analysis answers'
+# three sentences, and caps a runaway generation instead of waiting it out.
+NUM_PREDICT = 160
 
 # Warm calls to llama3.2:3b measured 12-25 s on a laptop. The risk is not the
 # warm case but the first call after `ollama serve` starts, which also loads
@@ -42,7 +68,9 @@ def chat(messages: list[dict], *, model: str | None = None,
                 "model": model or MODEL,
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": temperature},
+                "keep_alive": KEEP_ALIVE,
+                "options": {"temperature": temperature,
+                            "num_predict": NUM_PREDICT},
             },
             timeout=waited,
         )

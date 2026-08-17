@@ -815,6 +815,31 @@ def _():
         "expected the helper at its definition and every chat-switch path"
 
 
+@check("llama3.2:1b's inverted opening verdict is stripped")
+def _():
+    # 1b opens EVERY reading with "The person is not fatigued." -- including
+    # for subjects the classifier called fatigued. It writes it as its own
+    # paragraph, which is what lets strip_verdict_echo drop it; the rendered
+    # verdict above the prose is the one the reader sees, and it is built in
+    # Python from the label, so it cannot be inverted.
+    out = interpret.strip_verdict_echo(
+        "The person is not fatigued.\n\nThis reading puts them clearly below "
+        "their normal fresh range.", "Subject 4")
+    assert not out.startswith("The person is not fatigued"), out
+    assert "clearly below" in out, out
+
+
+@check("an inline echo survives, and that is deliberate")
+def _():
+    # The stripper works on paragraphs and never removes the last one, so it
+    # cannot empty an answer or delete reasoning. The cost is that a verdict
+    # echo written inline, in the same paragraph as real content, is kept.
+    # Recorded here so the limit is known rather than assumed away: if a model
+    # starts inlining inverted verdicts, this is the test that has to change.
+    inline = "The person is not fatigued. This reading means the muscle is tired."
+    assert interpret.strip_verdict_echo(inline, "Subject 4") == inline
+
+
 @check("lab-report words the model keeps using are swapped for plain ones")
 def _():
     # observed live under a prompt that explicitly forbade the word
