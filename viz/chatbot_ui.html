@@ -1348,6 +1348,23 @@
   $("fig-modal").addEventListener("click", function (e) {
     if (e.target === $("fig-modal")) figCloseModal();   // scrim only, not the card
   });
+  // Put the header subtitle back to whatever the newest kept figure is, after
+  // a turn that showed the "Working on it" status but produced no figure.
+  function figRestoreStatus() {
+    var newest = FIG_GROUPS[FIG_GROUPS.length - 1];
+    if (newest) {
+      STATE.figStatus = "ready";
+      setFigStatus(newest.title);
+    } else {
+      STATE.figStatus = "none";
+      setFigStatus("No reading yet");
+      if (!$("fig-content").querySelector(".fig-empty")) {
+        $("fig-content").innerHTML =
+          '<div class="fig-empty"><svg class="icon"><use href="#i-chart-spline"/></svg><span>No figure yet</span></div>';
+      }
+    }
+  }
+
   function figIdle() {
     STATE.figStatus = "none";
     FIG_GROUPS = [];
@@ -1533,17 +1550,25 @@
         forecast_chart_html: final.forecast_chart_html, forecast_chart_caption: final.forecast_chart_caption,
         window: final.window
       });
-      if (final.chart_html) {
+      if (final.chart_html || final.forecast_chart_html) {
         figShowHtml(final.chart_html, final.chart_caption, final.forecast_chart_html, final.forecast_chart_caption, final.window);
       } else {
-        figIdle();
+        // A chartless answer (a definition, the catalogue, a comparison table)
+        // must not wipe the figures already collected -- it just has nothing
+        // to add. Only clearing the in-flight placeholder, so the panel keeps
+        // showing the readings from earlier in the chat.
+        figClearPending();
+        figRestoreStatus();
       }
     }).catch(function (err) {
       loadingRow.remove();
       renderFailure(null, (err && err.detail) ||
         "The model server did not respond. Check that `python models/serve.py` is running, then retry.",
         function () { runTurn(text, file); });
-      figIdle();
+      // Same reasoning: a failed turn produced no figure, it did not
+      // invalidate the ones already on screen.
+      figClearPending();
+      figRestoreStatus();
     });
   }
 
