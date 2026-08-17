@@ -681,12 +681,18 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         "the uploaded recording itself, so the result is less reliable. "
         if calib else ""
     )
+    # The old wording described a collapsed "Show the signal" expander and
+    # invited the model to point at it -- that was the Streamlit UI, and it
+    # cost a whole sentence ("You can expand the chart below to see the exact
+    # values") on every single answer. The chart is now already on screen in
+    # the figures panel beside the answer, so there is nothing to expand and
+    # nothing worth spending a sentence telling the reader to go and look at.
     chart_line = (
-        "A chart for this exact reading exists in a collapsed 'Show the "
-        "signal' section below your answer. You may refer to it (e.g. \"you "
-        "can expand the chart below to see it\"), but you cannot see its "
-        "contents yourself, so do not describe specific values shown in it "
-        "beyond what's given above.\n"
+        "A chart of this reading is already visible in the figures panel "
+        "beside your answer -- the reader can see it without doing anything. "
+        "Do NOT tell them to open, expand, or look at the chart, and do not "
+        "spend a sentence on it. You cannot see it yourself, so do not "
+        "describe values in it beyond what's given above.\n"
         if chart_shown else
         "No chart is available for this reading. If the question asked to "
         "see a graph/chart/plot, say so in one short clause -- do NOT say "
@@ -719,14 +725,20 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
     # asked to explain why the change is too small to count instead, which is
     # a question the finding actually answers.
     if features.get("fatigue_label") in (1, 2):
-        task = ("Write 1-3 short sentences that go after it: what this "
+        task = ("Write ONE or TWO short sentences that go after it: what this "
                 "reading means for the person in practical terms. Your first "
                 "sentence must NOT be about whether they are fatigued -- that "
                 f"is already written. {say_calib}")
     else:
-        task = ("Write 1-3 short sentences that go after it, explaining why a "
-                "change this small does not count as fatigue, and roughly "
-                "what would have to change for it to count. Do NOT say they "
+        # The "what would have to change for it to count" half used to be
+        # asked for here, and it reliably produced a second, longer sentence
+        # of the same boilerplate every time ("for this reading to be
+        # considered indicative of fatigue, there would need to be a more
+        # significant deviation from their normal fresh range"). It says
+        # nothing the first sentence didn't, so it is no longer asked for.
+        task = ("Write ONE or TWO short sentences that go after it, saying "
+                "in plain words why a change this small does not count as "
+                "fatigue. Do NOT say they "
                 "are starting to fatigue, beginning to tire, that fatigue is "
                 "setting in or developing, or that they may be affected -- "
                 "the measurement says they are not fatigued and your text "
@@ -752,6 +764,22 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         "The reader is NOT a signal-processing specialist. Lead with what the "
         "result means for the person, in ordinary words. Do not open with "
         "hertz or with the phrase 'median frequency'.\n\n"
+        # Left to itself the model wrote lab-report English -- "This reading
+        # falls within their normal fresh range, indicating that the muscle
+        # signal is only a little below its own level" -- which is longer and
+        # harder to read than the plain version and says no more. Naming the
+        # specific words it reaches for works better than asking for "plain
+        # language" in the abstract, which it reads as a style note and
+        # ignores.
+        # A twelve-item banned-words list was tried first and llama3.2:3b
+        # walked straight through it ("indicating a substantial decrease in
+        # performance capacity"). A 3B model holds two or three prohibitions,
+        # not twelve, so the list is short and the length limit is enforced in
+        # code instead of asked for -- see interpret.trim_sentences().
+        "Write the way you would say it out loud to the person who did the "
+        "exercise: short sentences, everyday words. Never write 'indicating', "
+        "'indicative of', or 'deviation'. If one sentence covers it, stop at "
+        "one.\n\n"
         f"Measured result:\n"
         f"{where_line}"
         f"{plain_block}"

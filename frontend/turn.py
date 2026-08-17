@@ -438,13 +438,14 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
         facts = (onset_facts(summary) if kind == intent_router.ONSET
                  else overview_facts(summary))
         instruction = (
-            "Answer in 2-4 sentences. Say when fatigue set in and how sure the "
-            "reading is, and state the ±accuracy that comes from the scan step "
-            "-- do not imply a more precise moment than was measured."
+            "Answer in ONE or TWO short sentences, in plain everyday words. "
+            "Say when fatigue set in and give the ±accuracy once -- do not "
+            "imply a more precise moment than was measured."
             if kind == intent_router.ONSET else
-            "Answer in 3-5 sentences. Describe how the recording develops from "
-            "start to finish, quoting the median frequency at each end and how "
-            "much of the recording was classified as fatigued.")
+            "Answer in TWO or THREE short sentences, in plain everyday words. "
+            "Say whether they tired over the recording and roughly when. "
+            "Quote each figure at most once, and do not explain a number by "
+            "restating the same number.")
         return {"prompt": build_facts_prompt(
                     "Measured results:", facts, user_text, instruction),
                 "facts": facts, "window": window, "user_text": user_text}
@@ -682,12 +683,13 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
     facts = (onset_facts(summary) if kind == intent_router.ONSET
              else overview_facts(summary))
     instruction = (
-        "Answer in 2-4 sentences. Say when fatigue set in and how sure the "
-        "reading is, and state plainly that it is approximate."
+        "Answer in ONE or TWO short sentences, in plain everyday words. Say "
+        "when fatigue set in and state plainly that it is approximate."
         if kind == intent_router.ONSET else
-        "Answer in 3-5 sentences. Describe how the recording develops from "
-        "start to finish, quoting the median frequency at each end and how "
-        "much of the recording was classified as fatigued.")
+        "Answer in TWO or THREE short sentences, in plain everyday words. "
+        "Say whether they tired over the recording and roughly when. Quote "
+        "each figure at most once, and do not explain a number by restating "
+        "the same number.")
     return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
                                          instruction),
             "facts": facts, "user_text": user_text,
@@ -781,6 +783,11 @@ def _finalize(session: dict, turn: dict) -> dict:
                 "I couldn't put that into words without quoting figures that "
                 "were never measured, so I've left it out rather than guess. "
                 "Ask again and I'll have another go.")
+            # Same plain-language and length treatment the reading answers get
+            # further down. Three sentences rather than two: an overview has a
+            # start, an end and an onset to cover, and the numbers here ARE
+            # the answer (they were measured), so only the wording is trimmed.
+            content = interpret.trim_sentences(interpret.plain_words(content), 3)
         except LLMError as e:
             lines = readable_facts(turn.get("facts") or [])
             content = ("\n".join(f"- {line}" for line in lines)
@@ -817,6 +824,10 @@ def _finalize(session: dict, turn: dict) -> dict:
             who = (reading or {}).get("who")
             cleaned, invented = interpret.strip_invented_numbers(
                 interpret.strip_verdict_echo(prose, who), who)
+            # Trim last, after the echo and the invented figures are gone:
+            # cutting to two sentences first would spend the budget on a
+            # duplicate opening restatement and drop the real explanation.
+            cleaned = interpret.trim_sentences(interpret.plain_words(cleaned), 2)
             content = f"{verdict}\n\n{cleaned}" if cleaned else verdict
         else:
             content = prose

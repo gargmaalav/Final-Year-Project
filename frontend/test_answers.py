@@ -375,11 +375,18 @@ def _():
     assert "not showing" not in fat, fat
 
 
-@check("the rendered verdict never swaps the fresh and current values")
+@check("the rendered verdict states the size of the change without hertz")
 def _():
+    # The verdict used to quote the raw pair ("62.7 Hz fresh -> 61.8 Hz now")
+    # as well as the percentage. Both numbers appear again in the provenance
+    # line immediately below it, and hertz is the least meaningful form of
+    # them for the reader this sentence is written for, so the headline keeps
+    # the percentage only. The fresh/current pair is still rendered -- and
+    # still guarded against being swapped -- by interpret.plain_lines(), see
+    # "current and fresh values are labelled so they cannot be swapped".
     s = interpret.verdict_sentence(_reading(61.8, 62.7, 3.8, 0), "Subject 13")
-    assert "62.7 Hz fresh" in s and "61.8 Hz now" in s, s
-    assert s.index("62.7") < s.index("61.8"), "fresh must precede current"
+    assert "Hz" not in s, s
+    assert "1% below their own fresh level" in s, s
 
 
 @check("an unchanged signal is not reported as '0% below'")
@@ -806,6 +813,46 @@ def _():
                         "so no key is forgotten")
     assert src.count("_reset_conversation()") >= 4, \
         "expected the helper at its definition and every chat-switch path"
+
+
+@check("lab-report words the model keeps using are swapped for plain ones")
+def _():
+    # observed live under a prompt that explicitly forbade the word
+    out = interpret.plain_words(
+        "Their signal dropped, indicating they are no longer at peak.")
+    assert "indicating" not in out, out
+    assert "which means they are no longer at peak" in out, out
+    # capitalisation is carried over, so a swap can open a sentence
+    assert interpret.plain_words("Indicating a drop.").startswith("Which means"), \
+        interpret.plain_words("Indicating a drop.")
+    # the longer phrase wins over the shorter key inside it
+    assert "a sign of" in interpret.plain_words("This is indicative of fatigue."), \
+        interpret.plain_words("This is indicative of fatigue.")
+
+
+@check("the model's prose is cut to two sentences however long it runs")
+def _():
+    # asked for "ONE or TWO short sentences", llama3.2:3b wrote four
+    long = ("This reading falls within their normal fresh range. A change "
+            "this small does not count as fatigue. For it to count there "
+            "would need to be more. And a fourth sentence.")
+    out = interpret.trim_sentences(long, 2)
+    assert out.endswith("does not count as fatigue."), out
+    assert "fourth" not in out, out
+
+
+@check("trimming does not split a decimal or flatten paragraphs and lists")
+def _():
+    # "66.8 Hz" must not read as a sentence boundary
+    assert interpret.trim_sentences("It is 66.8 Hz now. That is fine.", 2) == \
+        "It is 66.8 Hz now. That is fine."
+    # each paragraph gets its own budget -- the caller stacks the rendered
+    # verdict and the recommendation as separate paragraphs
+    two = interpret.trim_sentences("A one. A two. A three.\n\nB one. B two.", 2)
+    assert two == "A one. A two.\n\nB one. B two.", two
+    # a bullet list is one list, not N sentences to cut in half
+    bullets = "- first\n- second\n- third"
+    assert interpret.trim_sentences(bullets, 2) == bullets
 
 
 def main() -> int:
