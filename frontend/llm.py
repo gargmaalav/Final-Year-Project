@@ -30,10 +30,16 @@ MODEL = "llama3.2:3b"
 KEEP_ALIVE = "30m"
 
 # Answers are cut to two sentences in Python (interpret.trim_sentences), so
-# tokens generated past that are paid for at ~10 tok/s and then thrown away.
-# 160 leaves room for the longest answer we keep plus the analysis answers'
-# three sentences, and caps a runaway generation instead of waiting it out.
-NUM_PREDICT = 160
+# tokens generated past that are paid for at ~8 tok/s and then thrown away.
+# This caps a runaway generation instead of waiting it out.
+#
+# A token limit cannot know where a sentence ends, so it can only stop the
+# model dead -- possibly mid-word. The target is still ~160 tokens of kept
+# answer; the extra 40 is headroom so the model normally reaches its own full
+# stop before the ceiling, and trim_sentences' unfinished-tail guard has
+# nothing to drop. Typical answers are 40-72 tokens, so neither mechanism
+# fires most of the time; both exist for the wordy outlier.
+NUM_PREDICT = 200
 
 # Warm calls to llama3.2:3b measured 12-25 s on a laptop. The risk is not the
 # warm case but the first call after `ollama serve` starts, which also loads

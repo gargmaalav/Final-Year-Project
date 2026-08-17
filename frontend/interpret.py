@@ -434,8 +434,13 @@ def trim_sentences(prose: str, limit: int = 2) -> str:
         for m in _SENTENCE_END.finditer(stripped):
             pieces.append(stripped[start:m.end()].strip())
             start = m.end()
+        # Whatever follows the last full stop is an unfinished sentence. It
+        # appears when the model hits llm.NUM_PREDICT mid-thought and stops
+        # dead -- "...and their muscle signal is still with" -- so it is
+        # dropped rather than shown. Kept only when it is the entire
+        # paragraph: better one unfinished sentence than an empty answer.
         tail = stripped[start:].strip()
-        if tail:
+        if tail and not pieces:
             pieces.append(tail)
         out.append(" ".join(pieces[:limit]) if pieces else stripped)
     return "\n\n".join(out)

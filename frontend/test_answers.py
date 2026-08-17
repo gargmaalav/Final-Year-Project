@@ -866,6 +866,27 @@ def _():
     assert "fourth" not in out, out
 
 
+@check("an answer cut off mid-sentence loses the unfinished part")
+def _():
+    # what hitting llm.NUM_PREDICT looks like: generation stops mid-word
+    cut = ("This small change does not count as fatigue. Their muscle signal "
+           "is still with")
+    out = interpret.trim_sentences(cut, 2)
+    assert out == "This small change does not count as fatigue.", out
+    # a complete second sentence is of course kept
+    whole = ("This small change does not count as fatigue. Their muscle "
+             "signal is still within range.")
+    assert interpret.trim_sentences(whole, 2) == whole
+
+
+@check("a lone unfinished sentence is kept rather than emptying the answer")
+def _():
+    # nothing else survived, so showing the fragment beats showing nothing --
+    # the rendered verdict above it still carries the finding either way
+    only = "Their muscle signal is still with"
+    assert interpret.trim_sentences(only, 2) == only
+
+
 @check("trimming does not split a decimal or flatten paragraphs and lists")
 def _():
     # "66.8 Hz" must not read as a sentence boundary
