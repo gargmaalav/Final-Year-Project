@@ -255,44 +255,110 @@
   #fig-rail svg { font-size: 16px; color: var(--text-3); }
   #fig-rail .label { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--text-3); writing-mode: vertical-rl; }
 
-  #fig-pane { flex: none; background: var(--bg-1); border-left: 1px solid var(--border); display: flex; flex-direction: column; padding: 20px; gap: 18px; overflow-y: auto; transition: width 240ms cubic-bezier(.25,1,.3,1); }
+  /* The panel reads as a card floating over the page rather than a flush
+     wall welded to the window edge: inset by a margin on three sides,
+     rounded, with its own border and shadow. That's what makes an artifact
+     panel feel like a separate object you can dismiss, instead of a second
+     half of the app you're stuck with. */
+  #fig-pane { position: relative; flex: none; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin: 10px 10px 10px 0; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow); transition: width 240ms cubic-bezier(.25,1,.3,1); }
   #fig-pane.hidden { display: none; }
-  #fig-pane-header { display: flex; align-items: center; justify-content: space-between; flex: none; }
-  #fig-pane-header .left { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  #fig-pane-header .left svg { font-size: 15px; color: var(--accent); }
-  #fig-pane-header .title { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--text-2); }
-  #fig-pane-header .status { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* No width transition mid-drag -- the 240ms ease makes the panel lag the
+     cursor and the drag feels broken rather than smooth. */
+  #fig-pane.resizing { transition: none; user-select: none; }
+
+  /* Fullscreen was a dead class: the JS toggled it (applyLayout) and set the
+     button's icon, but no rule ever matched, so "fullscreen" only meant the
+     panel grew from 452px to 760px and the sidebar's own controls stayed
+     covered. Now it's a real overlay over the whole app -- and because the
+     header (with the exit button) is inside the pane, the way out travels
+     with it. Escape also exits, wired further down. */
+  #fig-pane.fullscreen { position: fixed; inset: 0; margin: 0; width: auto !important; border-radius: 0; border: none; z-index: 60; }
+
+  /* Drag-to-resize, like an artifact panel's divider: charts here are laid
+     out at a fixed 1100px (see FIG_SIZES in the script), so how much you can
+     see at a glance is worth putting under the reader's control rather than
+     fixing at 452px. */
+  #fig-resize { position: absolute; left: -3px; top: 0; bottom: 0; width: 9px; cursor: col-resize; z-index: 2; }
+  #fig-resize::after { content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 3px; height: 36px; border-radius: 2px; background: var(--border-strong); opacity: 0; transition: opacity 140ms ease; }
+  #fig-resize:hover::after, #fig-pane.resizing #fig-resize::after { opacity: .8; }
+  #fig-pane.fullscreen #fig-resize { display: none; }
+
+  #fig-pane-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: none; padding: 13px 10px 13px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); }
+  #fig-pane-header .left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  #fig-pane-header .left svg { font-size: 15px; color: var(--accent); flex: none; }
+  #fig-pane-header .heading { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  /* Sentence case, not the uppercase tracked-out label the rest of the
+     clinical chrome uses -- this is the artifact's own title bar, and it
+     should read like a document's name. */
+  #fig-pane-header .title { font-size: 13.5px; font-weight: 600; color: var(--text-1); letter-spacing: -0.005em; line-height: 1.25; }
+  #fig-pane-header .status { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
   #fig-pane-header .right { display: flex; align-items: center; gap: 2px; flex: none; }
-  #fig-pane-header .right .icon-btn { width: 28px; height: 28px; font-size: 14px; }
+  #fig-pane-header .right .icon-btn { width: 28px; height: 28px; font-size: 14px; border-radius: 6px; }
+
+  /* Header and footer are fixed chrome; only the figures themselves scroll,
+     so the title bar and its controls never leave the viewport on a tall
+     chart. Previously the whole pane scrolled as one. */
+  #fig-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 18px; }
 
   .fig-block { display: flex; flex-direction: column; gap: 10px; }
-  /* Scrolls horizontally rather than the panel resizing to fit the chart --
-     the embedded Plotly chart (viz/render_window.py) is laid out at a fixed
-     pixel width designed for a full-page view; squeezing it to the panel's
-     width via Plotly's `responsive: true` only rescales the canvas, not the
-     fixed-pixel title/margin/button text, so a narrower panel just clipped
-     and overlapped everything. Letting it scroll keeps the chart legible at
-     its own size regardless of how wide the panel is. */
-  .fig-frame-wrap { border: 1px solid var(--border); border-radius: 3px; overflow-x: auto; overflow-y: hidden; background: var(--grid-bg); box-shadow: var(--shadow); }
+
+  /* The chart is laid out by Plotly at a fixed pixel width designed for a
+     full-page view (see the natural sizes below). Two ways to fit that into a
+     ~450px panel, and only one of them works:
+       - Plotly's own `responsive: true` reflows the canvas but NOT the
+         fixed-pixel title/margin/legend/button text, so everything overlaps.
+       - a CSS transform scales the rendered result uniformly, text included,
+         so the chart just gets smaller and stays correct.
+     So the panel shows a true scaled-down thumbnail of the whole figure --
+     the reader sees the shape of the trend at a glance without maximising
+     anything. It used to sit at natural width in a horizontally scrolling
+     box, which meant about a third of one chart was visible and the rest
+     needed a sideways scroll nobody thought to try. */
+  .fig-frame-wrap { position: relative; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--grid-bg); }
   .fig-frame-wrap.no-shadow { box-shadow: none; }
-  /* Heights match the actual Plotly figure heights (viz/render_window.py's
-     3-panel dataset chart is 820-880px, frontend/charts.py's upload chart is
-     560px, its forecast chart is 380px) rather than an arbitrary box -- with
-     Plotly's `responsive: true`, a shorter iframe doesn't crop the chart, it
-     rescales the whole thing to fit and every fixed-pixel title/button/legend
-     then overlaps everything else. #fig-pane already scrolls (overflow-y:
-     auto), so there's no need to squeeze a design built to be read at height. */
-  #fig-frame { width: 1100px; height: 900px; border: none; display: block; background: var(--grid-bg); }
-  #fig-frame.short { height: 600px; }
-  #forecast-frame { width: 700px; height: 420px; border: none; display: block; background: var(--grid-bg); }
+  .fig-frame-wrap:hover { border-color: var(--border-strong); }
+  .fig-frame-wrap iframe { border: none; display: block; background: var(--grid-bg); transform-origin: top left; }
+
+  /* Thumbnail mode: the iframe is scaled by JS (figScaleThumbs) and must not
+     take pointer events -- a 0.4x Plotly chart is impossible to scrub, and
+     scroll-zoom over it would hijack the panel's own scroll. The whole tile
+     is one click target that opens the modal instead. */
+  .fig-frame-wrap.thumb { cursor: zoom-in; }
+  .fig-frame-wrap.thumb iframe { pointer-events: none; }
+  .fig-thumb-hint { position: absolute; right: 8px; bottom: 8px; display: flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 6px; font-size: 11.5px; background: var(--bg-0); color: var(--text-2); border: 1px solid var(--border); opacity: 0; transform: translateY(3px); transition: opacity 140ms ease, transform 140ms ease; pointer-events: none; }
+  .fig-frame-wrap.thumb:hover .fig-thumb-hint, .fig-frame-wrap.thumb:focus-visible .fig-thumb-hint { opacity: 1; transform: none; }
+
+  /* Natural (unscaled) figure sizes live in one place only -- FIG_SIZES in
+     the script below, which also writes them onto each iframe inline. They
+     have to match what the Python emits, so a second copy here would be a
+     second thing to forget to update. */
+
+  /* ---------- figure modal (click a thumbnail to read it properly) ---------- */
+  #fig-modal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(8,10,14,0.62); animation: emg-in 160ms ease both; }
+  #fig-modal.hidden { display: none; }
+  #fig-modal-card { display: flex; flex-direction: column; width: 100%; height: 100%; max-width: 1180px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  #fig-modal-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 10px 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); }
+  #fig-modal-header .heading { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  #fig-modal-header .title { font-size: 13.5px; font-weight: 600; color: var(--text-1); }
+  #fig-modal-header .status { font-size: 11.5px; color: var(--text-3); }
+  /* Scrolls both ways at natural size: this is the "read it properly" view,
+     so the chart is never scaled down here, even on a small window. */
+  #fig-modal-body { flex: 1; min-height: 0; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; background: var(--bg-0); }
+  #fig-modal-body iframe { border: none; display: block; background: var(--grid-bg); border-radius: 10px; flex: none; }
   .fig-caption { font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
-  .fig-grid-placeholder { height: 340px; background: repeating-linear-gradient(0deg, var(--grid) 0 1px, var(--grid-bg) 1px 30px), repeating-linear-gradient(90deg, var(--grid) 0 1px, var(--grid-bg) 1px 52px); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; }
+  .fig-grid-placeholder { height: 340px; border-radius: 10px; background: repeating-linear-gradient(0deg, var(--grid) 0 1px, var(--grid-bg) 1px 30px), repeating-linear-gradient(90deg, var(--grid) 0 1px, var(--grid-bg) 1px 52px); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; }
   .fig-grid-placeholder.small { height: 180px; }
   .fig-grid-placeholder .fig-loading-label { font-size: 13px; color: var(--text-3); }
-  .fig-empty { border: 1px dashed var(--border-strong); border-radius: 3px; height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-3); }
+  .fig-empty { border: 1px dashed var(--border); border-radius: 10px; height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-3); }
   .fig-empty svg { font-size: 18px; }
   .fig-empty span { font-size: 13px; }
-  #fig-footer { margin-top: auto; font-size: 12px; line-height: 1.6; color: var(--text-3); flex: none; }
+  /* Footer sits outside the scroll area now (see #fig-content), so it reads
+     as part of the card's chrome rather than trailing text under the chart. */
+  #fig-footer { flex: none; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--bg-1); font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
+  /* Figures arrive after an answer, so they land in a pane the reader is
+     already looking at -- a short fade-up marks the swap instead of the
+     content silently teleporting. Honours prefers-reduced-motion above. */
+  .fig-block { animation: emg-in 220ms cubic-bezier(.25,1,.3,1) both; }
 
   .hidden { display: none !important; }
 </style>
@@ -437,11 +503,14 @@
   </button>
 
   <div id="fig-pane">
+    <div id="fig-resize" role="separator" aria-orientation="vertical" aria-label="Resize figures panel" tabindex="0"></div>
     <div id="fig-pane-header">
       <div class="left">
         <svg class="icon"><use href="#i-chart-spline"/></svg>
-        <span class="title">Figures</span>
-        <span class="status" id="fig-status">No reading yet</span>
+        <div class="heading">
+          <span class="title">Figures</span>
+          <span class="status" id="fig-status">No reading yet</span>
+        </div>
       </div>
       <div class="right">
         <button id="fig-fullscreen" class="icon-btn" title="Fullscreen" aria-label="Fullscreen"><svg class="icon"><use href="#i-maximize"/></svg></button>
@@ -453,6 +522,22 @@
       <div class="fig-empty"><svg class="icon"><use href="#i-chart-spline"/></svg><span>No figure yet</span></div>
     </div>
     <div id="fig-footer">Holds the newest reading. Figures are not stored with chat history.</div>
+  </div>
+
+  <div id="fig-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="fig-modal-title">
+    <div id="fig-modal-card">
+      <div id="fig-modal-header">
+        <div class="left" style="display:flex; align-items:center; gap:9px; min-width:0;">
+          <svg class="icon" style="font-size:15px; color:var(--accent); flex:none;"><use href="#i-chart-spline"/></svg>
+          <div class="heading">
+            <span class="title" id="fig-modal-title">Figures</span>
+            <span class="status" id="fig-modal-status"></span>
+          </div>
+        </div>
+        <button id="fig-modal-close" class="icon-btn" title="Close (Esc)" aria-label="Close figure view"><svg class="icon"><use href="#i-x"/></svg></button>
+      </div>
+      <div id="fig-modal-body"></div>
+    </div>
   </div>
 
 </div>
@@ -475,10 +560,17 @@
     pendingFile: null,
     model: null,
     models: [],
-    figStatus: "none"  // none | loading | ready
+    figStatus: "none",  // none | loading | ready
+    paneW: 452          // user-resizable; clamped to [PANE_MIN, PANE_MAX]
   };
   var sidebarByUser = false;
   var paneByUser = false;
+  var PANE_MIN = 280, PANE_MAX = 1120;
+  (function initPaneW() {
+    var saved = null;
+    try { saved = parseInt(localStorage.getItem("emg_pane_w"), 10); } catch (e) {}
+    if (saved && saved >= PANE_MIN && saved <= PANE_MAX) STATE.paneW = saved;
+  })();
 
   function $(id) { return document.getElementById(id); }
 
@@ -521,18 +613,29 @@
     $("show-figures-btn").classList.toggle("hidden", STATE.pane !== "hidden");
 
     if (STATE.pane === "open") {
-      var sideW = STATE.sidebar === "open" ? 272 : (STATE.sidebar === "rail" ? 52 : 0);
-      var avail = STATE.vw - sideW - 340;
-      var w = Math.min(STATE.full ? 760 : 452, Math.max(280, avail));
-      $("fig-pane").style.width = w + "px";
       $("fig-pane").classList.toggle("fullscreen", STATE.full);
-      // structural guard: never let sidebar+thread-floor+panel-min overflow
-      if (STATE.sidebar === "open" && sideW + 340 + 280 > STATE.vw) {
-        STATE.sidebar = "rail";
-        $("settings-popover").classList.add("hidden");
-        applyLayout();
-        return;
+      var targetW = STATE.full ? STATE.vw : null;
+      // Fullscreen is an overlay pinned to the viewport, so it must not carry
+      // an inline width -- an inline style beats the class rule, and the panel
+      // would sit at 760px in the corner of a "fullscreen" backdrop. Clearing
+      // it lets the .fullscreen rule own the geometry outright.
+      if (STATE.full) {
+        $("fig-pane").style.width = "";
+      } else {
+        var sideW = STATE.sidebar === "open" ? 272 : (STATE.sidebar === "rail" ? 52 : 0);
+        var avail = STATE.vw - sideW - 340;
+        var w = Math.min(STATE.paneW, Math.max(PANE_MIN, avail));
+        $("fig-pane").style.width = w + "px";
+        targetW = w;
+        // structural guard: never let sidebar+thread-floor+panel-min overflow
+        if (STATE.sidebar === "open" && sideW + 340 + PANE_MIN > STATE.vw) {
+          STATE.sidebar = "rail";
+          $("settings-popover").classList.add("hidden");
+          applyLayout();
+          return;
+        }
       }
+      figScaleThumbs(targetW);
     }
     $("fig-fullscreen").title = STATE.full ? "Exit fullscreen" : "Fullscreen";
     $("fig-fullscreen").setAttribute("aria-label", STATE.full ? "Exit fullscreen" : "Fullscreen");
@@ -554,7 +657,11 @@
   window.addEventListener("resize", onResize);
 
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && STATE.full) {
+    if (e.key !== "Escape") return;
+    // Innermost layer first: with the modal open over a fullscreen panel, one
+    // Escape should close the modal and leave the panel as it was.
+    if (figModalOpen()) { figCloseModal(); return; }
+    if (STATE.full) {
       STATE.full = false;
       applyLayout();
     }
@@ -572,6 +679,72 @@
   $("fig-to-rail").addEventListener("click", railPane);
   $("fig-close").addEventListener("click", hidePane);
   $("fig-fullscreen").addEventListener("click", function () { STATE.full = !STATE.full; applyLayout(); });
+  // Safety net for the width transition: whatever target applyLayout passed,
+  // re-measure once the panel has actually settled there.
+  $("fig-pane").addEventListener("transitionend", function (e) {
+    if (e.propertyName === "width") figScaleThumbs();
+  });
+
+  // Drag the panel's left edge to resize. Pointer events (not mouse) so a
+  // trackpad, pen or touch drag all work, and setPointerCapture keeps the
+  // drag alive when the cursor crosses the chart iframe -- without capture
+  // the iframe swallows the move events and the panel sticks mid-drag.
+  (function initPaneResize() {
+    var handle = $("fig-resize"), startX = 0, startW = 0, dragging = false;
+
+    function clamp(w) {
+      var sideW = STATE.sidebar === "open" ? 272 : (STATE.sidebar === "rail" ? 52 : 0);
+      // Leave the thread its 340px floor, the same figure applyLayout guards.
+      return Math.max(PANE_MIN, Math.min(PANE_MAX, w, STATE.vw - sideW - 340));
+    }
+    function persist() {
+      try { localStorage.setItem("emg_pane_w", String(STATE.paneW)); } catch (e) {}
+    }
+
+    handle.addEventListener("pointerdown", function (e) {
+      if (STATE.full) return;
+      dragging = true; startX = e.clientX; startW = $("fig-pane").offsetWidth;
+      handle.setPointerCapture(e.pointerId);
+      $("fig-pane").classList.add("resizing");
+      e.preventDefault();
+    });
+    handle.addEventListener("pointermove", function (e) {
+      if (!dragging) return;
+      // Panel is on the right, so dragging left (negative dx) widens it.
+      STATE.paneW = clamp(startW - (e.clientX - startX));
+      $("fig-pane").style.width = STATE.paneW + "px";
+      // Rescale live so the thumbnail grows under the cursor rather than
+      // snapping to its new size only once the drag is released.
+      figScaleThumbs(STATE.paneW);
+    });
+    function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
+      $("fig-pane").classList.remove("resizing");
+      persist();
+      applyLayout();
+    }
+    handle.addEventListener("pointerup", endDrag);
+    handle.addEventListener("pointercancel", endDrag);
+
+    // Keyboard equivalent: the handle is focusable, so arrows must resize it
+    // too, or the panel width is mouse-only. Steps measure from STATE.paneW,
+    // never from offsetWidth: the panel has a 240ms width transition, so a
+    // held arrow key reads a width still animating toward the last target
+    // and every press recomputes the same step -- the panel sticks one notch
+    // from where it started. The drag path is immune (it captures startW once
+    // and .resizing kills the transition), so this only bites the keyboard.
+    handle.addEventListener("keydown", function (e) {
+      var step = e.shiftKey ? 64 : 16;
+      if (e.key === "ArrowLeft") STATE.paneW = clamp(STATE.paneW + step);
+      else if (e.key === "ArrowRight") STATE.paneW = clamp(STATE.paneW - step);
+      else return;
+      e.preventDefault();
+      persist();
+      applyLayout();
+    });
+  })();
 
   // ================= models =================
   function loadModels() {
@@ -748,10 +921,21 @@
   $("search-input").addEventListener("input", function () { STATE.search = $("search-input").value; renderChatGroups(); });
 
   // ================= suggestions =================
+  // One example per intent the router actually handles (frontend/intent.py:
+  // READING, ONSET, OVERVIEW, COMPARE, RANKING, CATALOGUE, EXPLAIN) rather
+  // than three phrasings of READING -- a blank chat is the only place the
+  // assistant gets to say what it can do, and three variations of the same
+  // question advertise it as far narrower than it is. Every one of these runs
+  // the real pipeline, so the list doubles as an honest demo of breadth.
   var SUGGESTIONS = [
-    "Is subject 4's left side fatigued at 90 s?",
     "Is subject 11's right side fatigued at 60 s?",
-    "Is subject 13 fatigued at 60 seconds on the right side, and in 40 seconds?"
+    "Is subject 13 fatigued at 60 seconds on the right side, and in 40 seconds?",
+    "When did subject 13 start fatiguing?",
+    "Summarise subject 7",
+    "Compare subject 5 and 9",
+    "Which subject fatigued the most?",
+    "What does median frequency mean?",
+    "What data do you have?"
   ];
   function renderSuggestions() {
     var wrap = $("suggestions");
@@ -917,6 +1101,19 @@
 
   // ================= figures pane =================
   function setFigStatus(t) { $("fig-status").textContent = t; }
+  // Name what's actually on screen ("Subject 13 - 60s, right") rather than
+  // the generic "Latest reading": the pane holds only the newest figure, so
+  // once you've scrolled the thread the subtitle is the only thing tying the
+  // chart back to the question that produced it.
+  function figSubtitle(w) {
+    if (!w) return "Latest reading";
+    if (w.source === "upload") return w.name ? "Upload - " + w.name : "Uploaded recording";
+    var bits = [];
+    if (w.subject != null) bits.push("Subject " + w.subject);
+    if (w.t_start != null) bits.push(Math.round(w.t_start) + "s");
+    if (w.side) bits.push(w.side === "L" ? "left" : "right");
+    return bits.length ? bits.join(" · ") : "Latest reading";
+  }
   function figLoading() {
     STATE.figStatus = "loading";
     $("fig-content").innerHTML =
@@ -941,34 +1138,138 @@
     return html ? _HIDE_UPDATEMENU_CSS + html : html;
   }
 
+  // The figures currently on screen, kept so the modal can re-mount them at
+  // natural size and so a resize can rescale the thumbnails without a reload.
+  var FIGS = [];
+
+  // Natural [width, height] of each chart, matching what the Python emits --
+  // viz/render_window.py's animated 3-panel chart (height=920, its top margin
+  // stacks title over the button row), and frontend/charts.py's upload chart
+  // (560) and forecast chart (380). These have to track the Python: a height
+  // that is too small crops the figure, too large leaves dead space under it,
+  // and either way the thumbnail scale is computed off the wrong number.
+  var FIG_SIZES = {reading: [1100, 920], upload: [1100, 560], forecast: [700, 380]};
+
+  // Fit a figure's natural pixel size into the space the panel actually has.
+  // Never scales past 1: in fullscreen (or a wide dragged-out panel) there is
+  // room for the real thing, and blowing a chart up past 100% would just
+  // soften the text.
+  // `paneWidth` is the width the panel is heading for, not the one it has:
+  // #fig-pane animates its width over 240ms, so reading clientWidth here
+  // during a resize or a fullscreen toggle samples a value still in flight and
+  // scales every thumbnail to a size the panel is about to stop being. Callers
+  // pass the target; a transitionend listener re-runs it as a safety net.
+  function figScaleThumbs(paneWidth) {
+    var content = $("fig-content");
+    if (!content) return;
+    var paneW = paneWidth || $("fig-pane").clientWidth;
+    // 32 = #fig-content's 16px padding each side.
+    var avail = paneW - 32 - (STATE.full ? 0 : 2);  // 2 = the card's l/r border
+    if (avail <= 0) return;
+    content.querySelectorAll(".fig-frame-wrap").forEach(function (wrap) {
+      var frame = wrap.querySelector("iframe");
+      if (!frame) return;
+      var natW = parseFloat(frame.dataset.w), natH = parseFloat(frame.dataset.h);
+      if (!natW || !natH) return;
+      var scale = Math.min(1, avail / natW);
+      frame.style.transform = scale < 1 ? "scale(" + scale + ")" : "";
+      // The wrapper has to be told the *scaled* height: a CSS transform does
+      // not change layout size, so without this the tile keeps reserving the
+      // full 900px and leaves a tall empty gap under a 360px thumbnail.
+      wrap.style.height = Math.round(natH * scale) + "px";
+      wrap.classList.toggle("thumb", scale < 1);
+      wrap.setAttribute("tabindex", scale < 1 ? "0" : "-1");
+    });
+  }
+
+  function figTile(id, html, caption, natW, natH, label) {
+    var block = document.createElement("div");
+    block.className = "fig-block";
+    block.innerHTML =
+      '<div class="fig-frame-wrap"><iframe sandbox="allow-scripts"></iframe>' +
+      '<span class="fig-thumb-hint"><svg class="icon" style="font-size:12px"><use href="#i-maximize"/></svg>Click to enlarge</span></div>' +
+      '<div class="fig-caption"></div>';
+    var frame = block.querySelector("iframe");
+    frame.id = id;
+    frame.dataset.w = natW;
+    frame.dataset.h = natH;
+    // Sized inline from the natural dimensions rather than by an id rule in
+    // the stylesheet: the sizes now have to agree with what the Python
+    // actually emits (FIG_SIZES), and two places to update is one too many.
+    frame.style.width = natW + "px";
+    frame.style.height = natH + "px";
+    frame.srcdoc = withHiddenButtons(html);
+    block.querySelector(".fig-caption").textContent = caption || "";
+    var wrap = block.querySelector(".fig-frame-wrap");
+    function open() { if (wrap.classList.contains("thumb")) figOpenModal(); }
+    wrap.addEventListener("click", open);
+    wrap.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+    wrap.setAttribute("role", "button");
+    wrap.setAttribute("aria-label", "Enlarge " + label);
+    return block;
+  }
+
   function figShowHtml(chartHtml, chartCaption, forecastHtml, forecastCaption, windowInfo) {
     STATE.figStatus = "ready";
     var content = $("fig-content");
-    content.innerHTML =
-      '<div class="fig-block"><div class="fig-frame-wrap"><iframe id="fig-frame" sandbox="allow-scripts"></iframe></div>' +
-      '<div class="fig-caption" id="fig-caption"></div></div>';
-    var frame = document.getElementById("fig-frame");
+    content.innerHTML = "";
+    FIGS = [];
     // dataset readings render viz/render_window.py's taller 3-panel chart;
     // uploads render frontend/charts.py's shorter 2-panel one -- see the
-    // .short height note above #fig-frame's CSS.
-    frame.classList.toggle("short", !!(windowInfo && windowInfo.source === "upload"));
-    frame.srcdoc = withHiddenButtons(chartHtml);
-    document.getElementById("fig-caption").textContent = chartCaption || "";
+    // natural sizes in FIG_SIZES above.
+    var isUpload = !!(windowInfo && windowInfo.source === "upload");
+    FIGS.push({id: "fig-frame", html: chartHtml, caption: chartCaption,
+               w: FIG_SIZES.reading[0],
+               h: isUpload ? FIG_SIZES.upload[1] : FIG_SIZES.reading[1],
+               label: "the signal chart"});
     if (forecastHtml) {
-      var fBlock = document.createElement("div");
-      fBlock.className = "fig-block";
-      fBlock.innerHTML =
-        '<div class="fig-frame-wrap"><iframe id="forecast-frame" sandbox="allow-scripts"></iframe></div>' +
-        '<div class="fig-caption"></div>';
-      fBlock.querySelector("#forecast-frame").srcdoc = withHiddenButtons(forecastHtml);
-      fBlock.querySelector(".fig-caption").textContent = forecastCaption || "";
-      content.appendChild(fBlock);
+      FIGS.push({id: "forecast-frame", html: forecastHtml, caption: forecastCaption,
+                 w: FIG_SIZES.forecast[0], h: FIG_SIZES.forecast[1],
+                 label: "the forecast chart"});
     }
-    setFigStatus("Latest reading");
+    FIGS.forEach(function (f) {
+      content.appendChild(figTile(f.id, f.html, f.caption, f.w, f.h, f.label));
+    });
+    setFigStatus(figSubtitle(windowInfo));
     if (STATE.pane === "hidden" && !paneByUser) STATE.pane = "rail";
     if (STATE.pane !== "open" && !paneByUser) STATE.pane = "open";
     applyLayout();
+    figScaleThumbs();
   }
+
+  // ================= figure modal =================
+  // A fresh iframe per open rather than moving the panel's: an iframe that is
+  // re-parented in the DOM reloads its srcdoc, which would reset the Plotly
+  // animation and lose the "asked" frame the reader was on. Two independent
+  // copies is cheaper than trying to preserve one.
+  function figOpenModal() {
+    var body = $("fig-modal-body");
+    body.innerHTML = "";
+    FIGS.forEach(function (f) {
+      var frame = document.createElement("iframe");
+      frame.sandbox = "allow-scripts";
+      frame.style.width = f.w + "px";
+      frame.style.height = f.h + "px";
+      frame.srcdoc = withHiddenButtons(f.html);
+      body.appendChild(frame);
+    });
+    $("fig-modal-status").textContent = $("fig-status").textContent;
+    $("fig-modal").classList.remove("hidden");
+    $("fig-modal-close").focus();
+  }
+  function figCloseModal() {
+    $("fig-modal").classList.add("hidden");
+    // Drop the srcdocs so two live Plotly instances aren't left animating in
+    // the background for the rest of the session.
+    $("fig-modal-body").innerHTML = "";
+  }
+  function figModalOpen() { return !$("fig-modal").classList.contains("hidden"); }
+  $("fig-modal-close").addEventListener("click", figCloseModal);
+  $("fig-modal").addEventListener("click", function (e) {
+    if (e.target === $("fig-modal")) figCloseModal();   // scrim only, not the card
+  });
   function figIdle() {
     STATE.figStatus = "none";
     $("fig-content").innerHTML = '<div class="fig-empty"><svg class="icon"><use href="#i-chart-spline"/></svg><span>No figure yet</span></div>';
