@@ -27,6 +27,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (os.path.join(_REPO_ROOT, "models"),
@@ -74,6 +75,42 @@ _FORECAST_CHART_CAPTION = (
     "uncertainty range around that projection.")
 
 DEFAULT_MODEL = "llama3.2:3b"
+
+# Chart rendering (render_window(), charts.forecast_figure()/raw_and_mdf_figure())
+# and the recommendation LLM call don't depend on the main answer's text, so
+# they're submitted here and only .result()-ed after the main chat() call --
+# on a CPU laptop the LLM call is the dominant cost (12-25s), and this hides
+# the ~2-6s of chart work and, when a recommendation is also requested, a
+# second full LLM call inside that window instead of adding them on top.
+_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="turn-bg")
+
+
+def _resolve(future):
+    """.result() a background future, or pass through a plain value/None --
+    lets callers that skip the background path (no chart attempted) share
+    the same resolution call."""
+    if future is None:
+        return None
+    if hasattr(future, "result"):
+        try:
+            return future.result()
+        except Exception:
+            return None
+    return future
+
+
+def _safe_render_window(subject: int, t_start: float, side: str):
+    try:
+        return render_window(subject, t_start, side)
+    except Exception:
+        return None
+
+
+def _safe_forecast_figure(forecast: dict):
+    try:
+        return charts.forecast_figure(forecast)
+    except Exception:
+        return None
 
 
 def new_session() -> dict:
@@ -521,23 +558,21 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
 
-    chart_html, chart_caption = None, None
-    try:
-        chart_html = render_window(subject, t_start, side)
-        chart_caption = _READING_CHART_CAPTION
-    except Exception:
-        pass
+    # Chart rendering runs in the background, in parallel with the LLM call
+    # that phrases the answer below (_finalize resolves these futures only
+    # after that call returns) -- classify()'s result is all the chart needs,
+    # nothing here depends on what the model says.
+    chart_future = _EXECUTOR.submit(_safe_render_window, subject, t_start, side)
 
     seg, fs = _load_subject_segment(subject, side)
-    forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
+    forecast, forecast_chart_future = _forecast(seg, fs, user_text, t_start)
     reading = _plain_reading(result, subject_reference(subject), t_start,
                              float(seg.t[-1]) if seg.t.size else None,
                              f"Subject {subject}")
 
     return {"features": result, "reading": reading,
-            "chart_html": chart_html, "chart_caption": chart_caption,
-            "forecast": forecast, "forecast_chart_html": forecast_chart_html,
-            "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
+            "_chart_future": chart_future, "_chart_caption_text": _READING_CHART_CAPTION,
+            "_forecast_chart_future": forecast_chart_future, "forecast": forecast,
             "user_text": user_text, "window": window}
 
 
@@ -664,10 +699,10 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
         result["fatigue_label"], str(result["fatigue_label"]))
 
     notes = []
-    chart_html = _upload_chart(cache)
-    chart_caption = _UPLOAD_CHART_CAPTION if chart_html else None
+    # Same background-rendering treatment as the dataset reading path above.
+    chart_future = _EXECUTOR.submit(_upload_chart, cache)
 
-    forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
+    forecast, forecast_chart_future = _forecast(seg, fs, user_text, t_start)
     try:
         reference = upload_reference(cache["baseline"])
     except Exception:
@@ -676,16 +711,21 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
                              "This recording")
 
     return {"features": result, "reading": reading,
-            "chart_html": chart_html, "chart_caption": chart_caption,
-            "forecast": forecast, "forecast_chart_html": forecast_chart_html,
-            "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
+            "_chart_future": chart_future, "_chart_caption_text": _UPLOAD_CHART_CAPTION,
+            "_forecast_chart_future": forecast_chart_future, "forecast": forecast,
             "user_text": user_text,
             "window": {"t_start": t_start, "source": "upload",
                        "name": uploaded_name, "notes": notes}}
 
 
 def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
-    """Forecast only when the question actually asks about the future."""
+    """Forecast only when the question actually asks about the future.
+
+    Returns (forecast_dict, forecast_chart_future) -- the numbers are needed
+    synchronously to build the LLM prompt below, but the chart built from
+    them isn't, so it's handed to _EXECUTOR and only resolved (see
+    _resolve()) after the LLM call.
+    """
     horizon = extract.extract_horizon_seconds(user_text, default=None)
     if horizon is None:
         return None, None
@@ -695,10 +735,7 @@ def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
         return None, None
     if not forecast.get("ok"):
         return forecast, None
-    try:
-        return forecast, charts.forecast_figure(forecast)
-    except Exception:
-        return forecast, None
+    return forecast, _EXECUTOR.submit(_safe_forecast_figure, forecast)
 
 
 def _finalize(session: dict, turn: dict) -> dict:
@@ -728,10 +765,29 @@ def _finalize(session: dict, turn: dict) -> dict:
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
     window = turn.get("window")
-    chart_shown = turn.get("chart_html") is not None
+    # The chart is rendering in the background (see the _EXECUTOR.submit call
+    # in _dataset_turn/_upload_reading); render_window()/​_upload_chart() only
+    # fail on the same errors classify() would already have raised, so
+    # assuming success here is safe in the near-total-majority case and lets
+    # this sentence be built without waiting on the chart. If it does fail,
+    # chart_html below resolves to None and the answer references a chart
+    # that isn't there -- cosmetic, not a correctness issue, and rare enough
+    # to accept for not serialising two independent pieces of work.
+    chart_shown = turn.get("_chart_future") is not None
 
     reading = turn.get("reading")
     verdict = (reading or {}).get("verdict")
+
+    # Independent of the main answer's content -- start it now so it runs
+    # alongside the chat() call below instead of after it.
+    recommendation_future = None
+    if wants_recommendation(user_text):
+        recommendation_future = _EXECUTOR.submit(
+            chat, [{"role": "user", "content": build_recommendation_prompt(
+                features, forecast, user_text,
+                session["athlete_note"] or None, turn.get("reading"))}],
+            model=session["model"], num_predict=300)
+
     try:
         prose = chat([{"role": "user",
                        "content": build_prompt(features, user_text, forecast,
@@ -759,20 +815,21 @@ def _finalize(session: dict, turn: dict) -> dict:
                       f"_Couldn't phrase this in prose: {e}_")
 
     recommendation = None
-    if wants_recommendation(user_text):
+    if recommendation_future is not None:
         try:
-            recommendation = ensure_disclaimer(chat(
-                [{"role": "user", "content": build_recommendation_prompt(
-                    features, forecast, user_text,
-                    session["athlete_note"] or None, turn.get("reading"))}],
-                model=session["model"]))
+            recommendation = ensure_disclaimer(recommendation_future.result())
         except LLMError as e:
             recommendation = f"[Recommendation unavailable: {e}]"
 
-    return {"content": content, "chart_html": turn.get("chart_html"),
-            "chart_caption": turn.get("chart_caption"),
-            "forecast_chart_html": turn.get("forecast_chart_html"),
-            "forecast_chart_caption": turn.get("forecast_chart_caption"),
+    chart_html = _resolve(turn.get("_chart_future"))
+    chart_caption = turn.get("_chart_caption_text") if chart_html else None
+    forecast_chart_html = _resolve(turn.get("_forecast_chart_future"))
+    forecast_chart_caption = _FORECAST_CHART_CAPTION if forecast_chart_html else None
+
+    return {"content": content, "chart_html": chart_html,
+            "chart_caption": chart_caption,
+            "forecast_chart_html": forecast_chart_html,
+            "forecast_chart_caption": forecast_chart_caption,
             "recommendation": recommendation,
             "provenance": _provenance(window, features, reading),
             "features": features, "reading": turn.get("reading"),

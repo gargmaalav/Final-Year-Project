@@ -24,8 +24,18 @@ class LLMError(Exception):
     pass
 
 
+# Every prompt in this project already asks for 2-5 sentences, but nothing
+# stopped the model from ignoring that and rambling -- on a CPU laptop each
+# extra generated token is directly extra wall-clock time, so this caps the
+# worst case rather than trusting the instruction alone. 220 is generous for
+# 2-5 sentences of plain English; raise per-call for prompts that legitimately
+# need more (e.g. the recommendation prompt's disclaimer).
+DEFAULT_NUM_PREDICT = 220
+
+
 def chat(messages: list[dict], *, model: str | None = None,
-         temperature: float = 0.0, timeout: float | None = None) -> str:
+         temperature: float = 0.0, timeout: float | None = None,
+         num_predict: int | None = DEFAULT_NUM_PREDICT) -> str:
     """Send a chat completion request to Ollama, return the reply text.
 
     messages: list of {"role": "system"|"user"|"assistant", "content": str}.
@@ -33,8 +43,13 @@ def chat(messages: list[dict], *, model: str | None = None,
         can take most of a minute on a laptop, so callers that only want to
         know whether Ollama is answering at all should pass a short one
         rather than blocking the caller for the full default.
+    num_predict: max tokens to generate (Ollama's `options.num_predict`).
+        None removes the cap.
     """
     waited = TIMEOUT_SEC if timeout is None else timeout
+    options = {"temperature": temperature}
+    if num_predict is not None:
+        options["num_predict"] = num_predict
     try:
         r = requests.post(
             f"{OLLAMA_BASE}/api/chat",
@@ -42,7 +57,7 @@ def chat(messages: list[dict], *, model: str | None = None,
                 "model": model or MODEL,
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": temperature},
+                "options": options,
             },
             timeout=waited,
         )
