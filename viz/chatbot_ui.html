@@ -560,7 +560,11 @@
   var STATE = {
     theme: "light",
     sidebar: "open",   // open | rail
-    pane: "open",      // open | rail | hidden
+    // Closed until asked for. Nothing is drawn until "Show graph" is pressed
+    // (POST /chart), so an open panel on load would be an empty frame taking
+    // a third of the window to say "No figure yet". It opens on that click
+    // and stays open from then on.
+    pane: "hidden",    // open | rail | hidden
     full: false,
     vw: window.innerWidth,
     search: "",
@@ -619,7 +623,13 @@
 
     $("fig-rail").classList.toggle("hidden", STATE.pane !== "rail");
     $("fig-pane").classList.toggle("hidden", STATE.pane !== "open");
-    $("show-figures-btn").classList.toggle("hidden", STATE.pane !== "hidden");
+    // The way back to a closed panel, shown only once there is something in
+    // it. With the panel now closed by default, an always-visible button
+    // would sit in the header from load offering to open an empty frame.
+    // (FIG_GROUPS is declared further down; `var` hoists the name but not the
+    // value, so guard against applyLayout running before that line does.)
+    $("show-figures-btn").classList.toggle(
+      "hidden", STATE.pane !== "hidden" || !(FIG_GROUPS || []).length);
 
     if (STATE.pane === "open") {
       $("fig-pane").classList.toggle("fullscreen", STATE.full);
@@ -655,12 +665,15 @@
   function onResize() {
     var w = window.innerWidth;
     STATE.vw = w;
+    // Width only ever narrows the panel, never opens it. "hidden" is the
+    // resting state now, so a rule widening hidden -> rail would put an empty
+    // panel back on screen the moment the window was resized, undoing the
+    // whole point of it being closed until asked for.
     if (w < 1280 && !paneByUser && STATE.pane === "open") STATE.pane = "rail";
     if (w >= 1280 && !paneByUser && STATE.pane === "rail") STATE.pane = "open";
     if (w < 1100 && !sidebarByUser && STATE.sidebar === "open") STATE.sidebar = "rail";
     if (w >= 1100 && !sidebarByUser && STATE.sidebar === "rail") STATE.sidebar = "open";
     if (w < 780 && !paneByUser && STATE.pane !== "hidden") STATE.pane = "hidden";
-    if (w >= 780 && !paneByUser && STATE.pane === "hidden") STATE.pane = "rail";
     applyLayout();
   }
   window.addEventListener("resize", onResize);
@@ -1213,8 +1226,8 @@
     content.insertBefore(pending, content.firstChild);
     content.scrollTop = 0;
     setFigStatus("Working on it");
-    if (STATE.pane === "hidden") { /* leave hidden; header button will surface it */ }
-    else if (STATE.pane !== "open" && !paneByUser) { STATE.pane = "open"; }
+    // No opening from here. figLoading() now only runs after "Show graph" has
+    // been pressed, and that handler opens the panel itself.
     applyLayout();
   }
   // The Play/Pause/Jump-to-asked-time/Reset-zoom row is a Plotly updatemenu
@@ -1372,8 +1385,10 @@
       : "Click the figure to enlarge it.";
 
     setFigStatus(title);
-    if (STATE.pane === "hidden" && !paneByUser) STATE.pane = "rail";
-    if (STATE.pane !== "open" && !paneByUser) STATE.pane = "open";
+    // Deliberately does NOT open the panel. Reading charts get here only via
+    // the "Show graph" button, which opens it first; forecast charts get here
+    // with the answer, and those must not shove a panel onto the screen
+    // nobody asked for -- the header's figures button surfaces them instead.
     applyLayout();
     figScaleThumbs();
     content.scrollTop = 0;
