@@ -561,11 +561,38 @@ def _followup_turn(session: dict, user_text: str) -> dict:
             "window": None, "user_text": user_text}
 
 
+def _who_from_window(window: dict | None) -> str | None:
+    """"Subject 11" / "This recording", for the answers that build no reading.
+
+    interpret.describe_reading only runs on a single-window reading, so the
+    onset, overview and comparison answers have no `who` -- and a follow-up on
+    one of them had nobody to name.
+    """
+    if not window:
+        return None
+    if window.get("source") == "upload":
+        return "This recording"
+    subject = window.get("subject")
+    return f"Subject {subject}" if subject is not None else None
+
+
 def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
     intent = intent_router.route(user_text)
 
     if intent.kind == intent_router.FOLLOWUP:
         return _followup_turn(session, user_text)
+
+    # "what can you tell me about the data" -- open-ended, names nothing. With
+    # a recording already under discussion the useful answer is a summary of
+    # THAT recording; with none, it is the catalogue of what exists. Resolved
+    # as a reading it inherited the previous subject and time and reprinted the
+    # previous answer, which is the least useful reply available.
+    if intent_router.asks_about_the_data(user_text):
+        subject = (previous or {}).get("subject")
+        if subject is None:
+            return _catalogue_text()
+        intent = intent_router.Intent(kind=intent_router.OVERVIEW,
+                                      subjects=[subject])
 
     if (intent.kind == intent_router.MENU and previous
             and previous.get("t_start") is not None):
@@ -621,6 +648,35 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
         return {"content": message}
 
     params = resolved.params
+
+    # The message named no subject, no time and no side, and what it resolved
+    # to is the window already answered directly above. Whatever it was asking,
+    # it was not "measure that again" -- so re-running classify() here can only
+    # reprint the same rendered verdict word for word, which is what "so what
+    # does this mean" and "what can u tell me about the data" both got before
+    # they were recognised by name.
+    #
+    # This is the catch-all behind those two. Routing will keep missing
+    # phrasings -- there are unlimited ways to ask a vague question and the
+    # regexes enumerate them one at a time -- but every miss lands here, where
+    # the previous answer is re-explained instead of reprinted. Anything that
+    # names a DIFFERENT window ("and at 90s?", "what about the left arm?")
+    # fails the check and takes the reading path exactly as before.
+    #
+    # Two things the reading path adds that a follow-up cannot, so a message
+    # asking for either is NOT just a question about the last answer even when
+    # it names no new window. "what should they do about it?" resolves to the
+    # same window and needs the recommendation built from it; "will they get
+    # more tired over the next minute?" resolves to the same window and needs
+    # the forecast. Sent to the follow-up path both came back as bare
+    # re-explanations with the thing they asked for missing.
+    asks_for_more = (wants_recommendation(user_text)
+                     or extract.extract_horizon_seconds(user_text,
+                                                        default=None) is not None)
+    if (not asks_for_more and session.get("last_answer")
+            and extract.named_nothing_new(params, previous)):
+        return _followup_turn(session, user_text)
+
     subject, t_start, side = params["subject"], params["t_start"], params["side"]
     notes = resolved.problems
     window = {"subject": subject, "t_start": t_start, "side": side,
@@ -926,6 +982,11 @@ def _finalize(session: dict, turn: dict) -> dict:
             who = (reading or {}).get("who")
             cleaned, invented = interpret.strip_invented_numbers(
                 interpret.strip_verdict_echo(prose, who), who)
+            # Coaching the reader never asked for, on a plain reading. Skipped
+            # when they DID ask -- the recommendation below is built for that
+            # deliberately, with its disclaimer, and this would gut it.
+            if not wants_recommendation(user_text):
+                cleaned = interpret.drop_advice(cleaned)
             # Trim last, after the echo and the invented figures are gone:
             # cutting to two sentences first would spend the budget on a
             # duplicate opening restatement and drop the real explanation.
@@ -1148,8 +1209,15 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
                       or (final.get("reading") or {}).get("lines")),
             # "Subject 11" / "This recording" -- carried so a follow-up can be
             # checked for opening by naming them and restating the verdict,
-            # which is what strip_verdict_echo catches on the reading path.
-            "who": (final.get("reading") or {}).get("who"),
+            # which is what strip_verdict_echo catches on the reading path,
+            # and so the follow-up knows whose measurement it is describing.
+            #
+            # Only a reading builds one, so it is reconstructed from the window
+            # for the analysis answers. Without it a follow-up after "summarise
+            # subject 11" had nobody named and went back to "this result tells
+            # YOU that the muscle is fatigued" -- about somebody else's arm.
+            "who": ((final.get("reading") or {}).get("who")
+                    or _who_from_window(final.get("window"))),
         }
     window = final.get("window")
     if window and window.get("source") in ("upload", "dataset"):

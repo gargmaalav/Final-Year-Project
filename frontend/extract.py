@@ -470,6 +470,35 @@ def resolve_query(user_query: str, previous: dict | None = None,
                     problems=problems)
 
 
+def named_nothing_new(params: dict | None, previous: dict | None) -> bool:
+    """True when a message resolved to exactly the window already answered.
+
+    Both subject and time appear in `carried_over` -- so the message named
+    neither -- and the resolved side is the one already in play. Nothing in it
+    points at a different measurement from the one whose answer is on screen,
+    which means re-running the classifier can only reprint that answer word
+    for word.
+
+    This is the catch-all behind the phrasings the intent router misses. It
+    has missed "so what does this mean" and "what can u tell me about the
+    data" so far, and it will keep missing others: there is no finite list of
+    ways to ask a vague question, and each one that slips through resolves to
+    the previous window and reproduces the previous answer. Judged on the
+    resolved window rather than on wording, so it holds for phrasings nobody
+    has thought of yet.
+
+    Anything naming a different window ("and at 90 seconds?", "what about the
+    left arm?") fails the check and takes the reading path as before.
+    """
+    if not previous or not params:
+        return False
+    if set(params.get("carried_over") or []) < {"subject", "time"}:
+        return False
+    return (params.get("subject") == previous.get("subject")
+            and params.get("t_start") == previous.get("t_start")
+            and params.get("side") == (previous.get("side") or "R"))
+
+
 # Public names for the two readers the app and the intent router need on their
 # own, so neither has to reach into a private function.
 def side_from_text(text: str) -> str | None:

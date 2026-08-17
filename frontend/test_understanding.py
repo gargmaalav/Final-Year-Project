@@ -168,6 +168,35 @@ NOT_ABOUT_LAST_ANSWER = [
     "why is subject 7 different",
 ]
 
+# Open-ended "what have you got for me". These name no subject, no time and no
+# specific question, so they resolved entirely from the previous turn and
+# reprinted the answer already on screen word for word. What they should get
+# depends on whether a recording is under discussion -- turn.py decides -- but
+# they must be recognised as open-ended first.
+ASKS_ABOUT_THE_DATA = [
+    "what can u tell me about the data",
+    "what can you tell me about the data",
+    "what can you tell me about the recording",
+    "what can you tell me",
+    "tell me about the data",
+    "tell me more about this",
+    "so what can u tell me about it?",
+    "what else",
+    "what else can you tell me",
+    "anything else",
+    "what do you see",
+]
+
+# ...and questions that DO name what they want must not be swallowed by it.
+NOT_ABOUT_THE_DATA = [
+    "is subject 11 fatigued at 60s",
+    "tell me about subject 11",
+    "what does median frequency mean?",
+    "summarise subject 7",
+    "why?",
+    "compare subject 5 and 9",
+]
+
 # The invention failure this architecture exists to prevent: with no previous
 # turn to carry from, a follow-up must ask, never fill in a plausible window.
 MUST_ASK = [
@@ -224,6 +253,17 @@ RECOMMEND = [
     ("recommend a training plan", True),
     ("any diet suggestions for subject 4", True),
     ("what gym work should I do", True),
+    # the plainest phrasings, none of which were listed -- "what should they do
+    # about it?" came back as a re-explanation with no suggestion in it
+    ("what should they do about it?", True),
+    ("what should I do", True),
+    ("any advice", True),
+    ("should they take a break", True),
+    ("what are the next steps", True),
+    # ...but asking what the reading MEANS is not asking what to do about it
+    ("should I be worried?", False),
+    ("so what does this mean", False),
+    ("is that bad?", False),
     ("what training data was used?", False),
     ("how was the model trained", False),
     ("which subjects were in the training set", False),
@@ -316,6 +356,56 @@ def main() -> int:
             failed += 1
             failures.append(f"  {question!r}\n     names new data, but was read "
                             "as a question about the previous answer")
+
+    for question in ASKS_ABOUT_THE_DATA:
+        if intent.asks_about_the_data(question):
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r}\n     open-ended, but was not "
+                            "recognised as asking about the data")
+
+    for question in NOT_ABOUT_THE_DATA:
+        if not intent.asks_about_the_data(question):
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r}\n     names what it wants, but "
+                            "was read as an open-ended ask")
+
+    # The catch-all: a message naming nothing resolves to the window already
+    # answered, and re-measuring it can only reprint that answer. Judged on
+    # the resolved window, so it holds for phrasings the router has not
+    # learned -- which is the point, since it keeps meeting new ones.
+    previous_window = {"subject": 11, "t_start": 60.0, "side": "R"}
+    for question, want_same in (
+            ("what can u tell me about the data", True),
+            ("so what does this mean", True),
+            ("hows that looking", True),
+            ("anything interesting there", True),
+            # A recommendation and a forecast resolve to the SAME window and
+            # are caught here, so turn.py checks for them before the guard --
+            # sent to the follow-up path they lost the very thing they asked
+            # for. Pinned so the guard's own reach stays documented.
+            ("what should they do about it?", True),
+            ("will they get more tired over the next minute?", True),
+            # each of these names a DIFFERENT window and must not be caught
+            ("and at 90 seconds?", False),
+            ("what about the left arm?", False),
+            ("how about subject 5?", False),
+            ("is subject 11 fatigued at 60 seconds?", False)):
+        resolved = extract.resolve_query(question, previous_window,
+                                         duration=DURATION, subjects=SUBJECTS,
+                                         use_llm=False)
+        got = resolved.ok and extract.named_nothing_new(resolved.params,
+                                                        previous_window)
+        if got == want_same:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(
+                f"  {question!r}\n     wanted named_nothing_new={want_same}, "
+                f"got {got} from {resolved.params}")
 
     for previous, question, want_subject, want_t in FOLLOW_UPS:
         resolved = extract.resolve_query(question, previous, duration=DURATION,

@@ -43,10 +43,42 @@ class Intent:
     both_sides: bool = False         # COMPARE: left vs right of one subject
 
 
+# "u" and "ur" alongside "you" and "your" throughout: these are typed into a
+# chat box, and "what can u tell me about the data" was read as a request to
+# re-measure the window already on screen.
 _CATALOGUE_RE = re.compile(
     r"\b(what (?:data|subjects|recordings|files)|which subjects|how many "
     r"subjects|what(?:'s| is) (?:in|available)|list the subjects|"
-    r"what can (?:you|i) (?:ask|do)|what do you have|help)\b", re.IGNORECASE)
+    r"what can (?:you|u|i) (?:ask|do)|what do (?:you|u) have|help)\b",
+    re.IGNORECASE)
+
+# Open-ended "so what have you got for me" -- no subject, no time, no specific
+# question. These named nothing and so were resolved entirely from the previous
+# turn, which re-measured the same window and reprinted the same answer word
+# for word. What they actually want depends on whether a recording is already
+# under discussion, which route() cannot see; _dataset_turn decides, and this
+# only says the question was open-ended.
+_ABOUT_DATA_RE = re.compile(
+    r"^\s*(?:so\s+|ok(?:ay)?\s+|and\s+|but\s+)*"
+    r"(?:what (?:can|could) (?:you|u) tell me(?: about (?:the )?"
+    r"(?:data|dataset|recording|reading|it|this|that))?|"
+    r"(?:can (?:you|u) )?tell me (?:about|more about) (?:the )?"
+    r"(?:data|dataset|recording|reading|it|this|that)|"
+    r"what (?:else|other)(?: (?:can|do) (?:you|u) (?:tell me|know|have|see))?|"
+    r"anything else|what do (?:you|u) see|"
+    r"what(?:'s| is) (?:the )?data(?: like)?)"
+    r"\s*[?.!]*\s*$", re.IGNORECASE)
+
+
+def asks_about_the_data(text: str) -> bool:
+    """True for an open-ended "what can you tell me about the data".
+
+    Distinct from CATALOGUE, which asks what recordings exist, and from
+    FOLLOWUP, which asks about the answer just given. This asks about the
+    RECORDING -- so with a subject under discussion the useful reply is a
+    summary of it, and with none it is the catalogue.
+    """
+    return bool(_ABOUT_DATA_RE.match(text or ""))
 
 _EXPLAIN_RE = re.compile(
     r"\b(what (?:is|are|does|do)|what'?s|explain|meaning of|means?\b|"
