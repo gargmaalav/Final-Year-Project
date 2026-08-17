@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import sys
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,9 +51,11 @@ from llm import LLMError, chat                   # noqa: E402
 from prompt import (build_facts_prompt, build_followup_prompt,  # noqa: E402
                     build_prompt,
                     compare_facts, describe_window, onset_facts,
-                    overview_facts, readable_facts)
+                    overview_facts, readable_facts,
+                    render_onset_answer, strip_unfactual_numbers)
 from recommend import (build_recommendation_prompt,  # noqa: E402
-                       ensure_disclaimer, wants_recommendation)
+                       ensure_disclaimer, strip_measurements,
+                       wants_recommendation)
 from upload import UploadError, load_uploaded_segment, parse_uploaded_csv  # noqa: E402
 
 # matches models/serve.py's _STATE mapping, kept in sync manually since this
@@ -88,6 +91,9 @@ def new_session() -> dict:
         "last_turn_context": None,
         "last_params": None,     # last resolved {subject, t_start, side}
         "last_answer": None,     # {question, answer, facts} -- what "why?" refers to
+        # the last answer asked which subject was meant, so a bare "5" on this
+        # turn names one rather than being a stray number
+        "awaiting_subject": False,
     }
 
 
@@ -174,7 +180,12 @@ def _needs_subject_msg() -> str:
             f"{subs[0]}-{subs[-1]}.")
 
 
-def _catalogue_text() -> dict:
+def _catalogue_text(lead: str | None = None) -> dict:
+    """What the dataset holds, with the openers offered as buttons.
+
+    `lead` prefixes an acknowledgement when this is being shown because the
+    question could not be understood, rather than because it was asked for.
+    """
     subs = _subjects()
     text = (
         f"I have surface EMG recordings for {len(subs)} subjects "
@@ -194,7 +205,8 @@ def _catalogue_text() -> dict:
         ("A forecast", "will subject 2 get more tired over the next minute?"),
         ("A definition", "what does median frequency mean?"),
     ]
-    return {"content": text, "suggestions": suggestions}
+    return {"content": (f"{lead}\n\n{text}" if lead else text),
+            "suggestions": suggestions, "awaiting_subject": True}
 
 
 def _subject_menu(subject: int) -> dict:
@@ -414,6 +426,15 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
                                f"has subjects {subs[0]}-{subs[-1]}."}
         side = extract.side_from_text(user_text) or (previous or {}).get("side") or "R"
         summary = _cached_scan(subject, side)
+        window = {"subject": subject, "side": side, "source": "dataset",
+                  "kind": kind}
+        # a recording with no onset is answered directly -- see
+        # prompt.render_onset_answer for what the model did with it instead
+        if kind == intent_router.ONSET:
+            rendered = render_onset_answer(summary)
+            if rendered:
+                return {"content": rendered, "facts": onset_facts(summary),
+                        "window": window, "user_text": user_text}
         facts = (onset_facts(summary) if kind == intent_router.ONSET
                  else overview_facts(summary))
         instruction = (
@@ -426,10 +447,7 @@ def _analysis_turn(user_text: str, intent, previous: dict | None) -> dict:
             "much of the recording was classified as fatigued.")
         return {"prompt": build_facts_prompt(
                     "Measured results:", facts, user_text, instruction),
-                "facts": facts,
-                "window": {"subject": subject, "side": side, "source": "dataset",
-                           "kind": kind},
-                "user_text": user_text}
+                "facts": facts, "window": window, "user_text": user_text}
 
     if intent.both_sides:
         subject = _subject_for(intent, previous)
@@ -463,9 +481,18 @@ def _followup_turn(session: dict, user_text: str) -> dict:
         return {"content": (
             "There's nothing to explain yet — ask me about a subject first, "
             "then say \"why?\" and I'll unpack that answer.")}
+    facts = last.get("facts") or []
     return {"prompt": build_followup_prompt(
                 last.get("question") or "(their previous question)",
-                last["answer"], last.get("facts") or [], user_text),
+                last["answer"], facts, user_text),
+            "facts": facts,
+            # A follow-up re-explains an answer that has already been shown, so
+            # the figures IN that answer are legitimate to restate -- they were
+            # rendered from measurements, not invented. Screened against the
+            # facts alone, every number in a follow-up was stripped and the
+            # answers came back as dangling fragments ("Instead, the muscle
+            # showed...", with the sentence it contrasted against removed).
+            "grounded_in": [last["answer"]],
             "window": None, "user_text": user_text}
 
 
@@ -498,10 +525,33 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
                         "t_start": duration, "side": side_hint},
             duration=duration, subjects=subjects)
         if resolved.ok:
+            # The window handed in above is synthetic -- it exists only to
+            # supply the end of the recording as a default time -- so the time
+            # was defaulted, not carried over from anything the reader said.
+            # Left in, the provenance line claimed both at once: "(time
+            # carried over from your previous question) · no time given, so
+            # this reads the end of the recording", on the first message of a
+            # brand-new chat. Provenance is the one line the reader is meant
+            # to be able to trust.
+            resolved.params["carried_over"] = [
+                c for c in (resolved.params.get("carried_over") or [])
+                if c != "time"]
             resolved.problems.append(
                 "no time given, so this reads the end of the recording")
 
     if not resolved.ok:
+        # Nothing in the message and nothing in the conversation to work from
+        # -- "tell me everything", "i dont know what to ask", or plain noise.
+        # Answering that with "which subject and which point in the
+        # recording?" asks someone who has just arrived to name a subject and
+        # a timestamp before anything has told them either exists, and offers
+        # no buttons to get there. The catalogue says what is here and hands
+        # over the openers as chips, which is what that person needs.
+        if (provisional is None
+                and extract.t_start_from_text(user_text, None) is None):
+            return _catalogue_text(
+                "I'm not sure what you're asking about yet."
+                if (user_text or "").strip() else None)
         message = " ".join(resolved.problems + [resolved.ask])
         return {"content": message}
 
@@ -620,6 +670,15 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
         cache["scan"] = analysis.summarise(scan)
 
     summary = cache["scan"]
+    window = {"source": "upload", "name": cache["name"], "kind": kind}
+    # rendered rather than phrased when there is no onset, exactly as for a
+    # dataset subject
+    if kind == intent_router.ONSET:
+        rendered = render_onset_answer(summary)
+        if rendered:
+            return {"content": rendered, "facts": onset_facts(summary),
+                    "user_text": user_text, "chart_html": _upload_chart(cache),
+                    "window": window}
     facts = (onset_facts(summary) if kind == intent_router.ONSET
              else overview_facts(summary))
     instruction = (
@@ -632,8 +691,7 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
     return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
                                          instruction),
             "facts": facts, "user_text": user_text,
-            "chart_html": _upload_chart(cache),
-            "window": {"source": "upload", "name": cache["name"], "kind": kind}}
+            "chart_html": _upload_chart(cache), "window": window}
 
 
 def _upload_chart(cache: dict):
@@ -706,6 +764,23 @@ def _finalize(session: dict, turn: dict) -> dict:
         try:
             content = chat([{"role": "user", "content": turn["prompt"]}],
                            model=session["model"])
+            # These answers are given figures and are meant to quote them, so
+            # they cannot be scrubbed of numbers the way a reading is. What
+            # they must not contain is a number nobody measured -- see
+            # strip_unfactual_numbers(). If that empties the answer, the
+            # measured facts are shown instead, exactly as when the model is
+            # unreachable: the measurement is not lost, only its wording.
+            cleaned, _invented = strip_unfactual_numbers(
+                content, (turn.get("facts") or []) + (turn.get("grounded_in") or []))
+            # A follow-up on a definition has no measured facts to fall back
+            # on, so the bullet list can be empty too -- never let both be and
+            # ship a blank answer.
+            shown = "\n".join(f"- {line}"
+                              for line in readable_facts(turn.get("facts") or []))
+            content = cleaned or shown or (
+                "I couldn't put that into words without quoting figures that "
+                "were never measured, so I've left it out rather than guess. "
+                "Ask again and I'll have another go.")
         except LLMError as e:
             lines = readable_facts(turn.get("facts") or [])
             content = ("\n".join(f"- {line}" for line in lines)
@@ -724,7 +799,8 @@ def _finalize(session: dict, turn: dict) -> dict:
                 "recommendation": None,
                 "facts": turn.get("facts"), "window": turn.get("window"),
                 "user_text": turn.get("user_text"),
-                "suggestions": turn.get("suggestions")}
+                "suggestions": turn.get("suggestions"),
+                "awaiting_subject": turn.get("awaiting_subject")}
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
     window = turn.get("window")
@@ -761,11 +837,20 @@ def _finalize(session: dict, turn: dict) -> dict:
     recommendation = None
     if wants_recommendation(user_text):
         try:
-            recommendation = ensure_disclaimer(chat(
+            suggestion = chat(
                 [{"role": "user", "content": build_recommendation_prompt(
                     features, forecast, user_text,
                     session["athlete_note"] or None, turn.get("reading"))}],
-                model=session["model"]))
+                model=session["model"])
+            # The verdict leads here for the same reason it leads the main
+            # answer: asked to restate it, the model opened the box with
+            # "they are showing signs of fatigue" under a reading that said
+            # they were not. It is rendered, and any Hz or percentage in the
+            # suggestion is invented by construction -- see strip_measurements.
+            suggestion = strip_measurements(suggestion)
+            recommendation = ensure_disclaimer(
+                f"{verdict}\n\n{suggestion}" if verdict and suggestion
+                else (suggestion or verdict))
         except LLMError as e:
             recommendation = f"[Recommendation unavailable: {e}]"
 
@@ -813,6 +898,62 @@ def _followup_upload(session: dict, user_text: str) -> dict | None:
     return cache if session["last_source"] == "upload" else None
 
 
+# A reply that is nothing but a number, sent straight after being asked which
+# subject was meant. "5" is the obvious answer to "Which subject did you mean?"
+# and it used to be read as a stray number, so the same question came back.
+_BARE_NUMBER_RE = re.compile(r"^\s*[#-]?\s*(\d{1,2})\s*[?.!]*\s*$")
+
+
+def _name_the_subject(session: dict, user_text: str) -> str:
+    """"5" -> "subject 5", but only when a subject was just asked for."""
+    if not session.get("awaiting_subject"):
+        return user_text
+    m = _BARE_NUMBER_RE.match(user_text or "")
+    if not m or int(m.group(1)) not in _subjects():
+        return user_text
+    return f"subject {int(m.group(1))}"
+
+
+def _note_unanswered(user_text: str, final: dict) -> None:
+    """Offer the parts of a compound question this answer did not cover.
+
+    Routing picks one intent, so a message asking three things was answered
+    with one and said nothing about the other two. Rather than trying to
+    answer them all in one reply -- which would produce a wall of text and
+    several separate charts -- the rest are named and offered as chips, which
+    is the same staged-suggestion path the menus already use.
+    """
+    extras = intent_router.extra_requests(user_text or "")
+    if not extras:
+        return
+    subs = _subjects()
+    chips = []
+    for found in extras:
+        named = [s for s in found.subjects if s in subs]
+        first = named[0] if named else None
+        if found.kind == intent_router.ONSET and first:
+            chips.append(("When fatigue set in",
+                          f"when did subject {first} start fatiguing?"))
+        elif found.kind == intent_router.OVERVIEW and first:
+            chips.append(("The whole recording", f"summarise subject {first}"))
+        elif found.kind == intent_router.COMPARE:
+            if found.both_sides and first:
+                chips.append(("Left vs right",
+                              f"which arm is worse for subject {first}?"))
+            elif len(named) >= 2:
+                chips.append(("How they compare",
+                              f"compare subject {named[0]} and {named[1]}"))
+        elif found.kind == intent_router.EXPLAIN and found.term:
+            chips.append((f"What {found.term} means",
+                          f"what does {found.term} mean?"))
+    if not chips:
+        return
+    final["content"] = (final.get("content") or "") + (
+        "\n\n_You asked more than one thing there, and this answers one part "
+        "of it. Here's the rest:_")
+    final["suggestions"] = (final.get("suggestions") or []) + chips
+
+
 def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
     """The single entry point: one user turn in, one finalized answer out.
 
@@ -822,6 +963,13 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
     transcript to append to here, only the resolved-conversation state
     needed for follow-ups ("why?", "and at 90 seconds?").
     """
+    # What the reader typed is what the transcript keeps; what the pipeline
+    # sees is the resolved form, so `display_text` is captured before the
+    # rewrite rather than after it -- otherwise a bare "5" would be recorded
+    # as the question "subject 5", which is not what they asked.
+    display_text = user_text or (f"[uploaded {uploaded_file.name}]" if uploaded_file else "")
+    user_text = _name_the_subject(session, user_text)
+
     if uploaded_file is not None:
         turn = _upload_turn(session, user_text, uploaded_file)
     else:
@@ -829,9 +977,17 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
         turn = (_upload_question(user_text, cache) if cache
                 else _dataset_turn(session, user_text, session["last_params"]))
     final = _finalize(session, turn)
+    if uploaded_file is None:
+        _note_unanswered(user_text, final)
 
     session["last_turn_context"] = final if "features" in final else None
-    display_text = user_text or (f"[uploaded {uploaded_file.name}]" if uploaded_file else "")
+    # Whether a bare number on the NEXT turn names a subject. The catalogue
+    # says so outright; any answer that asks "which subject" is the same
+    # situation, so it is read off the text rather than flagged at each of
+    # the several places that ask.
+    session["awaiting_subject"] = bool(
+        final.get("awaiting_subject")
+        or "which subject" in (final.get("content") or "").lower())
     if final.get("content") and not intent_router.is_followup(user_text or ""):
         session["last_answer"] = {
             "question": display_text,

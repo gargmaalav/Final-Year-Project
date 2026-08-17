@@ -105,11 +105,16 @@ def _term_for(text: str) -> str | None:
 # them with a single window's numbers guesses at what was wanted.
 _VAGUE_RE = re.compile(
     r"^\s*(?:tell me about|about|info(?:rmation)? (?:on|about)|show me|"
-    r"look at|check|analyse|analyze|how(?:'s| is| about)|what about|"
-    r"data (?:on|for)|anything (?:on|about))?\s*"
-    r"(?:subject|subj|participant|person|athlete|s)?\s*"
+    r"look at|check|analyse|analyze|how'?s|how is|how are|how about|"
+    r"what'?s up with|what'?s going on with|what'?s happening with|"
+    r"what about|give me|data (?:on|for)|anything (?:on|about))?\s*"
+    r"(?:subject|subj|sub|participant|person|athlete|s)?\s*"
     r"[#-]?\s*(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|"
-    r"eleven|twelve|thirteen)\s*[?.!]*\s*$", re.IGNORECASE)
+    r"eleven|twelve|thirteen)\s*"
+    # "how's subject 5 doing?" is the same open-ended question as "subject 5",
+    # and was routed as a reading -- so someone who asked nothing specific was
+    # asked for a timestamp instead of being shown what they could ask.
+    r"(?:doing|looking|going|like|so far)?\s*[?.!]*\s*$", re.IGNORECASE)
 
 
 def is_vague_subject_request(text: str, subjects: list[int]) -> bool:
@@ -187,6 +192,53 @@ def stays_on_upload(user_query: str) -> bool:
         return True
     return (intent.kind == COMPARE and not intent.both_sides
             and len(intent.subjects) == 1)
+
+
+# Where one message stops asking one thing and starts asking another. Only a
+# conjunction followed by a question word counts, so "which subject fatigued
+# the most overall?" stays a single request -- it matches two intent patterns
+# but is plainly one question, and splitting on every "and" would offer the
+# reader a menu of things they never asked.
+_CLAUSE_SPLIT = re.compile(
+    r"\s+and\s+also\s+|\s*,\s*(?:and\s+)?also\s+|\s*;\s*|"
+    r"\s+and\s+(?=when|how|what|which|why|whether|does|did|do|is|are|was|"
+    r"were|can|could|should)",
+    re.IGNORECASE)
+
+
+def split_requests(user_query: str) -> list[str]:
+    """A compound message split into the separate things it asks for."""
+    parts = [p.strip(" ,?.") for p in _CLAUSE_SPLIT.split(user_query or "")]
+    return [p for p in parts if p]
+
+
+def extra_requests(user_query: str) -> list[Intent]:
+    """What the message asks for BEYOND the one route() is going to answer.
+
+    Precedence is top-to-bottom and only ever yields one intent, so "subject 5
+    and also how does that compare to 9 and when did it start" was answered
+    with the onset alone -- the comparison was dropped silently, and nothing
+    in the reply hinted that two thirds of the question had gone unanswered.
+
+    READING and MENU are never reported as extras: they are the fallback for
+    anything unrecognised, so a sentence fragment would otherwise come back as
+    a request the reader never made.
+    """
+    clauses = split_requests(user_query)
+    if len(clauses) < 2:
+        return []
+    subjects = extract.subjects_in_text(user_query)
+    seen = {route(user_query).kind, READING, MENU, FOLLOWUP}
+    out = []
+    for clause in clauses:
+        found = route(clause)
+        if found.kind in seen:
+            continue
+        seen.add(found.kind)
+        if not found.subjects:
+            found.subjects = subjects
+        out.append(found)
+    return out
 
 
 def route(user_query: str) -> Intent:

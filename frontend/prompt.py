@@ -68,6 +68,51 @@ def readable_facts(facts: list[str]) -> list[str]:
     return out
 
 
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def strip_unfactual_numbers(prose: str,
+                            facts: list[str]) -> tuple[str, list[str]]:
+    """Drop sentences quoting a number that was never measured.
+
+    Returns (cleaned prose, the removed sentences).
+
+    interpret.strip_invented_numbers() does this for a single-window reading,
+    where the model is handed no figures at all and so ANY digit it writes is
+    fabricated. The whole-recording answers are the other case: they are given
+    figures, and the model is meant to quote them. What it must not do is
+    produce a number that is not among them.
+
+    Observed on subject 12, whose recording is fatigued at its very first
+    reading and therefore has no onset time and no accuracy attached to one.
+    Given "138 readings taken across the recording" and nothing else numeric,
+    the model wrote "the accuracy of this measurement is +/-1 reading ... we
+    are 100% certain" -- an error bar and a certainty claim, neither measured,
+    both derived from a count that means nothing of the sort.
+
+    A prompt rule was already carrying this on the onset path and it is the
+    kind that half-holds: it fixed the case it was written for and the same
+    invention reappeared on the branch it did not cover. Checking the output
+    against the facts holds on every branch, including ones not written yet.
+    """
+    if not prose:
+        return prose, []
+    allowed = {float(n) for n in _NUMBER.findall(" ".join(facts or []))}
+
+    def _invents(sentence: str) -> bool:
+        return any(not any(abs(value - a) < 0.05 for a in allowed)
+                   for value in (float(n) for n in _NUMBER.findall(sentence)))
+
+    kept, removed = [], []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        sentences = re.split(r"(?<=[.!?])\s+", para.strip())
+        good = [s for s in sentences if not _invents(s)]
+        removed += [s for s in sentences if _invents(s)]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip(), removed
+
+
 def describe_window(window: dict | None) -> str:
     """Plain-English name for the window that was actually classified."""
     if not window:
@@ -82,6 +127,27 @@ def describe_window(window: dict | None) -> str:
             f"at {window['t_start']:.0f}s")
 
 
+# Markers that the recording being re-explained moved the WRONG way for
+# fatigue -- median frequency up, not down. Every one of these is rendered in
+# Python (overview_facts, _drop_phrase, interpret's lines), so matching on
+# them is matching on our own text, not on the model's.
+_ROSE_MARKERS = (
+    "median frequency ROSE",
+    "does not show the usual fatigue trend",
+    "above their own fresh level",
+    "above their fresh level",
+    "not the fatigue direction",
+    "not the direction fatigue moves it",
+    "ROSE to",
+)
+
+
+def _signal_rose(facts: list[str], previous_answer: str) -> bool:
+    """True when the answer being re-explained had a RISING median frequency."""
+    hay = " ".join(list(facts or []) + [previous_answer or ""])
+    return any(m.lower() in hay.lower() for m in _ROSE_MARKERS)
+
+
 def build_followup_prompt(previous_question: str, previous_answer: str,
                           facts: list[str], user_query: str) -> str:
     """Re-explain the last answer, from the same measured numbers.
@@ -94,6 +160,29 @@ def build_followup_prompt(previous_question: str, previous_answer: str,
     and nothing new is measured.
     """
     body = "\n".join(f"- {f}" for f in facts) if facts else "- (none recorded)"
+    # The causal chain is generic physics and was pasted in unconditionally.
+    # Asked to re-explain subject 7 -- whose median frequency ROSE, which the
+    # answer above it said plainly -- the model recited the chain and closed
+    # with "which shifts the signal's power to lower frequencies, exactly what
+    # happened here". It did not happen here. A fluent, physically-correct
+    # explanation of something the measurement contradicts is the failure this
+    # whole architecture exists to prevent, so which chain gets asked for is
+    # decided here rather than left to the model to notice.
+    if _signal_rose(facts, previous_answer):
+        chain = (
+            "If they asked why, explain the causal chain in general terms: a "
+            "fatiguing muscle's fibres conduct more slowly, which shifts the "
+            "signal's power to lower frequencies, which is what the median "
+            "frequency measures. You MUST then say that this recording does "
+            "NOT follow that pattern -- its median frequency went UP, not "
+            "down, which is not the direction fatigue moves it. Never write "
+            "that the frequency fell here, and never say the usual pattern is "
+            "what happened here.")
+    else:
+        chain = (
+            "If they asked why, explain the causal chain: a fatiguing muscle's "
+            "fibres conduct more slowly, which shifts the signal's power to "
+            "lower frequencies, which is what the median frequency measures.")
     return (
         "You are re-explaining an answer you already gave about a lab EMG "
         "muscle-fatigue measurement. The reader wants the SAME result "
@@ -106,10 +195,7 @@ def build_followup_prompt(previous_question: str, previous_answer: str,
         "reader who is not a signal-processing specialist. Explain the "
         "reasoning behind the result -- what was measured and why it means "
         "what it means. Use ONLY the values listed above; do not introduce a "
-        "number that is not there, and do not change the conclusion. If they "
-        "asked why, explain the causal chain: a fatiguing muscle's fibres "
-        "conduct more slowly, which shifts the signal's power to lower "
-        "frequencies, which is what the median frequency measures."
+        "number that is not there, and do not change the conclusion. " + chain
     )
 
 
@@ -129,9 +215,42 @@ def build_facts_prompt(heading: str, facts: list[str], user_query: str,
         "diagnoses, so it is safe and expected to state them plainly. Ground "
         "your answer ONLY in the values below. Do not introduce any number "
         "that is not listed, and do not re-round the ones that are.\n\n"
+        # build_prompt() has carried this since the single-window answers were
+        # written and this path never got it, so the two read like different
+        # products: "Subject 13 is not showing signs of fatigue, 60s into a
+        # 218s effort" against "The EMG muscle-fatigue analysis for subject 7
+        # shows a unique development... The median frequency starts at 72.2 Hz".
+        "The reader is NOT a signal-processing specialist. Lead with what the "
+        "result means for the person, in ordinary words, and put the figures "
+        "after that rather than in front of it. Do not open with a hertz "
+        "value, with the phrase 'median frequency', or with 'the EMG "
+        "analysis' -- say what happened to the muscle first. Where you can, "
+        "call it the muscle signal rather than naming the measurement.\n\n"
+        # Asking for plainer words immediately bought the mistake recommend.py
+        # already guards against: "the muscle signal shows a decrease in
+        # ACTIVITY over time". A falling median frequency is a shift in the
+        # signal's frequency content, not the muscle doing less, and that
+        # reading is wrong in a way a non-specialist has no way to catch.
+        "Plainer wording must not change what was measured. A rise or fall "
+        "here is a shift in the signal's frequency, NOT the muscle being more "
+        "or less active. Never describe it as more or less muscle activity, "
+        "effort, strength, engagement, contraction or energy.\n"
+        # "The majority of readings (43%) were classified as fatigued" -- the
+        # figure was quoted correctly and then described as its opposite.
+        "Do not characterise a percentage in words that disagree with it: "
+        "under half is not 'most' or 'the majority', and a small share is not "
+        "'much of'. If you are unsure, give the figure and no adjective.\n\n"
         f"{heading}\n{body}\n\n"
         f"User question: {user_query}\n\n"
-        f"{instruction}"
+        f"{instruction}\n\n"
+        # build_prompt() carries this rule for the single-window answers and
+        # this path did not, so "we are 100% certain that fatigue occurred"
+        # went out under an onset the classifier was not certain of at all.
+        "Never present anything here as certainty. Do not write that you are "
+        "certain, sure, or confident to a percentage: a confidence figure is "
+        "the model's own confidence in its call, not a measure of how correct "
+        "it is. Do not invent a margin of error, an accuracy, or a precision "
+        "that is not stated above."
     )
 
 
@@ -163,6 +282,18 @@ def _self_calibration_facts(summary: dict) -> list[str]:
         "accuracy or error figure for this recording: none has been measured "
         "for self-calibrated files",
     ]
+
+
+# When no onset was found there is no time to attach an accuracy to, so the
+# honest number of error figures is zero. The `found` branch caps them at one;
+# without this the no-onset branches carried no such note at all, and the model
+# duly invented "the accuracy of this measurement is +/-1 reading" out of the
+# readings count, alongside "we are 100% certain".
+_NO_ERROR_FIGURE = (
+    MODEL_ONLY + "there is no onset time in this answer, so there is no margin "
+    "of error to give. Do not state one, and do not derive an accuracy, a "
+    "precision or a certainty figure from the number of readings, the "
+    "recording length, or anything else here")
 
 
 def onset_facts(summary: dict) -> list[str]:
@@ -219,10 +350,61 @@ def onset_facts(summary: dict) -> list[str]:
             "first reading, so there is no onset to report within it -- either "
             "the transition happened before the recording starts or the early "
             "readings are wrong. Say that plainly rather than giving a time")
+        facts.append(_NO_ERROR_FIGURE)
     else:
         facts.append("fatigue never appears and holds for consecutive readings "
                      "anywhere in this recording")
+        facts.append(_NO_ERROR_FIGURE)
     return facts + _self_calibration_facts(summary)
+
+
+def render_onset_answer(summary: dict) -> str | None:
+    """The onset answer for a recording that has no onset, written here.
+
+    Returns None when there IS an onset time, which is a real measurement with
+    an accuracy attached and reads better as prose.
+
+    When there is not, the whole answer is one fixed determination -- "already
+    fatigued at the first reading, so there is no onset in this recording", or
+    "fatigue never appears and holds anywhere in it". There is no number to
+    phrase and no judgement to make, and handing that to the model produced, on
+    the two recordings it applies to:
+
+      - "the accuracy of this measurement is +/-1 reading ... we are 100%
+        certain that fatigue occurred" -- an error bar and a certainty claim
+        invented out of a readings count (subject 12)
+      - "Fatigue set in at reading 10 ... fatigue never appeared during the
+        recording" -- a self-contradiction in consecutive sentences, on a
+        recording where it never set in at all (subject 6)
+
+    Screening the numbers stopped the first and could not stop the second: 10
+    was a real measured value, used to assert something nobody measured. This
+    is the same trade the ranking and comparison answers already take -- a
+    determination that is settled in Python is rendered in Python.
+    """
+    onset = summary["onset"]
+    if onset["found"]:
+        return None
+
+    who = _whose(summary).capitalize()
+    length = f"{summary['duration']:.0f}s"
+    fraction = summary["fraction_fatigued"] * 100
+
+    if onset.get("fatigued_from_start"):
+        return (
+            f"**{who}** — there's no onset to report for this recording.\n\n"
+            f"It is already classified as fatigued at its very first reading, "
+            f"so the change happened before the recording starts, or the early "
+            f"readings are wrong. Either way there is no moment inside these "
+            f"{length} where fatigue begins, and no time I can give you for it."
+            f"\n\nAcross the whole recording, {fraction:.0f}% of readings came "
+            f"out fatigued.")
+    return (
+        f"**{who}** — fatigue never sets in anywhere in this recording.\n\n"
+        f"No point in the {length} shows fatigue appearing and then holding "
+        f"for consecutive readings, which is what it takes to count as an "
+        f"onset rather than a one-off noisy window. {fraction:.0f}% of "
+        f"readings were classified as fatigued.")
 
 
 def overview_facts(summary: dict) -> list[str]:

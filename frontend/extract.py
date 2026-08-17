@@ -35,6 +35,7 @@ naming only the missing piece, never a silent guess.
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 
@@ -135,9 +136,32 @@ _NUM = rf"(\d+(?:\.\d+)?|(?:{_NUM_WORD})(?:[\s-]+(?:{'|'.join(_UNITS)}))?)"
 # cue, "at 60 seconds for subject 13" can bind 60 to the subject slot: the
 # number was genuinely typed, so grounding alone accepts it.
 _SUBJECT_RE = re.compile(
-    rf"\b(?:subject|subj|participant|person|athlete|patient|volunteer)\s*"
+    rf"\b(?:subject|subj|sub|participant|person|athlete|patient|volunteer)\s*"
     rf"(?:number|no\.?|#)?\s*{_NUM}\b", re.IGNORECASE)
 _SUBJECT_SHORT_RE = re.compile(r"\b(?:s|p)\s*[#-]?\s*(\d{1,2})\b")
+
+# A misspelt subject word directly in front of a number. One typo used to lose
+# the subject completely -- "is subjet 5 fatigued at 60 seconds" named a
+# subject and a time and was answered with "which subject did you mean?",
+# which reads as though the question had not been looked at.
+_SUBJECT_WORDS = ("subject", "subj", "participant", "person", "athlete",
+                  "patient", "volunteer")
+_WORD_NUMBER_RE = re.compile(r"\b([a-z]{4,14})\s*[#-]?\s*(\d{1,2})\b",
+                             re.IGNORECASE)
+
+
+def _is_subject_typo(word: str) -> bool:
+    """True for a near-miss of a subject word, false for an exact one.
+
+    0.8 is tight enough to leave the words that legitimately sit in front of a
+    number alone -- "seconds", "minutes", "compare", "between" all score below
+    0.6 against "subject" -- while catching a transposition or a dropped
+    letter ("subjcet" 0.86, "subjet" 0.92, "particpant" 0.95).
+    """
+    word = word.lower()
+    if word in _SUBJECT_WORDS:
+        return False        # matched exactly elsewhere; nothing to add here
+    return bool(difflib.get_close_matches(word, _SUBJECT_WORDS, n=1, cutoff=0.8))
 
 _TIME_RE = re.compile(
     rf"\b(?:at|after|around|about|near|by|from|@)?\s*{_NUM}\s*"
@@ -192,6 +216,9 @@ def subjects_in_text(text: str) -> list[int]:
             found.append(int(value))
     for m in _SUBJECT_SHORT_RE.finditer(text):
         found.append(int(m.group(1)))
+    for m in _WORD_NUMBER_RE.finditer(text):
+        if _is_subject_typo(m.group(1)):
+            found.append(int(m.group(2)))
 
     # "subject 5 and 9" / "subject 5 vs 9" -- the second number has no cue of
     # its own but is plainly another subject.
@@ -333,15 +360,24 @@ class Resolved:
         return self.params is not None
 
 
-def _ask_for(missing: list[str], subjects: list[int] | None) -> str:
-    """A question naming only what is actually missing."""
+def _ask_for(missing: list[str], subjects: list[int] | None,
+             range_stated: bool = False) -> str:
+    """A question naming only what is actually missing.
+
+    `range_stated` suppresses the second mention of the subject range. Asking
+    about subject 99 answered "I don't have subject 99 -- the dataset has
+    subjects 1-13. Which subject did you mean? I have subjects 1-13.", which
+    states the same range twice in two sentences.
+    """
     known = _subject_range_phrase(subjects)
     if missing == ["subject"]:
-        return f"Which subject did you mean? I have {known}."
+        return ("Which subject did you mean?" if range_stated
+                else f"Which subject did you mean? I have {known}.")
     if missing == ["t_start"]:
         return ("Which point in the recording -- a time in seconds, or "
                 "something like \"at the start\" or \"near the end\"?")
-    return (f"Which subject ({known}) and which point in the recording "
+    who = "Which subject" if range_stated else f"Which subject ({known})"
+    return (f"{who} and which point in the recording "
             "(a time in seconds, or \"at the start\" / \"near the end\")?")
 
 
@@ -397,11 +433,13 @@ def resolve_query(user_query: str, previous: dict | None = None,
 
     # range checks produce a message; they never fall through to the old
     # window, which looked identical to a correct answer
+    range_stated = False
     if subject is not None and subjects and subject not in subjects:
         problems.append(
             f"I don't have subject {subject} -- the dataset has "
             f"{_subject_range_phrase(subjects)}.")
         subject = None
+        range_stated = True
     if t_start is not None and t_start < 0:
         problems.append("A time can't be negative, so I ignored that.")
         t_start = None
@@ -424,7 +462,8 @@ def resolve_query(user_query: str, previous: dict | None = None,
     missing = [name for name, value in (("subject", subject), ("t_start", t_start))
                if value is None]
     if missing:
-        return Resolved(ask=_ask_for(missing, subjects), problems=problems)
+        return Resolved(ask=_ask_for(missing, subjects, range_stated),
+                        problems=problems)
 
     return Resolved(params={"subject": int(subject), "t_start": float(t_start),
                             "side": side, "carried_over": carried},
@@ -463,6 +502,12 @@ _HORIZON_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(seconds?|secs?|s\b|minutes?|mins?|m\b)",
     re.IGNORECASE)
 
+# A horizon named as a bare unit: "over the next minute", "in the coming
+# minute". Only the singular is matched -- "the next few minutes" names no
+# definite span, so it is left to the default rather than guessed at.
+_BARE_HORIZON_RE = re.compile(
+    r"\b(?:next|following|coming)\s+(minute|min|second|sec)\b", re.IGNORECASE)
+
 # Asking about the future without naming a horizon ("will I get more tired?").
 _FUTURE_INTENT_RE = re.compile(
     r"\b(will|going to|gonna|predict|forecast|project(?:ion|ed)?|"
@@ -482,6 +527,12 @@ def extract_horizon_seconds(text: str,
     match = _HORIZON_RE.search(text)
     if match:
         return _to_seconds(float(match.group(1)), match.group(2))
+    # "over the next minute" states a horizon with no digit in front of it.
+    # _HORIZON_RE needs one, so this fell through to the 20 s default and a
+    # question that plainly named a minute was answered with a third of it.
+    bare = _BARE_HORIZON_RE.search(text)
+    if bare:
+        return _to_seconds(1.0, bare.group(1))
     if _FUTURE_INTENT_RE.search(text):
         return DEFAULT_HORIZON_SEC
     return default

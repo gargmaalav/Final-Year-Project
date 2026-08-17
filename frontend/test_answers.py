@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import interpret       # noqa: E402
 import prompt          # noqa: E402
+import recommend       # noqa: E402
 
 
 def _result(mdf, fresh, label=1, conf=0.9, duration=200.0, t_start=180.0):
@@ -193,6 +194,121 @@ def _():
     text = " ".join(facts)
     assert "no onset to report" in text, text
     assert "first appears and holds" not in text, text
+
+
+# A margin of error was forbidden only on the branch that HAS an onset. On the
+# two branches that do not, the model built one out of the readings count.
+
+@check("a no-onset answer forbids any error figure at all")
+def _():
+    for onset in (_onset(found=False, fatigued_from_start=True),
+                  _onset(found=False)):
+        facts = prompt.onset_facts(_summary(75.0, 57.0, onset))
+        note = [f for f in facts if "no margin" in f]
+        assert note, f"no error-figure guard on this branch: {facts}"
+        assert "number of readings" in note[0], note[0]
+
+
+@check("a recording with no onset is rendered, not phrased")
+def _():
+    # subject 12: fatigued at its first reading. Asked to phrase this, the
+    # model invented "+/-1 reading" and "100% certain"; screened for numbers,
+    # it answered without saying anything at all.
+    text = prompt.render_onset_answer(_summary(
+        75.0, 57.0, _onset(found=False, fatigued_from_start=True), subject=12))
+    assert text, "no rendered answer for a fatigued-from-start recording"
+    assert "no onset to report" in text, text
+    assert "very first reading" in text, text
+
+    # subject 6: fatigue never appears and holds. The model answered "fatigue
+    # set in at reading 10" and "fatigue never appeared" in consecutive
+    # sentences -- 10 was a real measured value asserting an unmeasured claim,
+    # which is why screening numbers could not catch it.
+    text = prompt.render_onset_answer(_summary(
+        75.0, 57.0, _onset(found=False), subject=6))
+    assert text and "never sets in" in text, text
+    assert "set in at" not in text, text
+
+
+@check("an onset that was found is still phrased by the model")
+def _():
+    assert prompt.render_onset_answer(_summary(75.0, 57.0, _onset())) is None
+
+
+# --- numbers on the whole-recording answers ---------------------------------
+# These are GIVEN figures and are meant to quote them, so they cannot be
+# scrubbed of digits the way a single reading is. Only unmeasured ones go.
+
+@check("a number that was never measured is stripped from a facts answer")
+def _():
+    facts = ["recording length: 344s", "138 readings taken across the recording"]
+    prose = ("This recording runs 344s. The accuracy of this measurement is "
+             "±1 reading, so we are 100% certain.")
+    cleaned, invented = prompt.strip_unfactual_numbers(prose, facts)
+    assert cleaned == "This recording runs 344s.", cleaned
+    assert len(invented) == 1, invented
+
+
+@check("measured numbers survive the strip untouched")
+def _():
+    facts = ["recording length: 218s", "88 readings taken across the recording",
+             "fatigue first appears and holds at 83s (confidence 90%)",
+             "typically within about 6s of the labelled transition"]
+    prose = ("Fatigue first appears at about 83s, with 90% confidence. That "
+             "comes from 88 readings across the 218s recording, and is "
+             "typically within about 6s of the labelled transition.")
+    cleaned, invented = prompt.strip_unfactual_numbers(prose, facts)
+    assert cleaned == prose, cleaned
+    assert not invented, invented
+
+
+@check("word-only prose is never stripped from a facts answer")
+def _():
+    prose = ("Fatigue set in partway through the effort and held from there "
+             "on. Treat the time as approximate.")
+    cleaned, invented = prompt.strip_unfactual_numbers(prose, ["recording: 218s"])
+    assert cleaned == prose, cleaned
+    assert not invented, invented
+
+
+@check("the facts prompt forbids certainty and invented error bars")
+def _():
+    built = prompt.build_facts_prompt("Measured results:", ["a fact"],
+                                      "when did fatigue set in?", "Answer it.")
+    assert "Never present anything here as certainty" in built, built
+    assert "Do not invent a margin of error" in built, built
+
+
+@check("the whole-recording answers are told to lead in plain words")
+def _():
+    # build_prompt has carried this since the readings were written and this
+    # path never got it, so the two read like different products: "Subject 13
+    # is not showing signs of fatigue, 60s into a 218s effort" against "The
+    # EMG muscle-fatigue analysis for subject 7 shows a unique development".
+    built = prompt.build_facts_prompt("Measured results:", ["a fact"],
+                                      "summarise subject 7", "Answer it.")
+    assert "NOT a signal-processing specialist" in built, built
+    assert "Do not open with a hertz value" in built, built
+
+
+@check("plainer wording may not turn a frequency shift into muscle activity")
+def _():
+    # asking for plainer words immediately bought "the muscle signal shows a
+    # decrease in ACTIVITY over time" -- wrong, and invisible to the reader
+    # this answer is written for
+    built = prompt.build_facts_prompt("Measured results:", ["a fact"],
+                                      "summarise subject 13", "Answer it.")
+    assert "NOT the muscle being more or less active" in built, built
+    for banned in ("effort", "strength", "engagement", "contraction", "energy"):
+        assert banned in built, f"{banned} missing from the banned list"
+
+
+@check("a percentage may not be described as its opposite")
+def _():
+    # "The majority of readings (43%) were classified as fatigued"
+    built = prompt.build_facts_prompt("Measured results:", ["a fact"],
+                                      "summarise subject 7", "Answer it.")
+    assert "under half is not 'most'" in built, built
 
 
 @check("an upload is named by its file, a subject by number and arm")
@@ -511,6 +627,92 @@ def _():
 def _():
     r = _reading(50.0, 62.7, 3.8, 1)      # z well below -1
     assert not r["conflict"], r
+
+
+# --- the recommendation box -------------------------------------------------
+# It was the one answer still asking the model to state the verdict. Asked to
+# restate it "exactly as the facts above state it", it opened with "they are
+# showing signs of fatigue" under a rendered line saying they were NOT.
+
+@check("the recommendation no longer asks the model for the verdict")
+def _():
+    built = recommend.build_recommendation_prompt(
+        {"mdf_hz": 61.8, "fatigue_label": 0, "confidence": 0.98,
+         "fatigue_state": "non-fatigue"}, None, "what sport would suit them?")
+    assert "ALREADY been written out" in built, built
+    assert "Do NOT restate it" in built, built
+    assert "Start by saying whether it is showing signs of fatigue" not in built
+
+
+@check("the recommendation is handed the reading without its numbers")
+def _():
+    described = _reading(58.2, 62.7, 3.8, 1)
+    built = recommend.build_recommendation_prompt(
+        {"mdf_hz": 58.2, "fatigue_label": 1, "confidence": 0.98,
+         "fatigue_state": "fatigue"}, None, "what gym plan should they follow?",
+        None, {"lines": interpret.plain_lines(described, "Subject 13"),
+               "prose": interpret.prose_notes(described, "Subject 13"),
+               "technical": interpret.technical_line(described)})
+    assert "58.2" not in built and "62.7" not in built, built
+
+
+@check("hertz and percentages are stripped from a suggestion")
+def _():
+    text = ("Focus on active recovery this week. Their signal is 12% below "
+            "their fresh level of 70.8 Hz, so scale back.")
+    out = recommend.strip_measurements(text)
+    assert out == "Focus on active recovery this week.", out
+
+
+@check("ordinary training numbers survive the strip")
+def _():
+    # sets, reps and rest days are the substance of the suggestion -- only
+    # measurements are invented here
+    text = ("Try 3 sets of 10 repetitions, twice a week, with 48 hours "
+            "between sessions.")
+    assert recommend.strip_measurements(text) == text
+
+
+@check("the disclaimer still survives a stripped suggestion")
+def _():
+    assert "not medical" in recommend.ensure_disclaimer(
+        recommend.strip_measurements("Rest today.")).lower()
+
+
+# --- the follow-up ("why?") -------------------------------------------------
+# The causal chain (fatigue -> slower conduction -> lower frequency) was pasted
+# into every follow-up. Re-explaining subject 7, whose median frequency ROSE,
+# the model recited it and closed "...shifts the signal's power to lower
+# frequencies, exactly what happened here" -- directly contradicting the answer
+# it was re-explaining.
+
+@check("a rising signal is detected from the facts or the answer it produced")
+def _():
+    rose = prompt.overview_facts(_summary(57.0, 75.0, _onset()))
+    assert prompt._signal_rose(rose, ""), rose
+    assert prompt._signal_rose([], "Subject 7 is 5% above their own fresh level")
+    fell = prompt.overview_facts(_summary(75.0, 57.0, _onset()))
+    assert not prompt._signal_rose(fell, ""), fell
+    assert not prompt._signal_rose([], "Subject 13 is 3% below their fresh level")
+
+
+@check("a follow-up about a rising signal must not claim the usual pattern")
+def _():
+    built = prompt.build_followup_prompt(
+        "summarise subject 7", "median frequency ROSE by 4.8 Hz",
+        prompt.overview_facts(_summary(57.0, 75.0, _onset())), "why?")
+    assert "does NOT follow that pattern" in built, built
+    assert "went UP, not down" in built, built
+    assert "never say the usual pattern is what happened here" in built.lower()
+
+
+@check("a follow-up about a falling signal still gets the plain causal chain")
+def _():
+    built = prompt.build_followup_prompt(
+        "summarise subject 13", "median frequency FELL by 18.0 Hz",
+        prompt.overview_facts(_summary(75.0, 57.0, _onset())), "why?")
+    assert "shifts the signal's power to lower frequencies" in built, built
+    assert "does NOT follow that pattern" not in built, built
 
 
 # --- the offline fallback ---------------------------------------------------
