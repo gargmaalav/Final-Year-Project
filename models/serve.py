@@ -75,8 +75,18 @@ class _UploadShim:
 
 @app.get("/")
 def chatbot_ui():
-    """Serve the standalone chatbot UI (viz/chatbot_ui.html)."""
-    return FileResponse(_UI_PATH, media_type="text/html")
+    """Serve the standalone chatbot UI (viz/chatbot_ui.html).
+
+    Sent no-store: this is a single hand-edited file with no build step and no
+    content hash in its URL, so a cached copy is indistinguishable from the
+    current one. Without this the browser kept serving an older UI after the
+    file changed -- fixes looked like they had not been applied at all, and
+    the only way out was a manual hard-reload the reader had no reason to
+    suspect they needed. It is one local file on a demo server; re-reading it
+    per request costs nothing.
+    """
+    return FileResponse(_UI_PATH, media_type="text/html",
+                        headers={"Cache-Control": "no-store, must-revalidate"})
 
 
 @app.get("/models")

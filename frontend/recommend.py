@@ -68,13 +68,44 @@ def ensure_disclaimer(text: str) -> str:
     return f"{text.rstrip()}\n\n{DISCLAIMER}"
 
 
+_MEASUREMENT = re.compile(r"\d+(?:\.\d+)?\s*(?:hz\b|%|percent\b)", re.IGNORECASE)
+
+
+def strip_measurements(text: str) -> str:
+    """Drop sentences quoting a hertz value or a percentage.
+
+    The suggestion is general knowledge about training, so ordinary numbers
+    are welcome in it -- sets, reps, rest days. Measurements are not: the
+    model is handed the reading with its figures already removed, so any Hz
+    or percentage it produces here is invented, and a training suggestion
+    does not follow from those numbers anyway.
+    """
+    if not text:
+        return text
+    kept = []
+    for para in re.split(r"\n\s*\n", text.strip()):
+        good = [s for s in re.split(r"(?<=[.!?])\s+", para.strip())
+                if s and not _MEASUREMENT.search(s)]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip()
+
+
 def _measured_block(features: dict, reading: dict | None,
                     forecast: dict | None) -> str:
-    """The measured facts, stated the way a non-specialist can use them."""
+    """The measured facts, stated the way a non-specialist can use them.
+
+    The numberless prose notes are preferred over the full lines for the same
+    reason build_prompt() prefers them: every figure handed to this model came
+    back misattributed somewhere, and the verdict is rendered above the
+    suggestion rather than phrased by it, so it needs the shape of the reading
+    and not its values.
+    """
     lines = []
 
-    if reading and reading.get("lines"):
-        lines += [f"- {line}" for line in reading["lines"]]
+    if reading and (reading.get("prose") or reading.get("lines")):
+        lines += [f"- {line}"
+                  for line in (reading.get("prose") or reading["lines"])]
     else:
         # No stored baseline for this recording, so there is no fresh level to
         # measure against and the hertz figure carries no scale. Say so rather
@@ -108,25 +139,27 @@ def build_recommendation_prompt(features: dict, forecast: dict | None,
         f"{_measured_block(features, reading, forecast)}\n\n"
         f"{note_line}"
         f"Their question: {user_query}\n\n"
-        "Answer in two short parts:\n"
-        "1. In one or two sentences, what this reading says about this "
-        "muscle right now. Start by saying whether it is showing signs of "
-        "fatigue, exactly as the facts above state it. Restate those facts in "
-        "plain words -- do not add your own explanation of what the signal is "
-        "or how it works.\n"
-        "2. Using your own general knowledge of sports science, fitness and "
-        "nutrition, what kinds of activity and what general training and diet "
-        "direction would suit that profile.\n\n"
+        # Asked to open by restating the verdict "exactly as the facts above
+        # state it", the model wrote "Subject 13 ... they are showing signs of
+        # fatigue" directly under a rendered line saying they were NOT -- the
+        # same inversion the main answer had, in the one place that had not
+        # been given the same treatment. It is rendered above this text now,
+        # and the model is not asked for it at all.
+        "IMPORTANT: whether this muscle is showing signs of fatigue has "
+        "ALREADY been written out and shown to the reader directly above your "
+        "text. Do NOT restate it, do not open with it, and above all do not "
+        "contradict it.\n\n"
+        "Using your own general knowledge of sports science, fitness and "
+        "nutrition, say what kinds of activity and what general training and "
+        "diet direction would suit that profile.\n\n"
         "Rules:\n"
-        "- Part 2 is your general knowledge, not measurement. Say so plainly "
+        "- This is your general knowledge, not measurement. Say so plainly "
         "in one short phrase; there is no data in this project linking EMG "
         "patterns to sport suitability.\n"
-        "- Do not put any hertz figure or percentage in part 2. A training "
-        "suggestion does not follow from those numbers, and restating them "
-        "there implies it does.\n"
-        "- Use only the numbers given above, and keep each one attached to "
-        "the label it was given with. Do not swap the current value and the "
-        "fresh value, and do not invent figures.\n"
+        "- Do not put any hertz figure or percentage anywhere in your answer. "
+        "A training suggestion does not follow from those numbers, restating "
+        "them implies it does, and you have not been given any -- so any you "
+        "write will be wrong.\n"
         "- Do not compare this person's numbers to other people, to athletes, "
         "or to any typical or normal value. The only meaningful reference is "
         "their own fresh level, which is already accounted for above.\n"

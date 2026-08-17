@@ -32,6 +32,19 @@ DURATION = 200.0        # stand-in recording length for the anchor cases
 # (question, expected intent, expected subject, expected t_start)
 # t_start None means "should ask rather than guess"
 ROUTING = [
+    # --- a misspelt or shortened subject word ----------------------------
+    # One typo used to lose the subject entirely, and a question that plainly
+    # named a subject and a time came back as "which subject did you mean?".
+    ("is subjet 5 fatigued at 60 seconds",           intent.READING, 5, 60.0),
+    ("is subjcet 5 fatigued at 60 seconds",          intent.READING, 5, 60.0),
+    ("is sub 5 fatigued at 60 seconds",              intent.READING, 5, 60.0),
+    ("particpant 3 at 60 seconds",                   intent.READING, 3, 60.0),
+    # --- open-ended about one subject: offer the menu, don't demand a time
+    ("hows subject 5 doing",                         intent.MENU, 5, None),
+    ("how's subject 5 doing?",                       intent.MENU, 5, None),
+    ("whats up with subject 5",                      intent.MENU, 5, None),
+    ("sub 5",                                        intent.MENU, 5, None),
+
     # --- plain readings, the original supported shape --------------------
     ("Is subject 13 fatigued at 60 seconds?",        intent.READING, 13, 60.0),
     ("subject 13 at 60s right side",                 intent.READING, 13, 60.0),
@@ -176,6 +189,23 @@ RECOMMEND = [
 
 # Out-of-range input must produce a stated correction, not a silent fallback
 # to the previous turn's window.
+# Forecast horizons. "over the next minute" names a span with no digit in it,
+# so it fell past the digit-based reader and took the 20 s default instead --
+# a question that plainly said a minute was answered with a third of one.
+# None means "no forecast asked for": every question getting an unrequested
+# projection chart is the failure the default=None case exists to prevent.
+HORIZONS = [
+    ("will subject 2 get more tired over the next minute?", 60.0),
+    ("what will it look like in the next minute?", 60.0),
+    ("what about over the next 40 seconds?", 40.0),
+    ("in the next 2 minutes", 120.0),
+    # no definite span named, so the default stands rather than a guess
+    ("will they tire over the next few minutes?", 20.0),
+    ("will subject 2 get more tired?", 20.0),
+    ("is subject 13 fatigued at 60 seconds?", None),
+    ("summarise subject 7", None),
+]
+
 MUST_FLAG = [
     ("what about subject 20?", "subject 20"),
     ("subject 4 at 9999 seconds", "200s"),
@@ -268,6 +298,70 @@ def main() -> int:
             failed += 1
             failures.append(f"  {question!r} should {'' if want else 'not '}"
                             "have triggered the sport/training block")
+
+    # A message asking several things was answered with one and said nothing
+    # about the rest. Precision matters more than recall here: a false extra
+    # offers the reader a question they never asked.
+    COMPOUND = [
+        ("subject 5 and also how does that compare to 9 and when did it start",
+         [intent.COMPARE]),
+        ("summarise subject 7 and when did fatigue start", [intent.OVERVIEW]),
+        ("what does median frequency mean and when did subject 5 start "
+         "fatiguing", [intent.EXPLAIN]),
+        # one question that happens to match two patterns is still one question
+        ("which subject fatigued the most overall?", []),
+        ("is subject 13 fatigued at 60 seconds?", []),
+        ("compare subject 5 and 9", []),
+        ("summarise subject 7", []),
+        ("when did subject 13 start fatiguing?", []),
+    ]
+    for question, want_kinds in COMPOUND:
+        got = [e.kind for e in intent.extra_requests(question)]
+        if got == want_kinds:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r} should report extra requests "
+                            f"{want_kinds}, reported {got}")
+
+    # The fuzzy subject matcher must not fire on the ordinary words that sit
+    # in front of a number. Every one of these would be a wrong subject, not
+    # merely a missed one, which is the more damaging failure.
+    for question in ("at 60 seconds", "in the next 2 minutes",
+                     "compare 5 and 9", "between 5 and 9",
+                     "what about 5 seconds", "around 30 secs",
+                     "suggest 3 exercises", "minutes 5"):
+        got = extract.subjects_in_text(question)
+        if not got:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r} read a subject {got} out of an "
+                            "ordinary word before a number")
+
+    for question, want in HORIZONS:
+        got = extract.extract_horizon_seconds(question, default=None)
+        if got == want:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r} should give horizon {want}, "
+                            f"gave {got}")
+
+    # An unknown subject named the range in the problem AND again in the
+    # question that followed it: "I don't have subject 99 -- the dataset has
+    # subjects 1-13. Which subject did you mean? I have subjects 1-13."
+    for question in ("is subject 99 fatigued at 60 seconds?",
+                     "is subject 99 fatigued?"):
+        resolved = extract.resolve_query(question, None, duration=DURATION,
+                                         subjects=SUBJECTS, use_llm=False)
+        whole = " ".join(resolved.problems + [resolved.ask or ""])
+        if whole.count("subjects 1-13") == 1:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"  {question!r} states the subject range "
+                            f"{whole.count('subjects 1-13')} times: {whole!r}")
 
     for question, expect_in_message in MUST_FLAG:
         resolved = extract.resolve_query(question, {"subject": 13, "t_start": 60.0,

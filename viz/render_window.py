@@ -60,6 +60,16 @@ SEL_COLOR = "#9aa5b1"   # shaded select-to-inspect span on the MDF panel; a
 
 ALL_SUBJECTS = list(range(1, 14))
 
+# Paper-y for the Play/Pause/Jump/Reset-zoom button rows. The 150px top margin
+# holds three things, and they have to stack without touching:
+#   ~px 23-45   the figure title, pinned to the container top
+#   ~px 79-109  this button row (y=1.10 of a 710px plot region)
+#   ~px 128-146 row 1's subplot title, sitting just above the plot area
+# Lower than this and the buttons cover the subplot title; higher and they
+# cover the figure title. Both rows share the constant so they stay on one
+# line -- change it here rather than at either call site.
+BUTTON_Y = 1.10
+
 # Open WebUI embeds tool HTML in a sandboxed iframe with no `allow-same-origin`
 # (open_webui frontend: FullHeightIframe.svelte), so its own same-origin
 # content.scrollHeight measurement always throws and silently no-ops - the
@@ -539,7 +549,7 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         fig.update_layout(
             updatemenus=[dict(
                 type="buttons", direction="left", showactive=False,
-                x=0.02, y=1.10, xanchor="left", yanchor="top", pad=dict(r=10),
+                x=0.02, y=BUTTON_Y, xanchor="left", yanchor="top", pad=dict(r=10),
                 buttons=[
                     dict(label="▶ Play", method="animate",
                          args=[None, {"frame": {"duration": 120, "redraw": True},
@@ -570,7 +580,7 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     fig.update_layout(
         updatemenus=list(fig.layout.updatemenus) + [dict(
             type="buttons", direction="left", showactive=False,
-            x=0.98, y=1.10, xanchor="right", yanchor="top",
+            x=0.98, y=BUTTON_Y, xanchor="right", yanchor="top",
             buttons=[dict(label="⤾ Reset zoom", method="relayout", args=[{
                 "xaxis.range": [0, WIN_SEC], "yaxis.range": [ylo, yhi],
                 "xaxis2.range": [float(t[0]), float(t[-1])], "yaxis2.range": [mlo, mhi],
@@ -578,9 +588,16 @@ def _single_subject_html(subject: int, t_start: float, side: str,
             }])])])
 
     fig.update_layout(
-        template="plotly_dark", height=880 if animate else 820, showlegend=False,
-        title=dict(text=_title(k0)),
-        margin=dict(t=110 if animate else 90, b=60),
+        template="plotly_dark", height=920 if animate else 820, showlegend=False,
+        # Title pinned to the top of the *figure* (yref="container"), not
+        # centred in the top margin as Plotly defaults to. Centred, it landed
+        # in the same band as the Play/Pause/Jump/Reset-zoom updatemenus above
+        # -- which is why those buttons had to be hidden until hover in the
+        # first place (viz's _HIDE_UPDATEMENU_CSS). The margin is now deep
+        # enough to stack title above buttons above plot, so revealing the
+        # buttons no longer covers the title telling you what you're looking at.
+        title=dict(text=_title(k0), yref="container", y=0.975, yanchor="top"),
+        margin=dict(t=150 if animate else 90, b=60),
         # box-select defaults to a horizontal (time) band for select-to-inspect
         # on the MDF panel; scroll-zoom stays available so select mode does not
         # cost the user zoom.

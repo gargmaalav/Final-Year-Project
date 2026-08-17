@@ -270,12 +270,15 @@ def verdict_sentence(reading: dict, who: str) -> str:
     the model is left to add context around a sentence it cannot alter. This
     is the same move that fixed the ranking table and the comparisons.
     """
+    # Three numbers for one idea ("60s into a 491s effort (12% of the way
+    # through)") is more arithmetic than the sentence is worth. How far in
+    # they are is the part that carries meaning; the total length is on the
+    # chart and in the provenance line for anyone who wants it.
     where = ""
     position = reading["position"]
     if position:
-        where = (f", {position['t_start']:.0f}s into a "
-                 f"{position['duration']:.0f}s effort "
-                 f"({position['percent']:.0f}% of the way through)")
+        where = (f", {position['t_start']:.0f}s in — about "
+                 f"{position['percent']:.0f}% of the way through")
 
     if reading["fatigued"]:
         head = f"**{who} is showing signs of fatigue**{where}."
@@ -286,20 +289,23 @@ def verdict_sentence(reading: dict, who: str) -> str:
     if drop is None:
         return head
 
+    # The raw hertz pair used to be quoted here too. It is the most technical
+    # thing in the answer, it appears again in the provenance line directly
+    # underneath, and the percentage already says how big the change is in a
+    # form a non-specialist can act on -- so the headline keeps the percentage
+    # and drops the hertz. interpret.plain_lines() still carries the labelled
+    # pair for the prompt (and is tested for not swapping them).
     if drop < 0:
         detail = (f" Their muscle signal is {abs(drop):.0f}% **above** their "
-                  f"own fresh level ({reading['fresh_mdf']:.1f} Hz fresh → "
-                  f"{reading['mdf_hz']:.1f} Hz now), which is not the "
-                  "direction fatigue moves it.")
+                  "own fresh level, which is not the direction fatigue "
+                  "moves it.")
     elif drop < 1.0:
         # "0% below" reads as a measurement failure rather than as a result
-        detail = (f" Their muscle signal is essentially unchanged from their "
-                  f"own fresh level ({reading['fresh_mdf']:.1f} Hz fresh → "
-                  f"{reading['mdf_hz']:.1f} Hz now).")
+        detail = (" Their muscle signal is essentially unchanged from their "
+                  "own fresh level.")
     else:
-        detail = (f" Their muscle signal is {drop:.0f}% below their own fresh "
-                  f"level ({reading['fresh_mdf']:.1f} Hz fresh → "
-                  f"{reading['mdf_hz']:.1f} Hz now).")
+        detail = (f" Their muscle signal is {drop:.0f}% below their own "
+                  "fresh level.")
     return head + detail
 
 
@@ -356,6 +362,83 @@ def strip_verdict_echo(prose: str, who: str | None = None) -> str:
     while len(paras) > 1 and _is_echo(paras[-1]):
         paras.pop()
     return "\n\n".join(paras)
+
+
+# The lab-report words the model reaches for even when the prompt names them
+# as forbidden. Each maps to the phrase a person would actually say. Ordered
+# longest-first so "indicative of" is not half-matched by a shorter key.
+_PLAIN_WORDS = [
+    ("indicative of", "a sign of"),
+    ("is indicative", "is a sign"),
+    ("indicating that", "which means"),
+    ("indicating", "which means"),
+    ("deviation from", "change from"),
+    ("deviation", "change"),
+]
+_PLAIN_RE = [(re.compile(r'\b' + re.escape(k) + r'\b', re.IGNORECASE), v)
+             for k, v in _PLAIN_WORDS]
+
+
+def plain_words(prose: str) -> str:
+    """Swap the jargon the prompt bans but the model writes anyway.
+
+    llama3.2:3b walked through a twelve-item banned-words list and still
+    produced "indicating a substantial decrease in performance capacity". The
+    list in the prompt is now short, and the two or three words it still slips
+    in are replaced here -- deterministic, and the same approach the verdict
+    and the invented figures already take.
+
+    Capitalisation of the original is carried over so a swap at the start of
+    a sentence does not produce a lower-case opening.
+    """
+    if not prose:
+        return prose
+    for pattern, replacement in _PLAIN_RE:
+        def _sub(m, r=replacement):
+            return r[0].upper() + r[1:] if m.group(0)[0].isupper() else r
+        prose = pattern.sub(_sub, prose)
+    return prose
+
+
+# Sentence end: ., ! or ? followed by whitespace, but not after a decimal
+# point ("66.8 Hz") or a common abbreviation.
+_SENTENCE_END = re.compile(r'(?<![0-9])([.!?])(?=\s|$)')
+
+
+def trim_sentences(prose: str, limit: int = 2) -> str:
+    """Keep at most `limit` sentences per paragraph of the model's prose.
+
+    Asked for "1-3 short sentences", llama3.2:3b wrote four long ones; asked
+    for "ONE or TWO", it still wrote three and padded the last with a summary
+    of the first. Length is the one property of an answer that can be enforced
+    exactly, so it is enforced here rather than requested -- the same move as
+    rendering the verdict in code instead of trusting the model to phrase it.
+
+    Paragraph structure is preserved: the caller appends its own paragraphs
+    (the rendered verdict above, the recommendation below) and trimming across
+    a blank line would splice them together.
+    """
+    if not prose:
+        return prose
+    out = []
+    for para in prose.split("\n\n"):
+        stripped = para.strip()
+        if not stripped:
+            continue
+        # Markdown bullets are a list, not prose -- counting "sentences"
+        # across them would cut the list off mid-way.
+        if stripped.startswith(("-", "*", "#", ">")):
+            out.append(stripped)
+            continue
+        pieces, start = [], 0
+        for m in _SENTENCE_END.finditer(stripped):
+            pieces.append(stripped[start:m.end()].strip())
+            start = m.end()
+        tail = stripped[start:].strip()
+        if tail:
+            pieces.append(tail)
+        out.append(" ".join(pieces[:limit]) if pieces else stripped)
+    return "\n\n".join(out)
 
 
 def strip_invented_numbers(prose: str, who: str | None = None) -> tuple[str, list[str]]:
