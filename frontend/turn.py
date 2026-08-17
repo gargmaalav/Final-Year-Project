@@ -133,46 +133,32 @@ def _cached_chart(subject: int, t_start: float, side: str) -> str:
     return render_window(subject, t_start, side)
 
 
-# One worker on purpose. The point is to overlap the chart with the model call
-# inside a single turn, not to render several at once -- this is a local demo
-# server answering one question at a time, and Plotly figure building is CPU
-# work competing with the very Ollama process we are waiting on. A second
-# worker would take cores away from generation and make the turn slower.
-_CHART_POOL = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="chart")
-
-# Separate from _CHART_POOL rather than raising that one to two workers: the
-# chart and the segment load start at the same moment, and sharing a
-# single-worker pool would queue the second behind the first and undo exactly
-# the overlap they were split up to get. One worker each keeps them genuinely
-# parallel without spawning threads that would compete with Ollama later in
-# the turn.
+# Loads the recording's samples alongside classify(), which does its own
+# loading of the same file -- run in sequence they cost ~1.2 s + ~1.1 s, and
+# started together the turn waits only for the longer. One worker: this is a
+# local demo server answering one question at a time, and any thread doing CPU
+# work here is competing with the Ollama process that generates the answer.
 _IO_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="segment")
 
 
-def _chart_or_none(subject: int, t_start: float, side: str) -> str | None:
-    """The chart, or None -- never raises. A chart is additive; a failure here
-    must not take down an answer whose measurement already succeeded."""
+def render_chart_ref(session: dict, ref: dict) -> str | None:
+    """Draw the figure a `chart_ref` points at, on demand.
+
+    Called by serve.py's GET /chart when the reader clicks "Show graph" --
+    the only place a reading chart is built. Returns None rather than raising
+    so a chart failure stays a missing picture, not a failed request.
+    """
+    if not ref:
+        return None
+    if ref.get("source") == "upload":
+        cache = session["uploads"].get(session["last_upload"])
+        return _upload_chart(cache) if cache else None
     try:
-        return _cached_chart(subject, t_start, side)
+        return _cached_chart(int(ref["subject"]), float(ref["t_start"]),
+                             str(ref["side"]))
     except Exception:
         return None
-
-
-def _resolve_chart(turn: dict) -> dict:
-    """Join the background chart render, if this turn started one.
-
-    Called at the top of _finalize's return paths so every caller sees a
-    plain "chart_html" and nothing downstream has to know a future existed.
-    """
-    future = turn.pop("chart_future", None)
-    if future is not None:
-        html = future.result()
-        turn["chart_html"] = html
-        if html is None:
-            turn["chart_caption"] = None
-    return turn
 
 
 @functools.lru_cache(maxsize=8)
@@ -621,28 +607,27 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
     window = {"subject": subject, "t_start": t_start, "side": side,
               "source": "dataset", "carried_over": params.get("carried_over", []),
               "notes": notes}
-    # Everything that needs only the resolved window starts here, before the
-    # one thing that has to be waited for. Nothing below depends on another's
-    # result: the chart is drawn from the raw signal, the segment is a file
-    # read, and classify() does its own loading. Run in sequence they cost
-    # ~1.1 s + ~1.2 s + ~2.2 s on top of each other; started together, the
-    # turn waits only for the longest.
+    # The chart is NOT drawn here. It used to be, on every single reading, and
+    # it was measurably not free even after being moved onto a background
+    # thread: a turn with a cold chart took 10.21 s against 8.27 s without one,
+    # and the model call inside it slowed from 7.25 s to 7.84 s. Plotly figure
+    # building is CPU work and it competes with the Ollama process generating
+    # the answer, on a box with no GPU. Most answers were also never looked at
+    # as a chart, so that was ~2 s and a 3.3 MB payload spent per question on
+    # something usually unwanted.
     #
-    # The model call is the exception and cannot join them -- build_prompt
-    # needs classify()'s result, so the ~11 s generation is genuinely
-    # sequential after this point. That is 83% of the turn and no amount of
-    # threading touches it.
-    chart_future = _CHART_POOL.submit(_chart_or_none, subject, t_start, side)
+    # What travels instead is a reference: enough to draw the figure later, if
+    # the reader asks. serve.py's GET /chart redeems it. See _chart_ref below.
     seg_future = _IO_POOL.submit(_load_subject_segment, subject, side)
 
     try:
         result = classify(subject, t_start, side)
     except KeyError:
-        chart_future.cancel(); seg_future.cancel()
+        seg_future.cancel()
         return {"content": f"Subject {subject} has no stored fresh-baseline "
                            "calibration, so I can't classify their fatigue yet."}
     except Exception as e:
-        chart_future.cancel(); seg_future.cancel()
+        seg_future.cancel()
         return {"content": f"Couldn't classify that window: {e}"}
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
@@ -654,7 +639,9 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
                              f"Subject {subject}")
 
     return {"features": result, "reading": reading,
-            "chart_future": chart_future, "chart_caption": _READING_CHART_CAPTION,
+            "chart_ref": {"source": "dataset", "subject": subject,
+                          "t_start": t_start, "side": side},
+            "chart_caption": _READING_CHART_CAPTION,
             "forecast": forecast, "forecast_chart_html": forecast_chart_html,
             "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
             "user_text": user_text, "window": window}
@@ -719,7 +706,7 @@ def _upload_compare(user_text: str, cache: dict, intent) -> dict:
 
     return {**_comparison_answer(comparison),
             "facts": compare_facts(comparison), "user_text": user_text,
-            "chart_html": _upload_chart(cache),
+            "chart_ref": {"source": "upload"},
             "window": {"source": "upload", "name": cache["name"],
                        "kind": "compare"}}
 
@@ -746,7 +733,7 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
         rendered = render_onset_answer(summary)
         if rendered:
             return {"content": rendered, "facts": onset_facts(summary),
-                    "user_text": user_text, "chart_html": _upload_chart(cache),
+                    "user_text": user_text, "chart_ref": {"source": "upload"},
                     "window": window}
     facts = (onset_facts(summary) if kind == intent_router.ONSET
              else overview_facts(summary))
@@ -761,7 +748,7 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
     return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
                                          instruction),
             "facts": facts, "user_text": user_text,
-            "chart_html": _upload_chart(cache), "window": window}
+            "chart_ref": {"source": "upload"}, "window": window}
 
 
 def _upload_chart(cache: dict):
@@ -792,9 +779,6 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
         result["fatigue_label"], str(result["fatigue_label"]))
 
     notes = []
-    chart_html = _upload_chart(cache)
-    chart_caption = _UPLOAD_CHART_CAPTION if chart_html else None
-
     forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
     try:
         reference = upload_reference(cache["baseline"])
@@ -804,7 +788,8 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
                              "This recording")
 
     return {"features": result, "reading": reading,
-            "chart_html": chart_html, "chart_caption": chart_caption,
+            "chart_ref": {"source": "upload"},
+            "chart_caption": _UPLOAD_CHART_CAPTION,
             "forecast": forecast, "forecast_chart_html": forecast_chart_html,
             "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
             "user_text": user_text,
@@ -834,9 +819,6 @@ def _finalize(session: dict, turn: dict) -> dict:
     # very end of that path -- after the model call it was launched to overlap.
     # Every other path resolves it here, immediately, so those turns behave
     # exactly as they did before.
-    if "prompt" in turn or "features" not in turn:
-        _resolve_chart(turn)
-
     if "prompt" in turn:
         try:
             content = chat([{"role": "user", "content": turn["prompt"]}],
@@ -867,7 +849,7 @@ def _finalize(session: dict, turn: dict) -> dict:
             lines = readable_facts(turn.get("facts") or [])
             content = ("\n".join(f"- {line}" for line in lines)
                        + f"\n\n_Couldn't phrase this in prose: {e}_")
-        return {"content": content, "chart_html": turn.get("chart_html"),
+        return {"content": content, "chart_ref": turn.get("chart_ref"),
                 "chart_caption": turn.get("chart_caption"),
                 "forecast_chart_html": None, "forecast_chart_caption": None,
                 "recommendation": None, "facts": turn.get("facts"),
@@ -875,7 +857,7 @@ def _finalize(session: dict, turn: dict) -> dict:
 
     if "features" not in turn:
         return {"content": turn["content"],
-                "chart_html": turn.get("chart_html"),
+                "chart_ref": turn.get("chart_ref"),
                 "chart_caption": turn.get("chart_caption"),
                 "forecast_chart_html": None, "forecast_chart_caption": None,
                 "recommendation": None,
@@ -886,14 +868,10 @@ def _finalize(session: dict, turn: dict) -> dict:
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
     window = turn.get("window")
-    # The chart is still rendering in the background at this point, so whether
-    # one exists is not yet knowable -- and build_prompt needs the answer now.
-    # A render was started, and it only fails if render_window raises on data
-    # the subject/time were already validated against, so "started" is treated
-    # as "will exist". If it does fail the reader loses the chart and the prose
-    # may still refer to the panel, which is the mild end of the trade for
-    # taking 2.2 s off every answer.
-    chart_shown = ("chart_future" in turn) or (turn.get("chart_html") is not None)
+    # Whether a chart is available to the reader, not whether one is drawn:
+    # it is drawn only if they ask (GET /chart). Knowable exactly now, which
+    # the old background-render version could not manage -- it had to guess.
+    chart_shown = turn.get("chart_ref") is not None
 
     reading = turn.get("reading")
     verdict = (reading or {}).get("verdict")
@@ -949,9 +927,7 @@ def _finalize(session: dict, turn: dict) -> dict:
 
     # Both model calls are done; collect the chart that has been rendering
     # alongside them. By now it is almost always already finished.
-    _resolve_chart(turn)
-
-    return {"content": content, "chart_html": turn.get("chart_html"),
+    return {"content": content, "chart_ref": turn.get("chart_ref"),
             "chart_caption": turn.get("chart_caption"),
             "forecast_chart_html": turn.get("forecast_chart_html"),
             "forecast_chart_caption": turn.get("forecast_chart_caption"),

@@ -134,7 +134,7 @@ def turn_endpoint(session_id: str = Form(...), user_text: str = Form(""),
     # as-is.
     return {
         "content": final.get("content"),
-        "chart_html": final.get("chart_html"),
+        "chart_ref": final.get("chart_ref"),
         "chart_caption": final.get("chart_caption"),
         "forecast_chart_html": final.get("forecast_chart_html"),
         "forecast_chart_caption": final.get("forecast_chart_caption"),
@@ -152,6 +152,31 @@ def _run_sync(coro):
     frontend/turn.py's call chain."""
     import asyncio
     return asyncio.run(coro)
+
+
+@app.post("/chart")
+def chart_endpoint(session_id: str = Form(...), source: str = Form("dataset"),
+                   subject: int | None = Form(None),
+                   t_start: float | None = Form(None),
+                   side: str = Form("R")):
+    """Draw one figure, on request.
+
+    Charts used to be rendered for every reading whether or not anyone looked
+    at one. Measured, that cost ~2 s and a 3.3 MB payload per answer, and it
+    was not free even on a background thread -- Plotly figure building is CPU
+    work competing with the Ollama process generating the answer on a machine
+    with no GPU (a turn with a cold chart took 10.2 s against 8.3 s without).
+    So POST /turn now returns a `chart_ref` describing what COULD be drawn,
+    the UI shows a "Show graph" button, and this route runs only when it is
+    pressed.
+    """
+    ref = {"source": source, "subject": subject, "t_start": t_start,
+           "side": side}
+    html = turn_engine.render_chart_ref(_session(session_id), ref)
+    if html is None:
+        raise HTTPException(status_code=404,
+                            detail="That figure could not be drawn.")
+    return {"chart_html": html}
 
 
 @app.get("/classify")
