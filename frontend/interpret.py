@@ -420,7 +420,12 @@ def trim_sentences(prose: str, limit: int = 2) -> str:
     """
     if not prose:
         return prose
-    out = []
+
+    # Split every paragraph into its complete sentences plus whatever trails
+    # after the last full stop. That trailing piece is an unfinished sentence:
+    # it appears when the model hits llm.NUM_PREDICT mid-thought and stops
+    # dead -- "...and their muscle signal is still with".
+    parsed = []
     for para in prose.split("\n\n"):
         stripped = para.strip()
         if not stripped:
@@ -428,21 +433,34 @@ def trim_sentences(prose: str, limit: int = 2) -> str:
         # Markdown bullets are a list, not prose -- counting "sentences"
         # across them would cut the list off mid-way.
         if stripped.startswith(("-", "*", "#", ">")):
-            out.append(stripped)
+            parsed.append((None, stripped))
             continue
         pieces, start = [], 0
         for m in _SENTENCE_END.finditer(stripped):
             pieces.append(stripped[start:m.end()].strip())
             start = m.end()
-        # Whatever follows the last full stop is an unfinished sentence. It
-        # appears when the model hits llm.NUM_PREDICT mid-thought and stops
-        # dead -- "...and their muscle signal is still with" -- so it is
-        # dropped rather than shown. Kept only when it is the entire
-        # paragraph: better one unfinished sentence than an empty answer.
-        tail = stripped[start:].strip()
-        if tail and not pieces:
-            pieces.append(tail)
-        out.append(" ".join(pieces[:limit]) if pieces else stripped)
+        parsed.append((pieces, stripped[start:].strip()))
+
+    # Whether ANY complete sentence survived anywhere in the answer -- not
+    # just in this paragraph. Judged across the whole prose because the model
+    # writes the cut-off sentence in its own paragraph as often as not: with
+    # the test applied per paragraph, "Muscles tire.\n\nAs the body's energy
+    # stores are depleted, fatigue sets in, causing a gradual decline in"
+    # kept the fragment, since that paragraph alone had nothing complete.
+    has_complete = any(p is not None and p for p, _ in parsed)
+
+    out = []
+    for pieces, tail in parsed:
+        if pieces is None:            # a bullet list, passed through whole
+            out.append(tail)
+            continue
+        kept = list(pieces)
+        # Keep an unfinished sentence only when the alternative is showing
+        # nothing at all.
+        if tail and not has_complete:
+            kept.append(tail)
+        if kept:
+            out.append(" ".join(kept[:limit]))
     return "\n\n".join(out)
 
 

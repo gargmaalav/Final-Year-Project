@@ -879,6 +879,17 @@ def _():
     assert interpret.trim_sentences(whole, 2) == whole
 
 
+@check("a cut-off sentence in its own paragraph is dropped too")
+def _():
+    # The model writes the truncated sentence as a separate paragraph as often
+    # as inline. Judging "did anything complete survive?" per paragraph kept
+    # this fragment, because that paragraph alone had nothing complete in it.
+    cut = ("Muscles tire.\n\nAs the body's energy stores are depleted, "
+           "fatigue sets in, causing a decline in")
+    assert interpret.trim_sentences(cut, 2) == "Muscles tire.", \
+        interpret.trim_sentences(cut, 2)
+
+
 @check("a lone unfinished sentence is kept rather than emptying the answer")
 def _():
     # nothing else survived, so showing the fragment beats showing nothing --

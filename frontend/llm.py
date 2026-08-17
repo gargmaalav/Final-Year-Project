@@ -49,6 +49,13 @@ NUM_PREDICT = 200
 TIMEOUT_SEC = 120
 
 
+# Every generation that hit NUM_PREDICT instead of ending on its own, as
+# token counts. Empty is the expected state; anything in here means the cap is
+# too low for some real question and should be raised. Exposed on /health so
+# it can be checked without reading the console.
+TRUNCATIONS: list = []
+
+
 class LLMError(Exception):
     pass
 
@@ -108,6 +115,24 @@ def chat(messages: list[dict], *, model: str | None = None,
     content = data.get("message", {}).get("content")
     if not content:
         raise LLMError(f"Ollama response had no content: {data}")
+
+    # Ollama says WHY it stopped: "stop" means the model finished its own
+    # sentence, "length" means num_predict cut it off. Measured across every
+    # answer type this app produces, generations run 28-75 tokens against a
+    # 200 cap and always report "stop" -- but "we sampled it and it was fine"
+    # is not a guarantee, so the rare case announces itself instead of
+    # silently handing back a half sentence. trim_sentences drops the
+    # unfinished tail either way; this is how you find out it happened.
+    # `num_predict is None` means the caller took the default cap, i.e. this
+    # is a real answer. warm_up() passes 1 deliberately and is always cut off
+    # by design, so counting it would report a truncation on every boot and
+    # make the number meaningless.
+    if data.get("done_reason") == "length" and num_predict is None:
+        TRUNCATIONS.append(data.get("eval_count"))
+        print(f"[llm] answer hit the {predict}-token cap and was cut short "
+              f"(generated {data.get('eval_count')}). The unfinished sentence "
+              "is dropped; raise NUM_PREDICT in frontend/llm.py if this "
+              "recurs.", flush=True)
     return content
 
 

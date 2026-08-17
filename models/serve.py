@@ -204,9 +204,15 @@ def health():
     while warm-up is still running queues behind it -- so "wait for warm"
     is real advice, not a nicety. See frontend/turn.py's warm_up().
     """
+    from llm import TRUNCATIONS, NUM_PREDICT  # noqa: E402
     return {"status": "ok",
             "warm": bool(turn_engine.WARM.get("ready")),
-            "warm_error": turn_engine.WARM.get("error")}
+            "warm_error": turn_engine.WARM.get("error"),
+            # Answers cut off by the token cap since this process started.
+            # Expected to stay 0; a non-zero count means NUM_PREDICT is too
+            # low for some real question. See frontend/llm.py.
+            "token_cap": NUM_PREDICT,
+            "answers_truncated": len(TRUNCATIONS)}
 
 
 if __name__ == "__main__":
