@@ -864,9 +864,27 @@
     try { STATE.chats = JSON.parse(localStorage.getItem("emg_chats") || "[]"); }
     catch (e) { STATE.chats = []; }
   }
+  // Rendered Plotly HTML runs to megabytes per chart, and localStorage caps
+  // out around 5MB. Serialising it did not just fail to keep the charts -- it
+  // threw QuotaExceededError, the catch below swallowed it, and NOTHING got
+  // saved from the first charted answer onward. A reloaded page came back with
+  // the questions and none of the answers.
+  //
+  // So the chart HTML is dropped on the way to storage. It stays on the
+  // message object in memory, which is what openChat() replays from, so
+  // figures still accumulate and still survive switching between chats within
+  // a session -- they just do not survive a reload, which is what the panel
+  // footer has always said.
+  var _HEAVY_KEYS = {chart_html: 1, forecast_chart_html: 1};
   function saveChats() {
-    try { localStorage.setItem("emg_chats", JSON.stringify(STATE.chats)); }
-    catch (e) { /* quota exceeded or private-mode storage -- chat still works this session */ }
+    try {
+      localStorage.setItem("emg_chats", JSON.stringify(STATE.chats,
+        function (k, v) { return _HEAVY_KEYS[k] ? undefined : v; }));
+    } catch (e) {
+      // Genuinely out of room even without the charts (many long chats).
+      // Say so rather than letting history quietly stop saving.
+      console.warn("[emg] chat history not saved:", e && e.name);
+    }
   }
 
   function fmtAgo(ts) {
