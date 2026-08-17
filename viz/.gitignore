@@ -1,0 +1,8 @@
+# Generated example stills + decision gallery (regenerate: python viz/make_examples.py)
+*.png
+enhancement_examples.html
+
+# Scratch previews
+_trend_preview.html
+
+__pycache__/
