@@ -7,7 +7,7 @@ Written 2026-08-18. Paste this into a fresh session to pick up where things left
 | Branch | HEAD | State |
 |---|---|---|
 | `feat/merge-chatbot-ui` | `8d1cd74` | Pushed. Matches origin. The UI/port work. |
-| `testing-changes` | `e592311` | **Local only, never pushed.** 9 commits of speed + UX work on top. |
+| `testing-changes` | `824b249` | Pushed 2026-08-18. Speed + UX work, then the follow-up fixes below. |
 
 Uncommitted and unrelated (dirty before any of this started, leave alone):
 `.gitignore`, `zenodo_biceps/out/*.csv|.md|.json`
@@ -149,7 +149,49 @@ sentence), keeping it only if nothing complete survived anywhere. `/health` repo
 - **Disk is nearly full**: 234 of 237 GB, mostly a 175 GB OneDrive folder. The first
   `ollama pull` failed at 0 bytes free.
 
+## Follow-up questions ("why?", "so what does this mean?")
+
+Asked "so what does this mean" under a reading, the reply was a byte-identical
+copy of the answer being asked about. Two separate causes:
+
+1. **It never reached the follow-up path.** `_FOLLOWUP_RE` listed "that" but
+   not "this", and tolerated no leading "so"/"ok"/"and". It fell through to
+   READING, which re-classified the same window and re-rendered the same
+   verdict. Widened, and `intent.followup_kind()` now splits follow-ups four
+   ways — WHY / MEANING / SIMPLER / MORE — because one generic "explain the
+   reasoning" instruction produced one generic answer to all four.
+2. **The follow-up prompt invited a restatement.** It handed the model the
+   previous answer and never said what to ADD. Each kind now names the material
+   it should reach for, and `interpret.drop_repeated_sentences()` removes what
+   the prompt does not (content-word overlap, so paraphrase is caught too).
+
+Three more defects the live replay turned up, all fixed:
+
+- **"why?" under a NOT-fatigued verdict recited the mechanism of fatigue as the
+  reason for its absence.** The chain is now asked for in the conditional, and
+  the "not far enough here" qualifier goes **first** — asked for last, the
+  length cap cut it off and left the contradiction standing.
+- **"your muscle signal" for subject 11.** A dataset subject is a third party;
+  an upload is the reader's own. `prompt._addressing()` says which.
+- **"66.8 Hz, which is still above the fresh level of 70.0 Hz."** Both figures
+  real, the relation backwards. `interpret.drop_hertz_comparisons()` removes
+  the one sentence shape that can be wrong while every number in it is right.
+
+Also: follow-ups are capped at `turn.FOLLOWUP_MAX_SENTENCES` (4) across the
+whole answer, not per paragraph — asked for 2-4 it returned nine; and
+`plain_words` no longer turns "start indicating fatigue" into "start which
+means fatigue" (it maps bare "indicating" to "showing" now, and keeps "which
+means" for the comma-anchored connective sense).
+
+Tests: `frontend/test_answers.py` 90, `frontend/test_understanding.py` 155.
+
 ## Not done
 
-`testing-changes` has **never been pushed**. Decide whether to merge it into
-`feat/merge-chatbot-ui` or keep it separate for A/B testing.
+Decide whether to merge `testing-changes` into `feat/merge-chatbot-ui` or keep
+it separate for A/B testing.
+
+Still rough in follow-ups, seen live but not fixed: the model occasionally
+invents reasoning around real numbers ("it will take approximately 12% of the
+total recording time before they reach a point where fatigue is likely" — no
+such projection was measured). Narrower than the old failures and no wrong
+figure reaches the screen, but it is the next thing to look at.
