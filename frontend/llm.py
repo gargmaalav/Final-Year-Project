@@ -29,17 +29,28 @@ MODEL = "llama3.2:3b"
 # hour covers a session; the cost is the model staying resident in RAM.
 KEEP_ALIVE = "30m"
 
-# Answers are cut to two sentences in Python (interpret.trim_sentences), so
-# tokens generated past that are paid for at ~8 tok/s and then thrown away.
-# This caps a runaway generation instead of waiting it out.
+# A ceiling that should never be reached, not a length target. Length is
+# controlled by asking for one or two sentences and by cutting to that in
+# Python (interpret.trim_sentences); this exists only so a runaway generation
+# cannot hang the answer.
 #
-# A token limit cannot know where a sentence ends, so it can only stop the
-# model dead -- possibly mid-word. The target is still ~160 tokens of kept
-# answer; the extra 40 is headroom so the model normally reaches its own full
-# stop before the ceiling, and trim_sentences' unfinished-tail guard has
-# nothing to drop. Typical answers are 40-72 tokens, so neither mechanism
-# fires most of the time; both exist for the wordy outlier.
-NUM_PREDICT = 200
+# Sized from the longest path measured, uncapped, on llama3.2:3b:
+#     reading          62 tokens
+#     follow-up "why?" 106 tokens
+#     recommendation  152 tokens   <- the longest, and the one that matters
+# The recommendation is the case to size for: unlike the readings it is NOT
+# trimmed to two sentences afterwards, so every token it generates is shown.
+# At 200 it was running at 76% of the ceiling -- close enough that a slightly
+# wordier one would have been cut. 320 is over twice the worst measured case.
+#
+# Why a high ceiling rather than no ceiling: removing it means unlimited, not
+# "sensible default". Uncapped, an open-ended prompt generated 765 tokens in
+# 76 s here. Anything past ~15 s of generation is a worse outcome than a
+# trimmed tail, and past TIMEOUT_SEC the request fails and the prose is lost
+# entirely -- the answer falls back to bullet points. A truncated sentence is
+# dropped cleanly by trim_sentences; a timeout throws the whole reply away.
+# 320 tokens is ~40 s at 8 tok/s, comfortably inside the timeout.
+NUM_PREDICT = 320
 
 # Warm calls to llama3.2:3b measured 12-25 s on a laptop. The risk is not the
 # warm case but the first call after `ollama serve` starts, which also loads
