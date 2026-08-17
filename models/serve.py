@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -57,6 +58,19 @@ def _session(session_id: str) -> dict:
     if session_id not in SESSIONS:
         SESSIONS[session_id] = turn_engine.new_session()
     return SESSIONS[session_id]
+
+
+@app.on_event("startup")
+def _warm_ollama() -> None:
+    """Pay the first-question costs at boot instead of in front of the reader.
+
+    Loading the model and evaluating the prompt for the first time together
+    cost ~20 s on the opening question and ~2 s on every one after. Done in a
+    daemon thread so the server still binds its port immediately -- a question
+    asked during the warm-up is not blocked by it, it just does not benefit.
+    """
+    threading.Thread(target=turn_engine.warm_up, daemon=True,
+                     name="ollama-warmup").start()
 
 
 class _UploadShim:

@@ -10,20 +10,17 @@ from __future__ import annotations
 import requests
 
 OLLAMA_BASE = "http://localhost:11434"
-# 1b generates about 2.5x faster than 3b (2.5 s vs 6.5 s for a typical answer)
-# and processes the prompt faster too. The model's job here is small by design:
-# every number, and the verdict itself, is rendered in Python -- it only writes
-# one or two sentences of connective prose.
-#
-# KNOWN WEAKNESS, measured before switching: 1b opened all four sampled
-# readings with "The person is not fatigued", including the two the classifier
-# called FATIGUED. It survives only because it writes that as its own short
-# paragraph and interpret.strip_verdict_echo drops it (tested), and because the
-# verdict the reader sees is rendered from the label in Python and cannot be
-# inverted. An echo written INLINE would get through -- see the two
-# strip_verdict_echo tests in test_answers.py. Put this back to "llama3.2:3b"
-# if answers start contradicting the verdict above them; 3b is still pulled.
-MODEL = "llama3.2:1b"
+# llama3.2:1b was tried and rejected on accuracy, not speed. It was ~2.5x
+# faster to generate, but it opened all four sampled readings with "The person
+# is not fatigued" -- including the two the classifier called FATIGUED. Nothing
+# wrong ever reached the screen (the verdict is rendered from the label in
+# Python, and strip_verdict_echo drops the inverted opener), but the answer was
+# one phrasing away from contradicting the verdict printed above it, and its
+# prose was measurably worse -- one answer misused the confidence figure in a
+# way 3b does not. Speed is being bought elsewhere instead: see KEEP_ALIVE and
+# NUM_PREDICT below, prompt.build_prompt's cacheable-prefix ordering, and
+# turn.py's _cached_chart.
+MODEL = "llama3.2:3b"
 
 # Ollama drops a model from memory 5 minutes after its last request, and
 # reloading llama3.2 off disk measured 6.7 s. Questions in a demo arrive
@@ -51,7 +48,8 @@ class LLMError(Exception):
 
 
 def chat(messages: list[dict], *, model: str | None = None,
-         temperature: float = 0.0, timeout: float | None = None) -> str:
+         temperature: float = 0.0, timeout: float | None = None,
+         num_predict: int | None = None) -> str:
     """Send a chat completion request to Ollama, return the reply text.
 
     messages: list of {"role": "system"|"user"|"assistant", "content": str}.
@@ -59,8 +57,12 @@ def chat(messages: list[dict], *, model: str | None = None,
         can take most of a minute on a laptop, so callers that only want to
         know whether Ollama is answering at all should pass a short one
         rather than blocking the caller for the full default.
+    num_predict: cap on generated tokens, defaulting to NUM_PREDICT. The
+        warm-up call (turn.warm_up) passes 1: it is priming the prompt cache
+        and throws the answer away, so generating a full one is wasted time.
     """
     waited = TIMEOUT_SEC if timeout is None else timeout
+    predict = NUM_PREDICT if num_predict is None else num_predict
     try:
         r = requests.post(
             f"{OLLAMA_BASE}/api/chat",
@@ -70,7 +72,7 @@ def chat(messages: list[dict], *, model: str | None = None,
                 "stream": False,
                 "keep_alive": KEEP_ALIVE,
                 "options": {"temperature": temperature,
-                            "num_predict": NUM_PREDICT},
+                            "num_predict": predict},
             },
             timeout=waited,
         )

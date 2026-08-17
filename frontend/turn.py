@@ -24,6 +24,7 @@ process lifetime.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import functools
 import os
 import re
@@ -130,6 +131,39 @@ def _subjects() -> list[int]:
 @functools.lru_cache(maxsize=8)
 def _cached_chart(subject: int, t_start: float, side: str) -> str:
     return render_window(subject, t_start, side)
+
+
+# One worker on purpose. The point is to overlap the chart with the model call
+# inside a single turn, not to render several at once -- this is a local demo
+# server answering one question at a time, and Plotly figure building is CPU
+# work competing with the very Ollama process we are waiting on. A second
+# worker would take cores away from generation and make the turn slower.
+_CHART_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="chart")
+
+
+def _chart_or_none(subject: int, t_start: float, side: str) -> str | None:
+    """The chart, or None -- never raises. A chart is additive; a failure here
+    must not take down an answer whose measurement already succeeded."""
+    try:
+        return _cached_chart(subject, t_start, side)
+    except Exception:
+        return None
+
+
+def _resolve_chart(turn: dict) -> dict:
+    """Join the background chart render, if this turn started one.
+
+    Called at the top of _finalize's return paths so every caller sees a
+    plain "chart_html" and nothing downstream has to know a future existed.
+    """
+    future = turn.pop("chart_future", None)
+    if future is not None:
+        html = future.result()
+        turn["chart_html"] = html
+        if html is None:
+            turn["chart_caption"] = None
+    return turn
 
 
 @functools.lru_cache(maxsize=8)
@@ -588,12 +622,12 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
 
-    chart_html, chart_caption = None, None
-    try:
-        chart_html = _cached_chart(subject, t_start, side)
-        chart_caption = _READING_CHART_CAPTION
-    except Exception:
-        pass
+    # Started, not awaited. Building the figure takes ~2.2 s and the model call
+    # that follows takes ~12 s, and neither needs the other's result -- run in
+    # sequence that 2.2 s was pure addition to every answer. _finalize() joins
+    # the future after the model returns, so the chart is ready by then and the
+    # wait is absorbed. See _CHART_POOL for why one worker is enough.
+    chart_future = _CHART_POOL.submit(_chart_or_none, subject, t_start, side)
 
     seg, fs = _load_subject_segment(subject, side)
     forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
@@ -602,7 +636,7 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
                              f"Subject {subject}")
 
     return {"features": result, "reading": reading,
-            "chart_html": chart_html, "chart_caption": chart_caption,
+            "chart_future": chart_future, "chart_caption": _READING_CHART_CAPTION,
             "forecast": forecast, "forecast_chart_html": forecast_chart_html,
             "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
             "user_text": user_text, "window": window}
@@ -778,6 +812,13 @@ def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
 
 
 def _finalize(session: dict, turn: dict) -> dict:
+    # Only the reading path starts a background chart, and it is joined at the
+    # very end of that path -- after the model call it was launched to overlap.
+    # Every other path resolves it here, immediately, so those turns behave
+    # exactly as they did before.
+    if "prompt" in turn or "features" not in turn:
+        _resolve_chart(turn)
+
     if "prompt" in turn:
         try:
             content = chat([{"role": "user", "content": turn["prompt"]}],
@@ -827,7 +868,14 @@ def _finalize(session: dict, turn: dict) -> dict:
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
     window = turn.get("window")
-    chart_shown = turn.get("chart_html") is not None
+    # The chart is still rendering in the background at this point, so whether
+    # one exists is not yet knowable -- and build_prompt needs the answer now.
+    # A render was started, and it only fails if render_window raises on data
+    # the subject/time were already validated against, so "started" is treated
+    # as "will exist". If it does fail the reader loses the chart and the prose
+    # may still refer to the panel, which is the mild end of the trade for
+    # taking 2.2 s off every answer.
+    chart_shown = ("chart_future" in turn) or (turn.get("chart_html") is not None)
 
     reading = turn.get("reading")
     verdict = (reading or {}).get("verdict")
@@ -880,6 +928,10 @@ def _finalize(session: dict, turn: dict) -> dict:
                 else (suggestion or verdict))
         except LLMError as e:
             recommendation = f"[Recommendation unavailable: {e}]"
+
+    # Both model calls are done; collect the chart that has been rendering
+    # alongside them. By now it is almost always already finished.
+    _resolve_chart(turn)
 
     return {"content": content, "chart_html": turn.get("chart_html"),
             "chart_caption": turn.get("chart_caption"),
@@ -979,6 +1031,35 @@ def _note_unanswered(user_text: str, final: dict) -> None:
         "\n\n_You asked more than one thing there, and this answers one part "
         "of it. Here's the rest:_")
     final["suggestions"] = (final.get("suggestions") or []) + chips
+
+
+def warm_up() -> None:
+    """Load the model and prime Ollama's prompt cache before anyone asks.
+
+    Two separate costs land on the first question of a session and nowhere
+    else. Ollama loads the model off disk (~6.7 s), and it evaluates the whole
+    prompt from scratch (~15-19 s) because there is no previous prompt to share
+    a prefix with. Every question after that reuses both and pays ~2 s.
+
+    Sending one throwaway prompt at startup moves both onto the server's boot,
+    where nobody is waiting. The prompt is built by the real build_prompt() so
+    its long fixed preamble is byte-identical to what the first real question
+    will send -- a hand-written approximation would share no prefix and prime
+    nothing. num_predict=1 because only the prompt side needs warming; the
+    answer is discarded.
+
+    Never raises: Ollama may not be running, and a demo server that refuses to
+    start because a warm-up failed is worse than a slow first answer.
+    """
+    try:
+        features = {"mdf_hz": 60.0, "fatigue_label": 1, "confidence": 0.9,
+                    "fatigue_state": "fatigue"}
+        primer = build_prompt(features, "warm up", None,
+                              {"subject": 1, "t_start": 0.0, "side": "R",
+                               "source": "dataset"}, None, True)
+        chat([{"role": "user", "content": primer}], num_predict=1, timeout=180)
+    except Exception:
+        pass
 
 
 def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
