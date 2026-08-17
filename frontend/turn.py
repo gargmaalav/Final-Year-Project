@@ -141,6 +141,15 @@ def _cached_chart(subject: int, t_start: float, side: str) -> str:
 _CHART_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="chart")
 
+# Separate from _CHART_POOL rather than raising that one to two workers: the
+# chart and the segment load start at the same moment, and sharing a
+# single-worker pool would queue the second behind the first and undo exactly
+# the overlap they were split up to get. One worker each keeps them genuinely
+# parallel without spawning threads that would compete with Ollama later in
+# the turn.
+_IO_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="segment")
+
 
 def _chart_or_none(subject: int, t_start: float, side: str) -> str | None:
     """The chart, or None -- never raises. A chart is additive; a failure here
@@ -612,24 +621,33 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
     window = {"subject": subject, "t_start": t_start, "side": side,
               "source": "dataset", "carried_over": params.get("carried_over", []),
               "notes": notes}
+    # Everything that needs only the resolved window starts here, before the
+    # one thing that has to be waited for. Nothing below depends on another's
+    # result: the chart is drawn from the raw signal, the segment is a file
+    # read, and classify() does its own loading. Run in sequence they cost
+    # ~1.1 s + ~1.2 s + ~2.2 s on top of each other; started together, the
+    # turn waits only for the longest.
+    #
+    # The model call is the exception and cannot join them -- build_prompt
+    # needs classify()'s result, so the ~11 s generation is genuinely
+    # sequential after this point. That is 83% of the turn and no amount of
+    # threading touches it.
+    chart_future = _CHART_POOL.submit(_chart_or_none, subject, t_start, side)
+    seg_future = _IO_POOL.submit(_load_subject_segment, subject, side)
+
     try:
         result = classify(subject, t_start, side)
     except KeyError:
+        chart_future.cancel(); seg_future.cancel()
         return {"content": f"Subject {subject} has no stored fresh-baseline "
                            "calibration, so I can't classify their fatigue yet."}
     except Exception as e:
+        chart_future.cancel(); seg_future.cancel()
         return {"content": f"Couldn't classify that window: {e}"}
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
 
-    # Started, not awaited. Building the figure takes ~2.2 s and the model call
-    # that follows takes ~12 s, and neither needs the other's result -- run in
-    # sequence that 2.2 s was pure addition to every answer. _finalize() joins
-    # the future after the model returns, so the chart is ready by then and the
-    # wait is absorbed. See _CHART_POOL for why one worker is enough.
-    chart_future = _CHART_POOL.submit(_chart_or_none, subject, t_start, side)
-
-    seg, fs = _load_subject_segment(subject, side)
+    seg, fs = seg_future.result()
     forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
     reading = _plain_reading(result, subject_reference(subject), t_start,
                              float(seg.t[-1]) if seg.t.size else None,
