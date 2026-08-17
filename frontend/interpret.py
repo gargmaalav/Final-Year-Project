@@ -367,15 +367,37 @@ def strip_verdict_echo(prose: str, who: str | None = None) -> str:
 # The lab-report words the model reaches for even when the prompt names them
 # as forbidden. Each maps to the phrase a person would actually say. Ordered
 # longest-first so "indicative of" is not half-matched by a shorter key.
+#
+# "indicating" is two different words. After a clause it is a connective and
+# "which means" is what a person would say there; after a verb it is an
+# ordinary participle, and swapping it produced "before the model would start
+# which means fatigue" -- observed live, and worse English than the jargon it
+# replaced. The connective sense is the one that follows a comma, so that is
+# what the comma-anchored entries above the bare one are for.
 _PLAIN_WORDS = [
     ("indicative of", "a sign of"),
     ("is indicative", "is a sign"),
+    (", indicating that", ", which means"),
+    (", indicating", ", which means"),
     ("indicating that", "which means"),
-    ("indicating", "which means"),
+    ("indicating", "showing"),
     ("deviation from", "change from"),
     ("deviation", "change"),
 ]
-_PLAIN_RE = [(re.compile(r'\b' + re.escape(k) + r'\b', re.IGNORECASE), v)
+
+
+def _word_bounded(key: str) -> str:
+    """\\b only where the key actually starts or ends on a word character.
+
+    ", indicating" opens on punctuation, and \\b there asserts a boundary
+    against whatever precedes the comma rather than against the key itself.
+    """
+    lead = r'\b' if key[:1].isalnum() else ''
+    tail = r'\b' if key[-1:].isalnum() else ''
+    return lead + re.escape(key) + tail
+
+
+_PLAIN_RE = [(re.compile(_word_bounded(k), re.IGNORECASE), v)
              for k, v in _PLAIN_WORDS]
 
 
@@ -405,8 +427,15 @@ def plain_words(prose: str) -> str:
 _SENTENCE_END = re.compile(r'(?<![0-9])([.!?])(?=\s|$)')
 
 
-def trim_sentences(prose: str, limit: int = 2) -> str:
+def trim_sentences(prose: str, limit: int = 2, total: int | None = None) -> str:
     """Keep at most `limit` sentences per paragraph of the model's prose.
+
+    `total` additionally caps the sentences across the WHOLE prose. The
+    per-paragraph limit is the right shape for the reading answers, where the
+    caller appends its own paragraphs around the model's -- but it puts no
+    ceiling on length at all when every paragraph is the model's own, which is
+    the follow-up case: asked for 2-4 sentences, it returned three paragraphs
+    of three and every one of them was under the per-paragraph limit.
 
     Asked for "1-3 short sentences", llama3.2:3b wrote four long ones; asked
     for "ONE or TWO", it still wrote three and padded the last with a summary
@@ -449,7 +478,7 @@ def trim_sentences(prose: str, limit: int = 2) -> str:
     # kept the fragment, since that paragraph alone had nothing complete.
     has_complete = any(p is not None and p for p, _ in parsed)
 
-    out = []
+    out, budget = [], total
     for pieces, tail in parsed:
         if pieces is None:            # a bullet list, passed through whole
             out.append(tail)
@@ -459,9 +488,124 @@ def trim_sentences(prose: str, limit: int = 2) -> str:
         # nothing at all.
         if tail and not has_complete:
             kept.append(tail)
+        kept = kept[:limit]
+        if budget is not None:
+            if budget <= 0:
+                break                 # whole paragraphs, never a part of one
+            kept = kept[:budget]
+            budget -= len(kept)
         if kept:
-            out.append(" ".join(kept[:limit]))
+            out.append(" ".join(kept))
     return "\n\n".join(out)
+
+
+# Words carrying no content, ignored when judging whether two sentences say
+# the same thing. Without this, two sentences about entirely different things
+# still share "the", "is", "of" and "their" and score as related.
+_STOPWORDS = frozenset(
+    "a an and are as at be been but by can could do does for from had has have "
+    "he her him his i if in into is it its me my not of on or our she so than "
+    "that the their them then there these they this to us was we were what "
+    "when which who will with would you your".split())
+
+# Above this share of the new sentence's content words already present in the
+# previous answer, it is a restatement. 0.8 rather than 0.5: at 0.5 a genuinely
+# new sentence about the same reading ("this sits well inside the range their
+# fresh recordings covered") was scored as a repeat, because a follow-up is
+# ABOUT the previous answer and is expected to reuse its subject matter.
+_REPEAT_SHARE = 0.8
+
+
+def _content_words(sentence: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9%]+", sentence.lower())
+            if w not in _STOPWORDS}
+
+
+def drop_repeated_sentences(prose: str, previous_answer: str) -> str:
+    """Remove sentences of a follow-up that only say the previous answer again.
+
+    A follow-up is handed the previous answer as context, and the likeliest
+    continuation of "here is an answer, now write about it" is that answer
+    again in different words. Asked "so what does this mean?" under a reading,
+    the model returned three paragraphs of which all three restated the
+    verdict -- factually perfect and worth nothing to the person who had just
+    read it and wanted to know what to do with it.
+
+    The prompt says not to (see prompt._FOLLOWUP_NEVER_RESTATE) and that only
+    half-holds, which is the same position the verdict, the banned vocabulary
+    and the answer length were all in before they were moved into code.
+
+    Judged on content-word overlap rather than wording, so a paraphrase is
+    caught along with a copy. Never returns empty: if every sentence is a
+    repeat the whole prose is handed back for the caller to deal with, because
+    showing a redundant answer beats showing none.
+    """
+    if not prose or not previous_answer:
+        return prose
+    seen = _content_words(previous_answer)
+    if not seen:
+        return prose
+
+    kept_paras = []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        if not para.strip():
+            continue
+        good = []
+        for sentence in re.split(r"(?<=[.!?])\s+", para.strip()):
+            words = _content_words(sentence)
+            # A sentence too short to carry an idea is judged on nothing and
+            # would always score 1.0; leave those to trim_sentences.
+            if len(words) >= 4 and len(words & seen) / len(words) >= _REPEAT_SHARE:
+                continue
+            good.append(sentence)
+        if good:
+            kept_paras.append(" ".join(good))
+    return "\n\n".join(kept_paras).strip() or prose
+
+
+# A hertz figure alongside a word placing it above or below something. This is
+# the one shape in a follow-up that can be factually wrong while every number
+# in it is real, so it is the one shape that gets removed.
+#
+# "rest of the sentence" has to step over a decimal point -- written as
+# [^.!?]* it stopped dead at the "." in "70.0 Hz", so the very sentence this
+# was built for ("would drop below 70.0 Hz") went straight through it.
+_REST = r"(?:[^.!?]|(?<=\d)\.(?=\d))*"
+_PLACES = (r"(?:above|below|higher|lower|greater|less|more|under|over|"
+           r"exceeds?|drops? to|falls? to)")
+_HZ_COMPARISON = re.compile(
+    r"\bHz\b(?=" + _REST + r"\b" + _PLACES + r"\b)|"
+    r"\b" + _PLACES + r"\b(?=" + _REST + r"\bHz\b)", re.IGNORECASE)
+
+
+def drop_hertz_comparisons(prose: str) -> str:
+    """Remove sentences that place one hertz figure above or below another.
+
+    A follow-up is allowed to quote the figures from the answer it is
+    re-explaining -- screened against the measured facts alone, every number
+    was stripped and the answers came back as dangling fragments. That let
+    through "their current signal is 66.8 Hz, which is still above the fresh
+    level of 70.0 Hz". Both figures are real and correctly attributed; the
+    relation between them is backwards. 66.8 is below 70.0.
+
+    Nothing is lost by removing it. Which way the reading has moved is
+    rendered in Python by verdict_sentence ("5% below their own fresh level")
+    and the pair itself is on the provenance line directly under the answer --
+    so the model has no reason to reconstruct the comparison in prose, and no
+    reliable way of doing it. Percentages, times and a lone hertz figure are
+    untouched.
+
+    Never returns empty, for the same reason drop_repeated_sentences does not.
+    """
+    if not prose or "hz" not in prose.lower():
+        return prose
+    kept = []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        good = [s for s in re.split(r"(?<=[.!?])\s+", para.strip())
+                if not _HZ_COMPARISON.search(s)]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip() or prose
 
 
 def strip_invented_numbers(prose: str, who: str | None = None) -> tuple[str, list[str]]:

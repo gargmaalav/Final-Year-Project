@@ -90,6 +90,11 @@ DEFAULT_MODEL = llm_default_model
 # slower than if there had been no warm-up at all.
 WARM: dict = {"ready": False, "error": None}
 
+# The whole follow-up, not per paragraph. The prompt asks for 2-4; 4 is the top
+# of that range rather than a target, and it is more than a reading gets (2)
+# because a follow-up is where the reader has asked to be told more.
+FOLLOWUP_MAX_SENTENCES = 4
+
 
 def new_session() -> dict:
     """Fresh per-chat state -- what st.session_state held per browser session."""
@@ -538,8 +543,14 @@ def _followup_turn(session: dict, user_text: str) -> dict:
     facts = last.get("facts") or []
     return {"prompt": build_followup_prompt(
                 last.get("question") or "(their previous question)",
-                last["answer"], facts, user_text),
+                last["answer"], facts, user_text,
+                intent_router.followup_kind(user_text), last.get("who")),
             "facts": facts,
+            # What the answer must not simply say again, and the name to catch
+            # it under. Enforced in _finalize: the prompt forbids restating the
+            # previous answer and the model does it anyway.
+            "previous_answer": last["answer"],
+            "echo_who": last.get("who"),
             # A follow-up re-explains an answer that has already been shown, so
             # the figures IN that answer are legitimate to restate -- they were
             # rendered from measurements, not invented. Screened against the
@@ -848,11 +859,34 @@ def _finalize(session: dict, turn: dict) -> dict:
                 "I couldn't put that into words without quoting figures that "
                 "were never measured, so I've left it out rather than guess. "
                 "Ask again and I'll have another go.")
+            # A follow-up is the one answer printed directly beneath the answer
+            # it is about, so a sentence repeating that one is visibly wasted
+            # space. Both passes run before the trim, for the same reason the
+            # reading path strips before trimming: cutting to three sentences
+            # first spends the budget on the restatement and drops the part
+            # that actually answers the follow-up.
+            previous = turn.get("previous_answer")
+            if previous:
+                content = interpret.strip_verdict_echo(content,
+                                                       turn.get("echo_who"))
+                content = interpret.drop_repeated_sentences(content, previous)
+                # A follow-up may quote the figures from the answer it is
+                # re-explaining, which let through "66.8 Hz, which is still
+                # above the fresh level of 70.0 Hz" -- both figures real, the
+                # relation between them backwards.
+                content = interpret.drop_hertz_comparisons(content)
             # Same plain-language and length treatment the reading answers get
             # further down. Three sentences rather than two: an overview has a
             # start, an end and an onset to cover, and the numbers here ARE
             # the answer (they were measured), so only the wording is trimmed.
-            content = interpret.trim_sentences(interpret.plain_words(content), 3)
+            #
+            # A follow-up is capped across the whole answer as well. Nothing is
+            # appended around it -- unlike a reading, every paragraph here is
+            # the model's -- so the per-paragraph limit alone left it unbounded,
+            # and a request for 2-4 sentences came back as nine.
+            content = interpret.trim_sentences(
+                interpret.plain_words(content), 3,
+                total=FOLLOWUP_MAX_SENTENCES if previous else None)
         except LLMError as e:
             lines = readable_facts(turn.get("facts") or [])
             content = ("\n".join(f"- {line}" for line in lines)
@@ -1112,6 +1146,10 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
             "answer": final["content"],
             "facts": (final.get("facts")
                       or (final.get("reading") or {}).get("lines")),
+            # "Subject 11" / "This recording" -- carried so a follow-up can be
+            # checked for opening by naming them and restating the verdict,
+            # which is what strip_verdict_echo catches on the reading path.
+            "who": (final.get("reading") or {}).get("who"),
         }
     window = final.get("window")
     if window and window.get("source") in ("upload", "dataset"):

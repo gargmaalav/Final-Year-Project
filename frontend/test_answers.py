@@ -21,6 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import intent          # noqa: E402
 import interpret       # noqa: E402
 import prompt          # noqa: E402
 import recommend       # noqa: E402
@@ -477,6 +478,63 @@ def _():
     assert out.strip(), "stripped the answer to nothing"
 
 
+# --- follow-ups that only say the previous answer again ---------------------
+# Asked "so what does this mean?" under a reading, the model returned three
+# paragraphs and all three restated the verdict the reader had just read. The
+# prompt forbids it; this is what happens when the prompt does not hold.
+
+@check("a follow-up sentence copied from the previous answer is dropped")
+def _():
+    previous = ("Subject 11 is not showing signs of fatigue, 60s in. Their "
+                "muscle signal is 5% below their own fresh level.")
+    prose = ("Subject 11 is not showing signs of fatigue, 60s in.\n\n"
+             "It would take roughly a fifth off their fresh level before this "
+             "would read as fatigue.")
+    out = interpret.drop_repeated_sentences(prose, previous)
+    assert "60s in" not in out, out
+    assert "roughly a fifth" in out, out
+
+
+@check("a paraphrase of the previous answer is dropped too, not just a copy")
+def _():
+    previous = "Subject 11 is not showing signs of fatigue at 60 seconds."
+    prose = ("Subject 11 is not fatigued at 60 seconds.\n\n"
+             "The reading sits comfortably inside the spread their rested "
+             "recordings covered, so there is room before it would change.")
+    out = interpret.drop_repeated_sentences(prose, previous)
+    assert "not fatigued at 60 seconds" not in out, out
+    assert "comfortably inside" in out, out
+
+
+@check("a follow-up that adds something survives untouched")
+def _():
+    previous = ("Subject 11 is not showing signs of fatigue, 60s in. Their "
+                "muscle signal is 5% below their own fresh level.")
+    prose = ("The reading sits inside the range their rested recordings "
+             "covered, so nothing here is outside normal variation. It would "
+             "need to fall roughly four times further before the answer "
+             "changed. Worth checking again later in the effort.")
+    assert interpret.drop_repeated_sentences(prose, previous) == prose
+
+
+@check("dropping repeats never empties an answer")
+def _():
+    previous = "Subject 11 is not showing signs of fatigue at 60 seconds."
+    prose = "Subject 11 is not showing signs of fatigue at 60 seconds."
+    out = interpret.drop_repeated_sentences(prose, previous)
+    assert out.strip(), "stripped the follow-up to nothing"
+
+
+@check("a short sentence is left for the trimmer rather than judged on nothing")
+def _():
+    # three content words, all of them in the previous answer -- scored on so
+    # little that anything would round to a repeat
+    previous = "Subject 11 is not showing signs of fatigue at 60 seconds."
+    prose = "Fatigue is gradual. It builds as the muscle's fibres slow down."
+    out = interpret.drop_repeated_sentences(prose, previous)
+    assert "Fatigue is gradual" in out, out
+
+
 @check("confidence and the raw figures are withheld from the prose")
 def _():
     # Given the confidence the model called it certainty -- "extremely sure",
@@ -705,21 +763,129 @@ def _():
 
 @check("a follow-up about a rising signal must not claim the usual pattern")
 def _():
-    built = prompt.build_followup_prompt(
-        "summarise subject 7", "median frequency ROSE by 4.8 Hz",
-        prompt.overview_facts(_summary(57.0, 75.0, _onset())), "why?")
-    assert "does NOT follow that pattern" in built, built
-    assert "went UP, not down" in built, built
-    assert "never say the usual pattern is what happened here" in built.lower()
+    for kind in (intent.WHY, intent.MEANING, intent.SIMPLER, intent.MORE):
+        built = prompt.build_followup_prompt(
+            "summarise subject 7", "median frequency ROSE by 4.8 Hz",
+            prompt.overview_facts(_summary(57.0, 75.0, _onset())), "why?", kind)
+        # the warning is not conditional on which follow-up was asked: any of
+        # the four can be answered with "and that is why the frequency fell"
+        assert "does NOT follow the usual fatigue pattern" in built, (kind, built)
+        assert "went UP, not down" in built, (kind, built)
+        assert "never say the usual pattern is what happened here" in built.lower()
 
 
 @check("a follow-up about a falling signal still gets the plain causal chain")
 def _():
     built = prompt.build_followup_prompt(
         "summarise subject 13", "median frequency FELL by 18.0 Hz",
-        prompt.overview_facts(_summary(75.0, 57.0, _onset())), "why?")
+        prompt.overview_facts(_summary(75.0, 57.0, _onset())), "why?",
+        intent.WHY)
     assert "shifts the signal's power to lower frequencies" in built, built
-    assert "does NOT follow that pattern" not in built, built
+    assert "does NOT follow the usual fatigue pattern" not in built, built
+
+
+# The causal chain answers "why?". Pasted onto the other three follow-ups it
+# spent the whole 2-4 sentence budget on textbook physics and never reached
+# what was asked -- and on "in simpler terms" it reintroduced the exact
+# vocabulary that request exists to get rid of.
+
+@check("only a why-follow-up is asked for the causal chain")
+def _():
+    facts = prompt.overview_facts(_summary(75.0, 57.0, _onset()))
+    for kind in (intent.MEANING, intent.SIMPLER, intent.MORE):
+        built = prompt.build_followup_prompt("summarise subject 13",
+                                             "median frequency FELL", facts,
+                                             "so what does this mean?", kind)
+        assert "shifts the signal's power" not in built, (kind, built)
+
+
+@check("every follow-up is told not to restate the answer it is explaining")
+def _():
+    for kind in (intent.WHY, intent.MEANING, intent.SIMPLER, intent.MORE):
+        built = prompt.build_followup_prompt("summarise subject 13", "answered",
+                                             [], "why?", kind)
+        assert "NEVER open by restating the finding" in built, (kind, built)
+        assert "must add something that answer did not contain" in built, kind
+
+
+@check("the four follow-ups are set four different tasks")
+def _():
+    tasks = {prompt._FOLLOWUP_TASK[k] for k in
+             (intent.WHY, intent.MEANING, intent.SIMPLER, intent.MORE)}
+    assert len(tasks) == 4, tasks
+
+
+# Ollama reuses a cached prompt prefix only up to the first byte that differs,
+# so a block that changes per question placed ABOVE a fixed one costs seconds
+# with nothing in the output to show for it. The follow-up prompt used to put
+# the previous exchange in the middle and the instructions after it.
+
+# Asked "why?" under a NOT-fatigued reading, the model answered "because their
+# muscle signal power has shifted towards lower frequencies" -- reciting the
+# mechanism of fatigue as the reason for its absence. Observed live. The chain
+# describes what fatigue does, so under a not-fatigued verdict it has to be
+# asked for in the conditional.
+
+@check("a not-fatigued verdict is recognised from the answer being re-explained")
+def _():
+    assert prompt._reads_not_fatigued(
+        [], "**Subject 11 is not showing signs of fatigue**, 60s in.")
+    assert prompt._reads_not_fatigued(
+        ["Subject 11 is NOT fatigued at this point"], "")
+    assert not prompt._reads_not_fatigued(
+        [], "**Subject 13 is showing signs of fatigue**, 200s in.")
+
+
+@check("why under a not-fatigued verdict asks for the chain in the conditional")
+def _():
+    built = prompt.build_followup_prompt(
+        "is subject 11 fatigued at 60s?",
+        "**Subject 11 is not showing signs of fatigue**, 60s in.",
+        ["Subject 11 is NOT fatigued at this point"], "why?", intent.WHY)
+    assert "would shift the signal's power" in built, built
+    assert "never give the fatigue mechanism as the reason" in built.lower()
+    # the qualifier must come BEFORE the mechanism, or the length cap cuts it
+    assert "not moved far enough" in built, built
+    assert built.index("not moved far enough") < built.index("would shift")
+
+
+@check("why under a fatigued verdict still gets the chain stated flat")
+def _():
+    built = prompt.build_followup_prompt(
+        "is subject 13 fatigued at 200s?",
+        "**Subject 13 is showing signs of fatigue**, 200s in.",
+        ["Subject 13 IS showing signs of fatigue"], "why?", intent.WHY)
+    assert "which shifts the signal's power to lower frequencies" in built, built
+    assert "would shift" not in built, built
+
+
+# A dataset subject is a third party. With nobody named, a follow-up about
+# subject 11 came back as "your muscle signal ... how close you are to
+# fatigue", handing the reader someone else's measurement as their own.
+
+@check("a follow-up about a dataset subject is told to stay in the third person")
+def _():
+    built = prompt.build_followup_prompt("q", "a", [], "so what does this mean?",
+                                         intent.MEANING, "Subject 11")
+    assert "NOT the person reading this" in built, built
+    assert "never \"you\" or \"your\"" in built, built
+
+
+@check("a follow-up about the reader's own upload keeps the second person")
+def _():
+    built = prompt.build_followup_prompt("q", "a", [], "so what does this mean?",
+                                         intent.MEANING, "This recording")
+    assert "\"you\" and \"your\" are correct" in built, built
+    assert "NOT the person reading this" not in built, built
+
+
+@check("the follow-up prompt keeps its fixed instructions ahead of the data")
+def _():
+    built = prompt.build_followup_prompt("summarise subject 13", "ANSWER-HERE",
+                                         ["FACT-HERE"], "QUERY-HERE",
+                                         intent.WHY)
+    assert built.index("NEVER open by restating") < built.index("ANSWER-HERE")
+    assert built.index("ANSWER-HERE") < built.index("FACT-HERE") < built.index("QUERY-HERE")
 
 
 # --- the offline fallback ---------------------------------------------------
@@ -848,8 +1014,14 @@ def _():
     assert "indicating" not in out, out
     assert "which means they are no longer at peak" in out, out
     # capitalisation is carried over, so a swap can open a sentence
-    assert interpret.plain_words("Indicating a drop.").startswith("Which means"), \
+    assert interpret.plain_words("Indicating a drop.").startswith("Showing"), \
         interpret.plain_words("Indicating a drop.")
+    # ...but after a verb "indicating" is a participle, not a connective, and
+    # "which means" there produced "would start which means fatigue" live
+    after_verb = interpret.plain_words(
+        "There is time before the model would start indicating fatigue.")
+    assert "start showing fatigue" in after_verb, after_verb
+    assert "which means" not in after_verb, after_verb
     # the longer phrase wins over the shorter key inside it
     assert "a sign of" in interpret.plain_words("This is indicative of fatigue."), \
         interpret.plain_words("This is indicative of fatigue.")
@@ -910,6 +1082,71 @@ def _():
     # a bullet list is one list, not N sentences to cut in half
     bullets = "- first\n- second\n- third"
     assert interpret.trim_sentences(bullets, 2) == bullets
+
+
+# The per-paragraph budget puts no ceiling on an answer whose paragraphs are
+# ALL the model's, which is the follow-up case: asked for 2-4 sentences it
+# returned three paragraphs of three, every one inside the per-paragraph limit.
+
+# Observed live: both figures real and correctly attributed, the relation
+# between them backwards. 66.8 is below 70.0, not above it.
+
+@check("a follow-up placing one hertz figure above another loses that sentence")
+def _():
+    prose = ("Their signal has eased off a little. Their current signal is "
+             "66.8 Hz, which is still above the fresh level of 70.0 Hz. It is "
+             "worth another reading later on.")
+    out = interpret.drop_hertz_comparisons(prose)
+    assert "above the fresh level" not in out, out
+    assert "eased off a little" in out and "another reading later" in out, out
+    # the decimal point inside "70.0 Hz" must not end the sentence for the
+    # match -- written [^.!?]* it stopped there and let this straight through
+    threshold = ("It is worth watching. We need the point at which their "
+                 "signal would drop below 70.0 Hz. That is the fresh level.")
+    out = interpret.drop_hertz_comparisons(threshold)
+    assert "drop below 70.0 Hz" not in out, out
+    assert "worth watching" in out and "fresh level" in out, out
+
+
+@check("percentages, times and a lone hertz figure are left alone")
+def _():
+    for keep in ("Their signal is 5% below their own fresh level.",
+                 "This reading was taken 60 seconds in.",
+                 "The median frequency here is 66.8 Hz.",
+                 "It is lower than it was when they started."):
+        assert interpret.drop_hertz_comparisons(keep) == keep, keep
+
+
+@check("dropping hertz comparisons never empties an answer")
+def _():
+    only = "It is 66.8 Hz, above the fresh level of 70.0 Hz."
+    assert interpret.drop_hertz_comparisons(only).strip(), "stripped to nothing"
+
+
+@check("every follow-up is told to leave the hertz figures out")
+def _():
+    built = prompt.build_followup_prompt("q", "a", [], "why?", intent.WHY)
+    assert "never say one hertz figure is above or below another" in built, built
+
+
+@check("a total budget caps the whole answer, not just each paragraph")
+def _():
+    prose = "A one. A two. A three.\n\nB one. B two.\n\nC one."
+    out = interpret.trim_sentences(prose, 3, total=4)
+    assert out == "A one. A two. A three.\n\nB one.", out
+
+
+@check("the total budget drops whole paragraphs, never part of one")
+def _():
+    prose = "A one. A two.\n\nB one. B two."
+    assert interpret.trim_sentences(prose, 3, total=2) == "A one. A two."
+
+
+@check("no total budget leaves the per-paragraph behaviour untouched")
+def _():
+    prose = "A one. A two. A three.\n\nB one. B two."
+    assert (interpret.trim_sentences(prose, 3)
+            == interpret.trim_sentences(prose, 3, total=None) == prose)
 
 
 def main() -> int:

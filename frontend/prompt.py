@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import re
 
+import intent
+
 # Labels that mark a fact as carrying an instruction to the model. The fact
 # itself is still readable once the label is gone.
 _FACT_LABELS = (
@@ -148,8 +150,94 @@ def _signal_rose(facts: list[str], previous_answer: str) -> bool:
     return any(m.lower() in hay.lower() for m in _ROSE_MARKERS)
 
 
+# The NOT-fatigued verdict, as this codebase renders it -- interpret's
+# verdict_sentence, plain_lines and prose_notes, plus the analysis paths.
+# Matching our own rendered text, never the model's.
+_NOT_FATIGUED_MARKERS = (
+    "not showing signs of fatigue",
+    "NOT showing signs of fatigue",
+    "is NOT fatigued",
+    "not fatigued",
+    "no signs of fatigue",
+    "not enough to count as fatigue",
+)
+
+
+def _reads_not_fatigued(facts: list[str], previous_answer: str) -> bool:
+    """True when the answer being re-explained concluded NOT fatigued."""
+    hay = " ".join(list(facts or []) + [previous_answer or ""]).lower()
+    return any(m.lower() in hay for m in _NOT_FATIGUED_MARKERS)
+
+
+# What each kind of follow-up is actually asking for, and what a useful answer
+# to it contains. One generic "explain the reasoning" instruction covered all
+# four and the model answered every one of them identically -- by paraphrasing
+# the answer sitting in its prompt. Given the previous answer as context and no
+# statement of what to ADD, restating it is the likeliest completion, so each
+# kind now names the material it is supposed to reach for instead.
+_FOLLOWUP_TASK = {
+    intent.WHY: (
+        "They are asking WHY the result came out that way. Explain the "
+        "reasoning: which measurement was taken, what it was compared "
+        "against, and why that comparison leads to this conclusion rather "
+        "than the opposite one."),
+    intent.MEANING: (
+        "They are asking what this result MEANS for them -- what to take away "
+        "from it, not the finding repeated. Cover, in this order: what the "
+        "reading says about the muscle's state right now; how far it is from "
+        "the point where the answer would change, using the measured values "
+        "above; and what would be worth watching from here. Every one of "
+        "those is something your previous answer did NOT say."),
+    intent.SIMPLER: (
+        "They did not follow the previous answer, so say the same thing again "
+        "in ordinary words. Use an everyday comparison for what the "
+        "measurement tracks. Do not use the words median, frequency, hertz, "
+        "baseline, standard deviation or classifier at all."),
+    intent.MORE: (
+        "They want the detail the previous answer left out. Go to the "
+        "measured values above that the previous answer did not mention and "
+        "explain what those add -- how settled the result is, where in the "
+        "effort it sits, how far from the person's normal range it falls."),
+}
+
+# Bolted onto every follow-up, whichever kind it is. The failure this is aimed
+# at is not the model being wrong -- follow-ups are factually fine -- it is the
+# model spending its whole answer re-asserting a verdict the reader has just
+# read and is asking about, which leaves them with nothing they did not have
+# before. A negative instruction alone did not hold, so it is paired with
+# interpret.strip_verdict_echo / drop_repeated_sentences downstream.
+_FOLLOWUP_NEVER_RESTATE = (
+    "Your previous answer is printed on screen directly above your reply, and "
+    "they have read it. NEVER open by restating the finding, and never write "
+    "a sentence that says the same thing as one of the sentences above. Every "
+    "sentence you write must add something that answer did not contain. Do "
+    "not change the conclusion either -- add to it.")
+
+
+def _addressing(who: str | None) -> str:
+    """Who the answer is about, and in which person to write about them.
+
+    A dataset subject is a third party and an uploaded recording is the
+    reader's own. With neither stated, a follow-up about subject 11 came back
+    as "your muscle signal is still relatively healthy ... how close YOU are to
+    fatigue", which hands the reader someone else's measurement as their own.
+    The reading prompt names the subject in every line it is given; the
+    follow-up prompt is built from prose and had nothing to anchor to.
+    """
+    if not who:
+        return ""
+    if who.lower().startswith(("subject", "the subject")):
+        return (f" The measurement is of {who}, who is NOT the person reading "
+                f"this. Write about them in the third person -- \"they\", "
+                f"\"their\" -- and never \"you\" or \"your\".")
+    return (f" The measurement is of {who}, which belongs to the person "
+            "reading this, so \"you\" and \"your\" are correct.")
+
+
 def build_followup_prompt(previous_question: str, previous_answer: str,
-                          facts: list[str], user_query: str) -> str:
+                          facts: list[str], user_query: str,
+                          kind: str | None = None,
+                          who: str | None = None) -> str:
     """Re-explain the last answer, from the same measured numbers.
 
     Every other call is built from scratch with no conversation history, which
@@ -158,7 +246,14 @@ def build_followup_prompt(previous_question: str, previous_answer: str,
     model a chance to quote stale figures as if freshly measured), the previous
     exchange is handed over explicitly, with the same facts that produced it,
     and nothing new is measured.
+
+    `kind` is one of intent.WHY / MEANING / SIMPLER / MORE -- what sort of
+    re-explanation was asked for. It decides which task is set, because the
+    answer to "why?" and the answer to "so what does this mean?" are different
+    answers and a prompt aimed at both hits neither.
     """
+    task = _FOLLOWUP_TASK.get(kind or intent.MEANING,
+                              _FOLLOWUP_TASK[intent.MEANING])
     body = "\n".join(f"- {f}" for f in facts) if facts else "- (none recorded)"
     # The causal chain is generic physics and was pasted in unconditionally.
     # Asked to re-explain subject 7 -- whose median frequency ROSE, which the
@@ -168,34 +263,79 @@ def build_followup_prompt(previous_question: str, previous_answer: str,
     # explanation of something the measurement contradicts is the failure this
     # whole architecture exists to prevent, so which chain gets asked for is
     # decided here rather than left to the model to notice.
-    if _signal_rose(facts, previous_answer):
-        chain = (
-            "If they asked why, explain the causal chain in general terms: a "
-            "fatiguing muscle's fibres conduct more slowly, which shifts the "
-            "signal's power to lower frequencies, which is what the median "
-            "frequency measures. You MUST then say that this recording does "
-            "NOT follow that pattern -- its median frequency went UP, not "
-            "down, which is not the direction fatigue moves it. Never write "
-            "that the frequency fell here, and never say the usual pattern is "
-            "what happened here.")
-    else:
-        chain = (
-            "If they asked why, explain the causal chain: a fatiguing muscle's "
-            "fibres conduct more slowly, which shifts the signal's power to "
-            "lower frequencies, which is what the median frequency measures.")
+    #
+    # The chain is asked for only when the reader asked WHY. Pasted onto a
+    # "what does this mean?" it filled the whole 2-4 sentence budget with
+    # textbook physics and never reached the reader's actual question; on a
+    # "simpler terms" it reintroduced the exact vocabulary that request is
+    # asking to be rid of. The rising-signal WARNING is not optional in the
+    # same way and is kept for every kind.
+    rose = _signal_rose(facts, previous_answer)
+    chain = ""
+    if kind == intent.WHY:
+        # The chain describes what fatigue DOES, so under a not-fatigued
+        # verdict it has to be framed as what did not happen. Stated flat, the
+        # model welded it to the conclusion and answered "why is subject 11 not
+        # fatigued" with "because their signal power has shifted to lower
+        # frequencies" -- reciting the mechanism of fatigue as the reason for
+        # its absence. Observed live, and exactly the fluent self-contradiction
+        # the _signal_rose branch below already exists to stop.
+        if _reads_not_fatigued(facts, previous_answer):
+            chain = (
+                # The qualifier goes FIRST. Asked for it last, the model spent
+                # its whole length on the mechanism and the answer was cut
+                # before reaching "but not here" -- leaving a fluent
+                # explanation of fatigue standing as the reason for its
+                # absence, which is the failure this branch exists to stop.
+                #
+                # Lower case deliberately. Written "WOULD shift", the model
+                # copied the shouting into the answer -- "a fatiguing muscle's
+                # fibres WOULD cause the signal to shift". "Causal chain" is
+                # avoided for the same reason: it came back verbatim as "the
+                # causal chain can be explained as follows".
+                " Open by saying the signal has not moved far enough for this "
+                "to read as fatigue. Only then say what fatigue would have "
+                "done, in the conditional: a fatiguing muscle's fibres conduct "
+                "more slowly, which would shift the signal's power to lower "
+                "frequencies, which is what the median frequency measures. "
+                "Never write that the signal HAS shifted to lower frequencies "
+                "here, and never give the fatigue mechanism as the reason the "
+                "answer is NOT fatigue.")
+        else:
+            chain = (
+                " Explain the causal chain: a fatiguing muscle's fibres "
+                "conduct more slowly, which shifts the signal's power to "
+                "lower frequencies, which is what the median frequency "
+                "measures.")
+    if rose:
+        chain += (
+            " You MUST say that this recording does NOT follow the usual "
+            "fatigue pattern -- its median frequency went UP, not down, which "
+            "is not the direction fatigue moves it. Never write that the "
+            "frequency fell here, and never say the usual pattern is what "
+            "happened here.")
+
+    # Fixed instructions first, the per-question material last. Ollama can only
+    # reuse a cached prompt prefix up to the first byte that differs, so a
+    # variable block placed above a static one costs seconds with nothing in
+    # the output to show for it -- see the note on build_prompt().
     return (
         "You are re-explaining an answer you already gave about a lab EMG "
         "muscle-fatigue measurement. The reader wants the SAME result "
-        "explained differently -- not a new measurement.\n\n"
+        "explained further -- not a new measurement.\n\n"
+        "Answer in 2-4 sentences, in plain everyday words, for a reader who "
+        "is not a signal-processing specialist. Use ONLY the measured values "
+        "listed below; do not introduce a number that is not there. Do not "
+        "quote any figure in hertz (Hz) and never say one hertz figure is "
+        "above or below another -- those are printed underneath your answer "
+        "already. Percentages and times are fine."
+        + _addressing(who) + "\n\n"
+        + _FOLLOWUP_NEVER_RESTATE + "\n\n"
+        + task + chain + "\n\n"
         f"What they originally asked:\n{previous_question}\n\n"
         f"What you answered:\n{previous_answer}\n\n"
         f"The measured values that answer came from:\n{body}\n\n"
-        f"They have now said: {user_query}\n\n"
-        "Answer in 2-4 sentences, in plainer language than before, for a "
-        "reader who is not a signal-processing specialist. Explain the "
-        "reasoning behind the result -- what was measured and why it means "
-        "what it means. Use ONLY the values listed above; do not introduce a "
-        "number that is not there, and do not change the conclusion. " + chain
+        f"They have now said: {user_query}"
     )
 
 
