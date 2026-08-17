@@ -302,6 +302,15 @@
 
   .fig-block { display: flex; flex-direction: column; gap: 10px; }
 
+  /* One group per charted answer. The header names which reading the figures
+     under it belong to -- with several stacked, "Subject 11 · 60s · right" is
+     the only thing telling them apart. */
+  .fig-group { display: flex; flex-direction: column; gap: 10px; }
+  .fig-group + .fig-group { padding-top: 16px; border-top: 1px solid var(--border); }
+  .fig-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .fig-group-title { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: .01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fig-group-time { font-size: 11px; color: var(--text-3); flex: none; }
+
   /* The chart is laid out by Plotly at a fixed pixel width designed for a
      full-page view (see the natural sizes below). Two ways to fit that into a
      ~450px panel, and only one of them works:
@@ -1114,12 +1123,29 @@
     if (w.side) bits.push(w.side === "L" ? "left" : "right");
     return bits.length ? bits.join(" · ") : "Latest reading";
   }
+  // The placeholder is prepended, not written over #fig-content: blowing the
+  // panel away on every new question destroyed the figures already there while
+  // leaving them in FIG_GROUPS, so the footer counted figures that no longer
+  // existed and the earlier readings were gone before the new one arrived.
+  function figClearPending() {
+    var p = document.getElementById("fig-pending");
+    if (p) p.remove();
+  }
   function figLoading() {
     STATE.figStatus = "loading";
-    $("fig-content").innerHTML =
-      '<div class="fig-block"><div class="fig-grid-placeholder"><span class="dot"></span><span class="fig-loading-label">Rendering figures</span></div>' +
-      '<div class="fig-caption">Figures appear once the window has been classified.</div></div>';
-    setFigStatus("Awaiting reading");
+    figClearPending();
+    var content = $("fig-content");
+    var emptyState = content.querySelector(".fig-empty");
+    if (emptyState) emptyState.remove();
+    var pending = document.createElement("div");
+    pending.id = "fig-pending";
+    pending.className = "fig-block";
+    pending.innerHTML =
+      '<div class="fig-grid-placeholder"><span class="dot"></span>' +
+      '<span class="fig-loading-label">Rendering figures</span></div>';
+    content.insertBefore(pending, content.firstChild);
+    content.scrollTop = 0;
+    setFigStatus("Working on it");
     if (STATE.pane === "hidden") { /* leave hidden; header button will surface it */ }
     else if (STATE.pane !== "open" && !paneByUser) { STATE.pane = "open"; }
     applyLayout();
@@ -1138,9 +1164,10 @@
     return html ? _HIDE_UPDATEMENU_CSS + html : html;
   }
 
-  // The figures currently on screen, kept so the modal can re-mount them at
-  // natural size and so a resize can rescale the thumbnails without a reload.
-  var FIGS = [];
+  // Every figure group currently on screen, oldest first. Kept so the modal
+  // can re-mount a group at natural size and so a resize can rescale the
+  // thumbnails without reloading anything.
+  var FIG_GROUPS = [];
 
   // Natural [width, height] of each chart, matching what the Python emits --
   // viz/render_window.py's animated 3-panel chart (height=920, its top margin
@@ -1182,7 +1209,7 @@
     });
   }
 
-  function figTile(id, html, caption, natW, natH, label) {
+  function figTile(id, html, caption, natW, natH, label, groupId) {
     var block = document.createElement("div");
     block.className = "fig-block";
     block.innerHTML =
@@ -1201,7 +1228,7 @@
     frame.srcdoc = withHiddenButtons(html);
     block.querySelector(".fig-caption").textContent = caption || "";
     var wrap = block.querySelector(".fig-frame-wrap");
-    function open() { if (wrap.classList.contains("thumb")) figOpenModal(); }
+    function open() { if (wrap.classList.contains("thumb")) figOpenModal(groupId); }
     wrap.addEventListener("click", open);
     wrap.addEventListener("keydown", function (e) {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
@@ -1211,32 +1238,78 @@
     return block;
   }
 
+  // Figures accumulate rather than replace. Each answer that produces charts
+  // adds a group to the top of the panel, so the reading you asked about three
+  // questions ago is still there to compare against -- scrapping it on every
+  // turn meant the panel could only ever answer "what did I just ask?".
+  //
+  // Capped, unlike a chat transcript: every figure kept is a live Plotly
+  // instance in its own iframe, and an hour of questions would leave dozens
+  // animating at once. The oldest group past the cap is dropped, with the
+  // footer saying so rather than having figures quietly vanish.
+  var FIG_GROUP_CAP = 8;
+  var _figGroupSeq = 0;
+
   function figShowHtml(chartHtml, chartCaption, forecastHtml, forecastCaption, windowInfo) {
+    if (!chartHtml && !forecastHtml) return;
     STATE.figStatus = "ready";
     var content = $("fig-content");
-    content.innerHTML = "";
-    FIGS = [];
+    figClearPending();
+    var emptyState = content.querySelector(".fig-empty");
+    if (emptyState) emptyState.remove();
+
     // dataset readings render viz/render_window.py's taller 3-panel chart;
     // uploads render frontend/charts.py's shorter 2-panel one -- see the
     // natural sizes in FIG_SIZES above.
     var isUpload = !!(windowInfo && windowInfo.source === "upload");
-    FIGS.push({id: "fig-frame", html: chartHtml, caption: chartCaption,
-               w: FIG_SIZES.reading[0],
-               h: isUpload ? FIG_SIZES.upload[1] : FIG_SIZES.reading[1],
-               label: "the signal chart"});
+    var figs = [];
+    if (chartHtml) {
+      figs.push({html: chartHtml, caption: chartCaption,
+                 w: FIG_SIZES.reading[0],
+                 h: isUpload ? FIG_SIZES.upload[1] : FIG_SIZES.reading[1],
+                 label: "the signal chart"});
+    }
     if (forecastHtml) {
-      FIGS.push({id: "forecast-frame", html: forecastHtml, caption: forecastCaption,
+      figs.push({html: forecastHtml, caption: forecastCaption,
                  w: FIG_SIZES.forecast[0], h: FIG_SIZES.forecast[1],
                  label: "the forecast chart"});
     }
-    FIGS.forEach(function (f) {
-      content.appendChild(figTile(f.id, f.html, f.caption, f.w, f.h, f.label));
+
+    var gid = "figgroup-" + (++_figGroupSeq);
+    var title = figSubtitle(windowInfo);
+    var group = document.createElement("section");
+    group.className = "fig-group";
+    group.id = gid;
+    group.innerHTML =
+      '<div class="fig-group-head"><span class="fig-group-title"></span>' +
+      '<span class="fig-group-time narrow"></span></div>';
+    group.querySelector(".fig-group-title").textContent = title;
+    group.querySelector(".fig-group-time").textContent =
+      new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    FIG_GROUPS.push({id: gid, title: title, figs: figs});
+    figs.forEach(function (f, i) {
+      group.appendChild(figTile(gid + "-" + i, f.html, f.caption, f.w, f.h, f.label, gid));
     });
-    setFigStatus(figSubtitle(windowInfo));
+
+    // Newest on top: the answer just given is the one being read, and pushing
+    // it to the bottom would mean scrolling past history to reach it.
+    content.insertBefore(group, content.firstChild);
+    while (FIG_GROUPS.length > FIG_GROUP_CAP) {
+      var dropped = FIG_GROUPS.shift();
+      var el = document.getElementById(dropped.id);
+      if (el) el.remove();
+    }
+    $("fig-footer").textContent = FIG_GROUPS.length > 1
+      ? ("Showing the last " + FIG_GROUPS.length + " figures from this chat. "
+         + "Click any to enlarge.")
+      : "Click the figure to enlarge it.";
+
+    setFigStatus(title);
     if (STATE.pane === "hidden" && !paneByUser) STATE.pane = "rail";
     if (STATE.pane !== "open" && !paneByUser) STATE.pane = "open";
     applyLayout();
     figScaleThumbs();
+    content.scrollTop = 0;
   }
 
   // ================= figure modal =================
@@ -1244,18 +1317,23 @@
   // re-parented in the DOM reloads its srcdoc, which would reset the Plotly
   // animation and lose the "asked" frame the reader was on. Two independent
   // copies is cheaper than trying to preserve one.
-  function figOpenModal() {
+  function figOpenModal(groupId) {
+    var group = FIG_GROUPS.filter(function (g) { return g.id === groupId; })[0]
+                || FIG_GROUPS[FIG_GROUPS.length - 1];
+    if (!group) return;
     var body = $("fig-modal-body");
     body.innerHTML = "";
-    FIGS.forEach(function (f) {
+    group.figs.forEach(function (f) {
       var frame = document.createElement("iframe");
       frame.sandbox = "allow-scripts";
       frame.style.width = f.w + "px";
       frame.style.height = f.h + "px";
+      frame.dataset.w = f.w;
+      frame.dataset.h = f.h;
       frame.srcdoc = withHiddenButtons(f.html);
       body.appendChild(frame);
     });
-    $("fig-modal-status").textContent = $("fig-status").textContent;
+    $("fig-modal-status").textContent = group.title;
     $("fig-modal").classList.remove("hidden");
     $("fig-modal-close").focus();
   }
@@ -1272,10 +1350,37 @@
   });
   function figIdle() {
     STATE.figStatus = "none";
+    FIG_GROUPS = [];
+    figClearPending();
     $("fig-content").innerHTML = '<div class="fig-empty"><svg class="icon"><use href="#i-chart-spline"/></svg><span>No figure yet</span></div>';
     setFigStatus("No reading yet");
+    $("fig-footer").textContent =
+      "Figures from this chat collect here. They are not saved with chat history.";
     applyLayout();
   }
+
+  // The chart iframes measure their own document and post the real height back
+  // (see render_window.py's _IFRAME_CHROME). Without listening for it, the
+  // iframe stays at the estimated FIG_SIZES height while its content -- the
+  // colour key, the chart, and the select-to-inspect panel underneath -- is
+  // taller, so the iframe grew its own inner scrollbar next to the panel's.
+  // Two scrollbars side by side read as the figure being rendered twice.
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!d || d.type !== "iframe:height" || !d.height) return;
+    var frames = document.querySelectorAll("#fig-content iframe, #fig-modal-body iframe");
+    for (var i = 0; i < frames.length; i++) {
+      // Sandboxed srcdoc frames are opaque-origin, so identify the sender by
+      // its window object rather than by e.origin (which is just "null").
+      if (frames[i].contentWindow !== e.source) continue;
+      var h = Math.ceil(d.height);
+      if (Math.abs(h - parseFloat(frames[i].dataset.h || 0)) < 2) return;
+      frames[i].dataset.h = h;
+      frames[i].style.height = h + "px";
+      figScaleThumbs();
+      return;
+    }
+  });
 
   // ================= API =================
   // One call per turn: the server (frontend/turn.py via models/serve.py's
@@ -1362,20 +1467,23 @@
     renderChatGroups();
     setHeader(c.title, c.subtitle);
     clearThread();
-    var lastChart = null;
+    // Replay every charted answer, oldest first, so reopening a chat restores
+    // the same stack of figures it had rather than only its most recent one.
+    // figIdle() first: it resets FIG_GROUPS, so figures do not carry over from
+    // whichever chat was open before.
+    figIdle();
+    var charted = [];
     (c.messages || []).forEach(function (m) {
       if (m.role === "user") appendUserBubble(m.content);
       else {
         renderAnswer(m);
-        if (m.chart_html) lastChart = m;
+        if (m.chart_html || m.forecast_chart_html) charted.push(m);
       }
     });
-    if (lastChart) {
-      figShowHtml(lastChart.chart_html, lastChart.chart_caption,
-        lastChart.forecast_chart_html, lastChart.forecast_chart_caption, lastChart.window);
-    } else {
-      figIdle();
-    }
+    charted.forEach(function (m) {
+      figShowHtml(m.chart_html, m.chart_caption,
+        m.forecast_chart_html, m.forecast_chart_caption, m.window);
+    });
   }
 
   function clearAttachChip() {
