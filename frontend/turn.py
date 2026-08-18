@@ -24,11 +24,12 @@ process lifetime.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import functools
 import os
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import time
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (os.path.join(_REPO_ROOT, "models"),
@@ -48,7 +49,7 @@ import charts                                    # noqa: E402
 import extract                                   # noqa: E402
 import intent as intent_router                   # noqa: E402
 import interpret                                 # noqa: E402
-from llm import LLMError, chat                   # noqa: E402
+from llm import LLMError, chat, MODEL as llm_default_model  # noqa: E402
 from prompt import (build_facts_prompt, build_followup_prompt,  # noqa: E402
                     build_prompt,
                     compare_facts, describe_window, onset_facts,
@@ -77,49 +78,29 @@ _FORECAST_CHART_CAPTION = (
     "projects the trend forward; the shaded bands show the typical and 95% "
     "uncertainty range around that projection.")
 
-DEFAULT_MODEL = "llama3.2:3b"
+# Taken from llm.py rather than repeated: this was a second hardcoded
+# "llama3.2:3b" that every new session used, so changing the model in llm.py
+# alone had no effect on the app at all.
+DEFAULT_MODEL = llm_default_model
 
-# Chart rendering (render_window(), charts.forecast_figure()/raw_and_mdf_figure())
-# and the recommendation LLM call don't depend on the main answer's text, so
-# they're submitted here and only .result()-ed after the main chat() call --
-# on a CPU laptop the LLM call is the dominant cost (12-25s), and this hides
-# the ~2-6s of chart work and, when a recommendation is also requested, a
-# second full LLM call inside that window instead of adding them on top.
-_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="turn-bg")
+# Whether the model is loaded and the prompt prefix is cached. Read by
+# serve.py's /health so a caller can wait for the fast path instead of
+# guessing: a question asked before this flips is not just un-warmed, it
+# queues BEHIND the warm-up (Ollama serialises requests) and so comes back
+# slower than if there had been no warm-up at all.
+WARM: dict = {"ready": False, "error": None}
 
-
-def _resolve(future):
-    """.result() a background future, or pass through a plain value/None --
-    lets callers that skip the background path (no chart attempted) share
-    the same resolution call."""
-    if future is None:
-        return None
-    if hasattr(future, "result"):
-        try:
-            return future.result()
-        except Exception:
-            return None
-    return future
-
-
-def _safe_render_window(subject: int, t_start: float, side: str):
-    try:
-        return render_window(subject, t_start, side)
-    except Exception:
-        return None
-
-
-def _safe_forecast_figure(forecast: dict):
-    try:
-        return charts.forecast_figure(forecast)
-    except Exception:
-        return None
+# The whole follow-up, not per paragraph. The prompt asks for 2-4; 4 is the top
+# of that range rather than a target, and it is more than a reading gets (2)
+# because a follow-up is where the reader has asked to be told more.
+FOLLOWUP_MAX_SENTENCES = 4
 
 
 def new_session() -> dict:
     """Fresh per-chat state -- what st.session_state held per browser session."""
     return {
         "model": DEFAULT_MODEL,
+        "theme": "light",        # matches chatbot_ui.html's default until told otherwise
         "sample_rate": None,     # blank until the user states it
         "athlete_note": "",
         "uploads": {},           # key -> {"seg", "fs", "baseline", "name", "scan"}
@@ -151,6 +132,54 @@ def _subjects() -> list[int]:
         return available_subjects()
     except Exception:
         return list(range(1, 14))
+
+
+# Rebuilding the figure costs ~2.2 s even when the underlying segment is
+# already cached -- the time is Plotly assembling ~130 animation frames and
+# serialising them, not reading the data. Asking the same question twice (or
+# re-opening a chat) paid it again every time. Keyed on the three arguments
+# this module actually passes; render_window's `model_pred` is unhashable and
+# no longer drawn, which is why the cache lives here rather than on it.
+#
+# maxsize is small on purpose: each entry is a ~3.3 MB HTML string.
+@functools.lru_cache(maxsize=8)
+def _cached_chart(subject: int, t_start: float, side: str, theme: str) -> str:
+    return render_window(subject, t_start, side, theme=theme)
+
+
+# Loads the recording's samples alongside classify(), which does its own
+# loading of the same file -- run in sequence they cost ~1.2 s + ~1.1 s, and
+# started together the turn waits only for the longer. One worker: this is a
+# local demo server answering one question at a time, and any thread doing CPU
+# work here is competing with the Ollama process that generates the answer.
+_IO_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="segment")
+
+
+def render_chart_ref(session: dict, ref: dict, theme: str | None = None) -> str | None:
+    """Draw the figure a `chart_ref` points at, on demand.
+
+    Called by serve.py's GET /chart when the reader clicks "Show graph" --
+    the only place a reading chart is built. Returns None rather than raising
+    so a chart failure stays a missing picture, not a failed request.
+
+    `theme` is the UI's current light/dark setting. Explicit here rather than
+    read only from the session because the reader can flip the theme toggle
+    between asking a question and clicking "Show graph" -- serve.py passes
+    what the click actually requested; falling back to the session covers
+    callers (tests, older clients) that don't.
+    """
+    if not ref:
+        return None
+    theme = theme or session.get("theme", "dark")
+    if ref.get("source") == "upload":
+        cache = session["uploads"].get(session["last_upload"])
+        return _upload_chart(cache, theme) if cache else None
+    try:
+        return _cached_chart(int(ref["subject"]), float(ref["t_start"]),
+                             str(ref["side"]), theme)
+    except Exception:
+        return None
 
 
 @functools.lru_cache(maxsize=8)
@@ -522,8 +551,14 @@ def _followup_turn(session: dict, user_text: str) -> dict:
     facts = last.get("facts") or []
     return {"prompt": build_followup_prompt(
                 last.get("question") or "(their previous question)",
-                last["answer"], facts, user_text),
+                last["answer"], facts, user_text,
+                intent_router.followup_kind(user_text), last.get("who")),
             "facts": facts,
+            # What the answer must not simply say again, and the name to catch
+            # it under. Enforced in _finalize: the prompt forbids restating the
+            # previous answer and the model does it anyway.
+            "previous_answer": last["answer"],
+            "echo_who": last.get("who"),
             # A follow-up re-explains an answer that has already been shown, so
             # the figures IN that answer are legitimate to restate -- they were
             # rendered from measurements, not invented. Screened against the
@@ -534,11 +569,38 @@ def _followup_turn(session: dict, user_text: str) -> dict:
             "window": None, "user_text": user_text}
 
 
+def _who_from_window(window: dict | None) -> str | None:
+    """"Subject 11" / "This recording", for the answers that build no reading.
+
+    interpret.describe_reading only runs on a single-window reading, so the
+    onset, overview and comparison answers have no `who` -- and a follow-up on
+    one of them had nobody to name.
+    """
+    if not window:
+        return None
+    if window.get("source") == "upload":
+        return "This recording"
+    subject = window.get("subject")
+    return f"Subject {subject}" if subject is not None else None
+
+
 def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
     intent = intent_router.route(user_text)
 
     if intent.kind == intent_router.FOLLOWUP:
         return _followup_turn(session, user_text)
+
+    # "what can you tell me about the data" -- open-ended, names nothing. With
+    # a recording already under discussion the useful answer is a summary of
+    # THAT recording; with none, it is the catalogue of what exists. Resolved
+    # as a reading it inherited the previous subject and time and reprinted the
+    # previous answer, which is the least useful reply available.
+    if intent_router.asks_about_the_data(user_text):
+        subject = (previous or {}).get("subject")
+        if subject is None:
+            return _catalogue_text()
+        intent = intent_router.Intent(kind=intent_router.OVERVIEW,
+                                      subjects=[subject])
 
     if (intent.kind == intent_router.MENU and previous
             and previous.get("t_start") is not None):
@@ -594,36 +656,78 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
         return {"content": message}
 
     params = resolved.params
+
+    # The message named no subject, no time and no side, and what it resolved
+    # to is the window already answered directly above. Whatever it was asking,
+    # it was not "measure that again" -- so re-running classify() here can only
+    # reprint the same rendered verdict word for word, which is what "so what
+    # does this mean" and "what can u tell me about the data" both got before
+    # they were recognised by name.
+    #
+    # This is the catch-all behind those two. Routing will keep missing
+    # phrasings -- there are unlimited ways to ask a vague question and the
+    # regexes enumerate them one at a time -- but every miss lands here, where
+    # the previous answer is re-explained instead of reprinted. Anything that
+    # names a DIFFERENT window ("and at 90s?", "what about the left arm?")
+    # fails the check and takes the reading path exactly as before.
+    #
+    # Two things the reading path adds that a follow-up cannot, so a message
+    # asking for either is NOT just a question about the last answer even when
+    # it names no new window. "what should they do about it?" resolves to the
+    # same window and needs the recommendation built from it; "will they get
+    # more tired over the next minute?" resolves to the same window and needs
+    # the forecast. Sent to the follow-up path both came back as bare
+    # re-explanations with the thing they asked for missing.
+    asks_for_more = (wants_recommendation(user_text)
+                     or extract.extract_horizon_seconds(user_text,
+                                                        default=None) is not None)
+    if (not asks_for_more and session.get("last_answer")
+            and extract.named_nothing_new(params, previous)):
+        return _followup_turn(session, user_text)
+
     subject, t_start, side = params["subject"], params["t_start"], params["side"]
     notes = resolved.problems
     window = {"subject": subject, "t_start": t_start, "side": side,
               "source": "dataset", "carried_over": params.get("carried_over", []),
               "notes": notes}
+    # The chart is NOT drawn here. It used to be, on every single reading, and
+    # it was measurably not free even after being moved onto a background
+    # thread: a turn with a cold chart took 10.21 s against 8.27 s without one,
+    # and the model call inside it slowed from 7.25 s to 7.84 s. Plotly figure
+    # building is CPU work and it competes with the Ollama process generating
+    # the answer, on a box with no GPU. Most answers were also never looked at
+    # as a chart, so that was ~2 s and a 3.3 MB payload spent per question on
+    # something usually unwanted.
+    #
+    # What travels instead is a reference: enough to draw the figure later, if
+    # the reader asks. serve.py's GET /chart redeems it. See _chart_ref below.
+    seg_future = _IO_POOL.submit(_load_subject_segment, subject, side)
+
     try:
         result = classify(subject, t_start, side)
     except KeyError:
+        seg_future.cancel()
         return {"content": f"Subject {subject} has no stored fresh-baseline "
                            "calibration, so I can't classify their fatigue yet."}
     except Exception as e:
+        seg_future.cancel()
         return {"content": f"Couldn't classify that window: {e}"}
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
 
-    # Chart rendering runs in the background, in parallel with the LLM call
-    # that phrases the answer below (_finalize resolves these futures only
-    # after that call returns) -- classify()'s result is all the chart needs,
-    # nothing here depends on what the model says.
-    chart_future = _EXECUTOR.submit(_safe_render_window, subject, t_start, side)
-
-    seg, fs = _load_subject_segment(subject, side)
-    forecast, forecast_chart_future = _forecast(seg, fs, user_text, t_start)
+    seg, fs = seg_future.result()
+    forecast, forecast_chart_html = _forecast(
+        seg, fs, user_text, t_start, session.get("theme", "dark"))
     reading = _plain_reading(result, subject_reference(subject), t_start,
                              float(seg.t[-1]) if seg.t.size else None,
                              f"Subject {subject}")
 
     return {"features": result, "reading": reading,
-            "_chart_future": chart_future, "_chart_caption_text": _READING_CHART_CAPTION,
-            "_forecast_chart_future": forecast_chart_future, "forecast": forecast,
+            "chart_ref": {"source": "dataset", "subject": subject,
+                          "t_start": t_start, "side": side},
+            "chart_caption": _READING_CHART_CAPTION,
+            "forecast": forecast, "forecast_chart_html": forecast_chart_html,
+            "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
             "user_text": user_text, "window": window}
 
 
@@ -648,17 +752,17 @@ def _upload_turn(session: dict, user_text: str, uploaded_file) -> dict:
         session["uploads"][key] = cache
 
     session["last_upload"] = key
-    return _upload_question(user_text, cache)
+    return _upload_question(user_text, cache, session.get("theme", "dark"))
 
 
-def _upload_question(user_text: str, cache: dict) -> dict:
+def _upload_question(user_text: str, cache: dict, theme: str = "dark") -> dict:
     """Any question about an already-loaded uploaded recording."""
     intent = intent_router.route(user_text or "")
     if intent.kind in (intent_router.ONSET, intent_router.OVERVIEW):
         return _upload_analysis(user_text, cache, intent.kind)
     if intent.kind == intent_router.COMPARE:
         return _upload_compare(user_text, cache, intent)
-    return _upload_reading(user_text, cache)
+    return _upload_reading(user_text, cache, theme)
 
 
 def _upload_compare(user_text: str, cache: dict, intent) -> dict:
@@ -686,7 +790,7 @@ def _upload_compare(user_text: str, cache: dict, intent) -> dict:
 
     return {**_comparison_answer(comparison),
             "facts": compare_facts(comparison), "user_text": user_text,
-            "chart_html": _upload_chart(cache),
+            "chart_ref": {"source": "upload"},
             "window": {"source": "upload", "name": cache["name"],
                        "kind": "compare"}}
 
@@ -713,7 +817,7 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
         rendered = render_onset_answer(summary)
         if rendered:
             return {"content": rendered, "facts": onset_facts(summary),
-                    "user_text": user_text, "chart_html": _upload_chart(cache),
+                    "user_text": user_text, "chart_ref": {"source": "upload"},
                     "window": window}
     facts = (onset_facts(summary) if kind == intent_router.ONSET
              else overview_facts(summary))
@@ -728,19 +832,20 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
     return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
                                          instruction),
             "facts": facts, "user_text": user_text,
-            "chart_html": _upload_chart(cache), "window": window}
+            "chart_ref": {"source": "upload"}, "window": window}
 
 
-def _upload_chart(cache: dict):
+def _upload_chart(cache: dict, theme: str = "dark"):
     try:
         mdf_t, mdf_v, _ = data_loader.mdf_trend(cache["seg"], fs=cache["fs"])
         return charts.raw_and_mdf_figure(cache["seg"], mdf_t, mdf_v,
-                                         title=f"Uploaded: {cache['name']}")
+                                         title=f"Uploaded: {cache['name']}",
+                                         theme=theme)
     except Exception:
         return None
 
 
-def _upload_reading(user_text: str, cache: dict) -> dict:
+def _upload_reading(user_text: str, cache: dict, theme: str = "dark") -> dict:
     uploaded_name = cache["name"]
     seg, fs = cache["seg"], cache["fs"]
     duration = float(seg.t[-1]) if seg.t.size else 0.0
@@ -759,10 +864,7 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
         result["fatigue_label"], str(result["fatigue_label"]))
 
     notes = []
-    # Same background-rendering treatment as the dataset reading path above.
-    chart_future = _EXECUTOR.submit(_upload_chart, cache)
-
-    forecast, forecast_chart_future = _forecast(seg, fs, user_text, t_start)
+    forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start, theme)
     try:
         reference = upload_reference(cache["baseline"])
     except Exception:
@@ -771,21 +873,18 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
                              "This recording")
 
     return {"features": result, "reading": reading,
-            "_chart_future": chart_future, "_chart_caption_text": _UPLOAD_CHART_CAPTION,
-            "_forecast_chart_future": forecast_chart_future, "forecast": forecast,
+            "chart_ref": {"source": "upload"},
+            "chart_caption": _UPLOAD_CHART_CAPTION,
+            "forecast": forecast, "forecast_chart_html": forecast_chart_html,
+            "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
             "user_text": user_text,
             "window": {"t_start": t_start, "source": "upload",
                        "name": uploaded_name, "notes": notes}}
 
 
-def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
-    """Forecast only when the question actually asks about the future.
-
-    Returns (forecast_dict, forecast_chart_future) -- the numbers are needed
-    synchronously to build the LLM prompt below, but the chart built from
-    them isn't, so it's handed to _EXECUTOR and only resolved (see
-    _resolve()) after the LLM call.
-    """
+def _forecast(seg, fs: int, user_text: str, t_start: float | None = None,
+              theme: str = "dark"):
+    """Forecast only when the question actually asks about the future."""
     horizon = extract.extract_horizon_seconds(user_text, default=None)
     if horizon is None:
         return None, None
@@ -795,10 +894,17 @@ def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
         return None, None
     if not forecast.get("ok"):
         return forecast, None
-    return forecast, _EXECUTOR.submit(_safe_forecast_figure, forecast)
+    try:
+        return forecast, charts.forecast_figure(forecast, theme=theme)
+    except Exception:
+        return forecast, None
 
 
 def _finalize(session: dict, turn: dict) -> dict:
+    # Only the reading path starts a background chart, and it is joined at the
+    # very end of that path -- after the model call it was launched to overlap.
+    # Every other path resolves it here, immediately, so those turns behave
+    # exactly as they did before.
     if "prompt" in turn:
         try:
             content = chat([{"role": "user", "content": turn["prompt"]}],
@@ -820,16 +926,45 @@ def _finalize(session: dict, turn: dict) -> dict:
                 "I couldn't put that into words without quoting figures that "
                 "were never measured, so I've left it out rather than guess. "
                 "Ask again and I'll have another go.")
+            # A follow-up is the one answer printed directly beneath the answer
+            # it is about, so a sentence repeating that one is visibly wasted
+            # space. Both passes run before the trim, for the same reason the
+            # reading path strips before trimming: cutting to three sentences
+            # first spends the budget on the restatement and drops the part
+            # that actually answers the follow-up.
+            previous = turn.get("previous_answer")
+            if previous:
+                content = interpret.strip_verdict_echo(content,
+                                                       turn.get("echo_who"))
+                content = interpret.drop_repeated_sentences(content, previous)
+                # A follow-up may quote the figures from the answer it is
+                # re-explaining, which let through "66.8 Hz, which is still
+                # above the fresh level of 70.0 Hz" -- both figures real, the
+                # relation between them backwards.
+                content = interpret.drop_hertz_comparisons(content)
+                # A follow-up has no rate of change to work from -- that only
+                # exists on the forecast path, with its own facts -- but it
+                # produced "it will take approximately 12% of the total
+                # recording time before they reach a point where fatigue is
+                # likely" anyway: a confident projection built from nothing.
+                content = interpret.drop_projection_claims(content)
             # Same plain-language and length treatment the reading answers get
             # further down. Three sentences rather than two: an overview has a
             # start, an end and an onset to cover, and the numbers here ARE
             # the answer (they were measured), so only the wording is trimmed.
-            content = interpret.trim_sentences(interpret.plain_words(content), 3)
+            #
+            # A follow-up is capped across the whole answer as well. Nothing is
+            # appended around it -- unlike a reading, every paragraph here is
+            # the model's -- so the per-paragraph limit alone left it unbounded,
+            # and a request for 2-4 sentences came back as nine.
+            content = interpret.trim_sentences(
+                interpret.plain_words(content), 3,
+                total=FOLLOWUP_MAX_SENTENCES if previous else None)
         except LLMError as e:
             lines = readable_facts(turn.get("facts") or [])
             content = ("\n".join(f"- {line}" for line in lines)
                        + f"\n\n_Couldn't phrase this in prose: {e}_")
-        return {"content": content, "chart_html": turn.get("chart_html"),
+        return {"content": content, "chart_ref": turn.get("chart_ref"),
                 "chart_caption": turn.get("chart_caption"),
                 "forecast_chart_html": None, "forecast_chart_caption": None,
                 "recommendation": None, "facts": turn.get("facts"),
@@ -837,7 +972,7 @@ def _finalize(session: dict, turn: dict) -> dict:
 
     if "features" not in turn:
         return {"content": turn["content"],
-                "chart_html": turn.get("chart_html"),
+                "chart_ref": turn.get("chart_ref"),
                 "chart_caption": turn.get("chart_caption"),
                 "forecast_chart_html": None, "forecast_chart_caption": None,
                 "recommendation": None,
@@ -848,29 +983,13 @@ def _finalize(session: dict, turn: dict) -> dict:
 
     features, forecast, user_text = turn["features"], turn.get("forecast"), turn["user_text"]
     window = turn.get("window")
-    # The chart is rendering in the background (see the _EXECUTOR.submit call
-    # in _dataset_turn/_upload_reading); render_window()/​_upload_chart() only
-    # fail on the same errors classify() would already have raised, so
-    # assuming success here is safe in the near-total-majority case and lets
-    # this sentence be built without waiting on the chart. If it does fail,
-    # chart_html below resolves to None and the answer references a chart
-    # that isn't there -- cosmetic, not a correctness issue, and rare enough
-    # to accept for not serialising two independent pieces of work.
-    chart_shown = turn.get("_chart_future") is not None
+    # Whether a chart is available to the reader, not whether one is drawn:
+    # it is drawn only if they ask (GET /chart). Knowable exactly now, which
+    # the old background-render version could not manage -- it had to guess.
+    chart_shown = turn.get("chart_ref") is not None
 
     reading = turn.get("reading")
     verdict = (reading or {}).get("verdict")
-
-    # Independent of the main answer's content -- start it now so it runs
-    # alongside the chat() call below instead of after it.
-    recommendation_future = None
-    if wants_recommendation(user_text):
-        recommendation_future = _EXECUTOR.submit(
-            chat, [{"role": "user", "content": build_recommendation_prompt(
-                features, forecast, user_text,
-                session["athlete_note"] or None, turn.get("reading"))}],
-            model=session["model"], num_predict=300)
-
     try:
         prose = chat([{"role": "user",
                        "content": build_prompt(features, user_text, forecast,
@@ -880,6 +999,11 @@ def _finalize(session: dict, turn: dict) -> dict:
             who = (reading or {}).get("who")
             cleaned, invented = interpret.strip_invented_numbers(
                 interpret.strip_verdict_echo(prose, who), who)
+            # Coaching the reader never asked for, on a plain reading. Skipped
+            # when they DID ask -- the recommendation below is built for that
+            # deliberately, with its disclaimer, and this would gut it.
+            if not wants_recommendation(user_text):
+                cleaned = interpret.drop_advice(cleaned)
             # Trim last, after the echo and the invented figures are gone:
             # cutting to two sentences first would spend the budget on a
             # duplicate opening restatement and drop the real explanation.
@@ -902,9 +1026,13 @@ def _finalize(session: dict, turn: dict) -> dict:
                       f"_Couldn't phrase this in prose: {e}_")
 
     recommendation = None
-    if recommendation_future is not None:
+    if wants_recommendation(user_text):
         try:
-            suggestion = recommendation_future.result()
+            suggestion = chat(
+                [{"role": "user", "content": build_recommendation_prompt(
+                    features, forecast, user_text,
+                    session["athlete_note"] or None, turn.get("reading"))}],
+                model=session["model"])
             # The verdict leads here for the same reason it leads the main
             # answer: asked to restate it, the model opened the box with
             # "they are showing signs of fatigue" under a reading that said
@@ -917,15 +1045,12 @@ def _finalize(session: dict, turn: dict) -> dict:
         except LLMError as e:
             recommendation = f"[Recommendation unavailable: {e}]"
 
-    chart_html = _resolve(turn.get("_chart_future"))
-    chart_caption = turn.get("_chart_caption_text") if chart_html else None
-    forecast_chart_html = _resolve(turn.get("_forecast_chart_future"))
-    forecast_chart_caption = _FORECAST_CHART_CAPTION if forecast_chart_html else None
-
-    return {"content": content, "chart_html": chart_html,
-            "chart_caption": chart_caption,
-            "forecast_chart_html": forecast_chart_html,
-            "forecast_chart_caption": forecast_chart_caption,
+    # Both model calls are done; collect the chart that has been rendering
+    # alongside them. By now it is almost always already finished.
+    return {"content": content, "chart_ref": turn.get("chart_ref"),
+            "chart_caption": turn.get("chart_caption"),
+            "forecast_chart_html": turn.get("forecast_chart_html"),
+            "forecast_chart_caption": turn.get("forecast_chart_caption"),
             "recommendation": recommendation,
             "provenance": _provenance(window, features, reading),
             "features": features, "reading": turn.get("reading"),
@@ -1022,6 +1147,43 @@ def _note_unanswered(user_text: str, final: dict) -> None:
     final["suggestions"] = (final.get("suggestions") or []) + chips
 
 
+def warm_up() -> None:
+    """Load the model and prime Ollama's prompt cache before anyone asks.
+
+    Two separate costs land on the first question of a session and nowhere
+    else. Ollama loads the model off disk (~6.7 s), and it evaluates the whole
+    prompt from scratch (~15-19 s) because there is no previous prompt to share
+    a prefix with. Every question after that reuses both and pays ~2 s.
+
+    Sending one throwaway prompt at startup moves both onto the server's boot,
+    where nobody is waiting. The prompt is built by the real build_prompt() so
+    its long fixed preamble is byte-identical to what the first real question
+    will send -- a hand-written approximation would share no prefix and prime
+    nothing. num_predict=1 because only the prompt side needs warming; the
+    answer is discarded.
+
+    Never raises: Ollama may not be running, and a demo server that refuses to
+    start because a warm-up failed is worse than a slow first answer.
+    """
+    started = time.time()
+    try:
+        features = {"mdf_hz": 60.0, "fatigue_label": 1, "confidence": 0.9,
+                    "fatigue_state": "fatigue"}
+        primer = build_prompt(features, "warm up", None,
+                              {"subject": 1, "t_start": 0.0, "side": "R",
+                               "source": "dataset"}, None, True)
+        chat([{"role": "user", "content": primer}], num_predict=1, timeout=180)
+        WARM["ready"] = True
+        print(f"[warm-up] ready in {time.time() - started:.0f}s -- "
+              "answers should now take about 15s", flush=True)
+    except Exception as e:
+        # Cold is a valid state to serve in, it is just slower. Say so rather
+        # than leaving the reader wondering why the first answer took a minute.
+        WARM["error"] = str(e)
+        print(f"[warm-up] failed ({type(e).__name__}); the first question will "
+              "be slow but everything still works", flush=True)
+
+
 def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
     """The single entry point: one user turn in, one finalized answer out.
 
@@ -1042,9 +1204,17 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
         turn = _upload_turn(session, user_text, uploaded_file)
     else:
         cache = _followup_upload(session, user_text)
-        turn = (_upload_question(user_text, cache) if cache
+        turn = (_upload_question(user_text, cache, session.get("theme", "dark")) if cache
                 else _dataset_turn(session, user_text, session["last_params"]))
     final = _finalize(session, turn)
+    # A single choke point for every path through _finalize, rather than
+    # editing each rendered f-string in turn.py/prompt.py/recommend.py one at
+    # a time -- see interpret.strip_em_dashes. Also catches anything the
+    # model itself writes with a dash, which no per-string edit could.
+    if final.get("content"):
+        final["content"] = interpret.strip_em_dashes(final["content"])
+    if final.get("recommendation"):
+        final["recommendation"] = interpret.strip_em_dashes(final["recommendation"])
     if uploaded_file is None:
         _note_unanswered(user_text, final)
 
@@ -1062,6 +1232,17 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
             "answer": final["content"],
             "facts": (final.get("facts")
                       or (final.get("reading") or {}).get("lines")),
+            # "Subject 11" / "This recording" -- carried so a follow-up can be
+            # checked for opening by naming them and restating the verdict,
+            # which is what strip_verdict_echo catches on the reading path,
+            # and so the follow-up knows whose measurement it is describing.
+            #
+            # Only a reading builds one, so it is reconstructed from the window
+            # for the analysis answers. Without it a follow-up after "summarise
+            # subject 11" had nobody named and went back to "this result tells
+            # YOU that the muscle is fatigued" -- about somebody else's arm.
+            "who": ((final.get("reading") or {}).get("who")
+                    or _who_from_window(final.get("window"))),
         }
     window = final.get("window")
     if window and window.get("source") in ("upload", "dataset"):

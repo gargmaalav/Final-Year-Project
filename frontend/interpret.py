@@ -310,7 +310,10 @@ def verdict_sentence(reading: dict, who: str) -> str:
 
 
 _ECHO = re.compile(
-    r"(sign|signs) of fatigue|is (not )?fatigued|no signs? of|"
+    # "is fatigued" alone missed "This indicates they ARE fatigued", which was
+    # a paragraph of its own restating the rendered verdict and nothing else.
+    r"(sign|signs) of fatigue|(is|are|was|were|isn'?t|aren'?t) (not )?fatigued|"
+    r"no signs? of|"
     # "within their normal fresh range" is deliberately NOT here: a genuinely
     # useful answer opened "This reading falls within their normal fresh
     # range, indicating that ...", and the test for that caught this when it
@@ -367,15 +370,37 @@ def strip_verdict_echo(prose: str, who: str | None = None) -> str:
 # The lab-report words the model reaches for even when the prompt names them
 # as forbidden. Each maps to the phrase a person would actually say. Ordered
 # longest-first so "indicative of" is not half-matched by a shorter key.
+#
+# "indicating" is two different words. After a clause it is a connective and
+# "which means" is what a person would say there; after a verb it is an
+# ordinary participle, and swapping it produced "before the model would start
+# which means fatigue" -- observed live, and worse English than the jargon it
+# replaced. The connective sense is the one that follows a comma, so that is
+# what the comma-anchored entries above the bare one are for.
 _PLAIN_WORDS = [
     ("indicative of", "a sign of"),
     ("is indicative", "is a sign"),
+    (", indicating that", ", which means"),
+    (", indicating", ", which means"),
     ("indicating that", "which means"),
-    ("indicating", "which means"),
+    ("indicating", "showing"),
     ("deviation from", "change from"),
     ("deviation", "change"),
 ]
-_PLAIN_RE = [(re.compile(r'\b' + re.escape(k) + r'\b', re.IGNORECASE), v)
+
+
+def _word_bounded(key: str) -> str:
+    """\\b only where the key actually starts or ends on a word character.
+
+    ", indicating" opens on punctuation, and \\b there asserts a boundary
+    against whatever precedes the comma rather than against the key itself.
+    """
+    lead = r'\b' if key[:1].isalnum() else ''
+    tail = r'\b' if key[-1:].isalnum() else ''
+    return lead + re.escape(key) + tail
+
+
+_PLAIN_RE = [(re.compile(_word_bounded(k), re.IGNORECASE), v)
              for k, v in _PLAIN_WORDS]
 
 
@@ -405,8 +430,15 @@ def plain_words(prose: str) -> str:
 _SENTENCE_END = re.compile(r'(?<![0-9])([.!?])(?=\s|$)')
 
 
-def trim_sentences(prose: str, limit: int = 2) -> str:
+def trim_sentences(prose: str, limit: int = 2, total: int | None = None) -> str:
     """Keep at most `limit` sentences per paragraph of the model's prose.
+
+    `total` additionally caps the sentences across the WHOLE prose. The
+    per-paragraph limit is the right shape for the reading answers, where the
+    caller appends its own paragraphs around the model's -- but it puts no
+    ceiling on length at all when every paragraph is the model's own, which is
+    the follow-up case: asked for 2-4 sentences, it returned three paragraphs
+    of three and every one of them was under the per-paragraph limit.
 
     Asked for "1-3 short sentences", llama3.2:3b wrote four long ones; asked
     for "ONE or TWO", it still wrote three and padded the last with a summary
@@ -420,7 +452,12 @@ def trim_sentences(prose: str, limit: int = 2) -> str:
     """
     if not prose:
         return prose
-    out = []
+
+    # Split every paragraph into its complete sentences plus whatever trails
+    # after the last full stop. That trailing piece is an unfinished sentence:
+    # it appears when the model hits llm.NUM_PREDICT mid-thought and stops
+    # dead -- "...and their muscle signal is still with".
+    parsed = []
     for para in prose.split("\n\n"):
         stripped = para.strip()
         if not stripped:
@@ -428,17 +465,243 @@ def trim_sentences(prose: str, limit: int = 2) -> str:
         # Markdown bullets are a list, not prose -- counting "sentences"
         # across them would cut the list off mid-way.
         if stripped.startswith(("-", "*", "#", ">")):
-            out.append(stripped)
+            parsed.append((None, stripped))
             continue
         pieces, start = [], 0
         for m in _SENTENCE_END.finditer(stripped):
             pieces.append(stripped[start:m.end()].strip())
             start = m.end()
-        tail = stripped[start:].strip()
-        if tail:
-            pieces.append(tail)
-        out.append(" ".join(pieces[:limit]) if pieces else stripped)
+        parsed.append((pieces, stripped[start:].strip()))
+
+    # Whether ANY complete sentence survived anywhere in the answer -- not
+    # just in this paragraph. Judged across the whole prose because the model
+    # writes the cut-off sentence in its own paragraph as often as not: with
+    # the test applied per paragraph, "Muscles tire.\n\nAs the body's energy
+    # stores are depleted, fatigue sets in, causing a gradual decline in"
+    # kept the fragment, since that paragraph alone had nothing complete.
+    has_complete = any(p is not None and p for p, _ in parsed)
+
+    out, budget = [], total
+    for pieces, tail in parsed:
+        if pieces is None:            # a bullet list, passed through whole
+            out.append(tail)
+            continue
+        kept = list(pieces)
+        # Keep an unfinished sentence only when the alternative is showing
+        # nothing at all.
+        if tail and not has_complete:
+            kept.append(tail)
+        kept = kept[:limit]
+        if budget is not None:
+            if budget <= 0:
+                break                 # whole paragraphs, never a part of one
+            kept = kept[:budget]
+            budget -= len(kept)
+        if kept:
+            out.append(" ".join(kept))
     return "\n\n".join(out)
+
+
+# Words carrying no content, ignored when judging whether two sentences say
+# the same thing. Without this, two sentences about entirely different things
+# still share "the", "is", "of" and "their" and score as related.
+_STOPWORDS = frozenset(
+    "a an and are as at be been but by can could do does for from had has have "
+    "he her him his i if in into is it its me my not of on or our she so than "
+    "that the their them then there these they this to us was we were what "
+    "when which who will with would you your".split())
+
+# Above this share of the new sentence's content words already present in the
+# previous answer, it is a restatement. 0.8 rather than 0.5: at 0.5 a genuinely
+# new sentence about the same reading ("this sits well inside the range their
+# fresh recordings covered") was scored as a repeat, because a follow-up is
+# ABOUT the previous answer and is expected to reuse its subject matter.
+_REPEAT_SHARE = 0.8
+
+
+def _content_words(sentence: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9%]+", sentence.lower())
+            if w not in _STOPWORDS}
+
+
+def drop_repeated_sentences(prose: str, previous_answer: str) -> str:
+    """Remove sentences of a follow-up that only say the previous answer again.
+
+    A follow-up is handed the previous answer as context, and the likeliest
+    continuation of "here is an answer, now write about it" is that answer
+    again in different words. Asked "so what does this mean?" under a reading,
+    the model returned three paragraphs of which all three restated the
+    verdict -- factually perfect and worth nothing to the person who had just
+    read it and wanted to know what to do with it.
+
+    The prompt says not to (see prompt._FOLLOWUP_NEVER_RESTATE) and that only
+    half-holds, which is the same position the verdict, the banned vocabulary
+    and the answer length were all in before they were moved into code.
+
+    Judged on content-word overlap rather than wording, so a paraphrase is
+    caught along with a copy. Never returns empty: if every sentence is a
+    repeat the whole prose is handed back for the caller to deal with, because
+    showing a redundant answer beats showing none.
+    """
+    if not prose or not previous_answer:
+        return prose
+    seen = _content_words(previous_answer)
+    if not seen:
+        return prose
+
+    kept_paras = []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        if not para.strip():
+            continue
+        good = []
+        for sentence in re.split(r"(?<=[.!?])\s+", para.strip()):
+            words = _content_words(sentence)
+            # A sentence too short to carry an idea is judged on nothing and
+            # would always score 1.0; leave those to trim_sentences.
+            if len(words) >= 4 and len(words & seen) / len(words) >= _REPEAT_SHARE:
+                continue
+            good.append(sentence)
+        if good:
+            kept_paras.append(" ".join(good))
+    return "\n\n".join(kept_paras).strip() or prose
+
+
+# A hertz figure alongside a word placing it above or below something. This is
+# the one shape in a follow-up that can be factually wrong while every number
+# in it is real, so it is the one shape that gets removed.
+#
+# "rest of the sentence" has to step over a decimal point -- written as
+# [^.!?]* it stopped dead at the "." in "70.0 Hz", so the very sentence this
+# was built for ("would drop below 70.0 Hz") went straight through it.
+_REST = r"(?:[^.!?]|(?<=\d)\.(?=\d))*"
+_PLACES = (r"(?:above|below|higher|lower|greater|less|more|under|over|"
+           r"exceeds?|drops? to|falls? to)")
+_HZ_COMPARISON = re.compile(
+    r"\bHz\b(?=" + _REST + r"\b" + _PLACES + r"\b)|"
+    r"\b" + _PLACES + r"\b(?=" + _REST + r"\bHz\b)", re.IGNORECASE)
+
+
+def drop_hertz_comparisons(prose: str) -> str:
+    """Remove sentences that place one hertz figure above or below another.
+
+    A follow-up is allowed to quote the figures from the answer it is
+    re-explaining -- screened against the measured facts alone, every number
+    was stripped and the answers came back as dangling fragments. That let
+    through "their current signal is 66.8 Hz, which is still above the fresh
+    level of 70.0 Hz". Both figures are real and correctly attributed; the
+    relation between them is backwards. 66.8 is below 70.0.
+
+    Nothing is lost by removing it. Which way the reading has moved is
+    rendered in Python by verdict_sentence ("5% below their own fresh level")
+    and the pair itself is on the provenance line directly under the answer --
+    so the model has no reason to reconstruct the comparison in prose, and no
+    reliable way of doing it. Percentages, times and a lone hertz figure are
+    untouched.
+
+    Never returns empty, for the same reason drop_repeated_sentences does not.
+    """
+    if not prose or "hz" not in prose.lower():
+        return prose
+    kept = []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        good = [s for s in re.split(r"(?<=[.!?])\s+", para.strip())
+                if not _HZ_COMPARISON.search(s)]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip() or prose
+
+
+# A forward-looking claim about when or how fast fatigue will arrive. No rate
+# of change is measured anywhere on the follow-up path -- that only exists in
+# fatigue_forecast.py's own forecast, which is a different turn with its own
+# chart and its own facts, never handed to a follow-up. A follow-up asked "so
+# what does this mean" produced "it will take approximately 12% of the total
+# recording time before they reach a point where fatigue is likely" -- a
+# specific, confident projection built from nothing: no rate was measured, no
+# trend was fit, and the 12% is not a value the follow-up was ever given.
+_PROJECTION = re.compile(
+    r"\b(?:will take|before (?:they|it|the signal|the (?:muscle|reading))|"
+    r"at (?:this|the current) rate|if this (?:trend |pattern )?continues|"
+    r"continu(?:es|ing) at this rate|how (?:soon|long)|"
+    r"(?:is |are )?(?:projected|expected) to (?:reach|become|hit)|"
+    r"likely to reach|in the next (?:few )?(?:seconds?|minutes?)|"
+    r"reach(?:es)? (?:a point|the point|fatigue) (?:where|in)|"
+    r"until (?:they|it) (?:become|reach|hit))\b", re.IGNORECASE)
+
+
+def drop_projection_claims(prose: str) -> str:
+    """Remove sentences predicting when fatigue will arrive.
+
+    Distinct from drop_hertz_comparisons: those sentences state a real
+    relationship backwards, this one states a rate of change that was never
+    computed at all. "How far this reading is from the threshold" (the
+    measured drop_percent/band) is fine and left alone -- it is "how long
+    until it gets there" that has nothing behind it.
+
+    Never returns empty, for the same reason drop_hertz_comparisons does not.
+    """
+    if not prose:
+        return prose
+    kept = []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        good = [s for s in re.split(r"(?<=[.!?])\s+", para.strip())
+                if not _PROJECTION.search(s)]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip() or prose
+
+
+# Telling the reader to DO something. Two halves, and a sentence needs both:
+# a directive construction, and a thing to do that this measurement says
+# nothing about. "They should keep going" is advice; "the signal should be
+# read against their own baseline" is not, and only the first has a verb from
+# the second list.
+_DIRECTIVE = re.compile(
+    r"\b(should|shouldn'?t|ought to|need(?:s)? to|must|may want to|"
+    r"might want to|may need to|consider|try to|make sure|be sure to|"
+    r"it(?:'s| is) (?:important|advisable|worth) to|"
+    r"(?:i|we|you) (?:recommend|suggest|advise))\b", re.IGNORECASE)
+_ADVICE_TOPIC = re.compile(
+    r"\b(rest|resting|break|breaks|stop|stopping|pause|recover|recovery|"
+    r"hydrat\w+|drink|water|pace|pacing|slow down|ease off|back off|"
+    r"grip|technique|form|posture|intensity|workload|train\w*|exercis\w*|"
+    r"warm up|cool down|stretch\w*|sleep|nutrition|adjust\w*)\b",
+    re.IGNORECASE)
+
+
+def drop_advice(prose: str) -> str:
+    """Remove sentences telling the reader what to do about the reading.
+
+    A plain reading question got "they should take regular breaks to rest and
+    recover during exercise" and "you may need to adjust your grip or
+    technique to maintain control". Nothing in an EMG window measures whether
+    a break, a grip change or a lighter session is warranted -- the model is
+    filling a gap with generic coaching, and it reads as though the
+    measurement supports it.
+
+    This is only for answers where no recommendation was asked for. When one
+    IS asked for, recommend.py builds it deliberately, with its disclaimer,
+    and this must not run over that.
+
+    Unlike drop_hertz_comparisons/drop_projection_claims, THIS is allowed to
+    return empty: the caller (turn.py's _finalize) already falls back to the
+    rendered verdict alone when the cleaned prose is blank -- "if cleaned else
+    verdict". Falling back to the unfiltered prose here instead, as this used
+    to, defeats the entire point on the exact case this function exists for:
+    asked "and at 90s?", the model's whole added paragraph was "they will
+    likely need to adjust their grip or technique soon" with nothing else in
+    it, so removing it emptied the paragraph and the old fallback handed the
+    advice straight back.
+    """
+    if not prose:
+        return prose
+    kept = []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        good = [s for s in re.split(r"(?<=[.!?])\s+", para.strip())
+                if not (_DIRECTIVE.search(s) and _ADVICE_TOPIC.search(s))]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip()
 
 
 def strip_invented_numbers(prose: str, who: str | None = None) -> tuple[str, list[str]]:
@@ -494,3 +757,24 @@ def technical_line(reading: dict) -> str:
     if reading["confidence"] is not None:
         bits.append(f"confidence {reading['confidence'] * 100:.1f}%")
     return " · ".join(bits)
+
+
+# Every rendered string in this project reaches for an em dash the way the
+# comments do -- "the two are different lengths -- these are efforts of very
+# different durations" -- and it is exactly the punctuation that reads as
+# machine-written once it is in a chat bubble rather than a code comment. A
+# single choke point at the end of turn.py's handle_turn catches these
+# hand-written strings AND anything the model itself writes, rather than
+# editing every f-string in prompt.py/turn.py/recommend.py one at a time and
+# missing the next one that gets added.
+def strip_em_dashes(text: str) -> str:
+    """Replace em/en dashes with a comma everywhere in `text`."""
+    if not text:
+        return text
+    text = re.sub(r"\s*[–—]\s*", ", ", text)
+    # A run this produces ("word, , word" from two dashes in a row, or a
+    # trailing ", " right before punctuation) is cleaned up rather than left
+    # as a tell of its own.
+    text = re.sub(r",\s*,", ",", text)
+    text = re.sub(r",\s*([.!?])", r"\1", text)
+    return text

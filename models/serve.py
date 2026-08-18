@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -52,11 +53,47 @@ _UI_PATH = os.path.join(REPO_ROOT, "viz", "chatbot_ui.html")
 # chat) is an acceptable substitute for what was st.session_state.
 SESSIONS: dict[str, dict] = {}
 
+# turn_endpoint is a sync `def`, which FastAPI runs in a threadpool -- so two
+# /turn calls for the SAME session_id can run on different threads at once.
+# The UI now disables the input while a turn is in flight, which is the fix
+# that stops this happening in the normal case, but this is the fix that
+# makes it safe regardless: without it, three messages sent before the first
+# one's ~15s answer came back all read session["last_params"] before that
+# first call had written its result -- "and at 90s?", then "what should they
+# do about it?" and "will they get more tired?" both answered from the stale
+# 60s window as if "and at 90s?" had never happened. Locking only the
+# registry lookup would not have helped; the race is inside handle_turn
+# itself, so the lock has to wrap that whole call, one per session_id so
+# unrelated chats never wait on each other.
+_SESSION_LOCKS: dict[str, threading.Lock] = {}
+_REGISTRY_LOCK = threading.Lock()
+
 
 def _session(session_id: str) -> dict:
-    if session_id not in SESSIONS:
-        SESSIONS[session_id] = turn_engine.new_session()
-    return SESSIONS[session_id]
+    with _REGISTRY_LOCK:
+        if session_id not in SESSIONS:
+            SESSIONS[session_id] = turn_engine.new_session()
+        return SESSIONS[session_id]
+
+
+def _session_lock(session_id: str) -> threading.Lock:
+    with _REGISTRY_LOCK:
+        if session_id not in _SESSION_LOCKS:
+            _SESSION_LOCKS[session_id] = threading.Lock()
+        return _SESSION_LOCKS[session_id]
+
+
+@app.on_event("startup")
+def _warm_ollama() -> None:
+    """Pay the first-question costs at boot instead of in front of the reader.
+
+    Loading the model and evaluating the prompt for the first time together
+    cost ~20 s on the opening question and ~2 s on every one after. Done in a
+    daemon thread so the server still binds its port immediately -- a question
+    asked during the warm-up is not blocked by it, it just does not benefit.
+    """
+    threading.Thread(target=turn_engine.warm_up, daemon=True,
+                     name="ollama-warmup").start()
 
 
 class _UploadShim:
@@ -100,27 +137,39 @@ def list_models_endpoint():
 @app.post("/turn")
 def turn_endpoint(session_id: str = Form(...), user_text: str = Form(""),
                   model: str = Form(""), sample_rate: float | None = Form(None),
-                  athlete_note: str = Form(""), file: UploadFile | None = File(None)):
+                  athlete_note: str = Form(""), theme: str = Form(""),
+                  file: UploadFile | None = File(None)):
     """One user turn in, one finalized answer out -- see frontend/turn.py."""
     session = _session(session_id)
-    if model:
-        session["model"] = model
-    session["sample_rate"] = sample_rate
-    session["athlete_note"] = athlete_note or ""
 
     uploaded = None
     if file is not None and file.filename:
         raw = _run_sync(file.read())
         uploaded = _UploadShim(file.filename, raw)
 
-    final = turn_engine.handle_turn(session, user_text, uploaded)
+    # Everything that reads or writes this session's state, serialised per
+    # session_id -- see _SESSION_LOCKS' comment. Two /turn calls for
+    # DIFFERENT sessions never wait on each other.
+    with _session_lock(session_id):
+        if model:
+            session["model"] = model
+        session["sample_rate"] = sample_rate
+        session["athlete_note"] = athlete_note or ""
+        # The theme toggle lives entirely client-side; a chart built for this
+        # turn (the forecast chart, embedded straight in this response) needs
+        # to match it, so the UI reports its current theme on every turn
+        # rather than only when it changes.
+        if theme in ("light", "dark"):
+            session["theme"] = theme
+
+        final = turn_engine.handle_turn(session, user_text, uploaded)
     # Only the JSON-safe, UI-relevant subset -- "features"/"forecast" carry
     # numpy scalars the model already used to build chart_html and content,
     # so the UI has no need of them raw and they aren't JSON-serialisable
     # as-is.
     return {
         "content": final.get("content"),
-        "chart_html": final.get("chart_html"),
+        "chart_ref": final.get("chart_ref"),
         "chart_caption": final.get("chart_caption"),
         "forecast_chart_html": final.get("forecast_chart_html"),
         "forecast_chart_caption": final.get("forecast_chart_caption"),
@@ -140,6 +189,32 @@ def _run_sync(coro):
     return asyncio.run(coro)
 
 
+@app.post("/chart")
+def chart_endpoint(session_id: str = Form(...), source: str = Form("dataset"),
+                   subject: int | None = Form(None),
+                   t_start: float | None = Form(None),
+                   side: str = Form("R"), theme: str = Form("")):
+    """Draw one figure, on request.
+
+    Charts used to be rendered for every reading whether or not anyone looked
+    at one. Measured, that cost ~2 s and a 3.3 MB payload per answer, and it
+    was not free even on a background thread -- Plotly figure building is CPU
+    work competing with the Ollama process generating the answer on a machine
+    with no GPU (a turn with a cold chart took 10.2 s against 8.3 s without).
+    So POST /turn now returns a `chart_ref` describing what COULD be drawn,
+    the UI shows a "Show graph" button, and this route runs only when it is
+    pressed.
+    """
+    ref = {"source": source, "subject": subject, "t_start": t_start,
+           "side": side}
+    html = turn_engine.render_chart_ref(
+        _session(session_id), ref, theme if theme in ("light", "dark") else None)
+    if html is None:
+        raise HTTPException(status_code=404,
+                            detail="That figure could not be drawn.")
+    return {"chart_html": html}
+
+
 @app.get("/classify")
 def classify_endpoint(subject: int, t_start: float, side: str = "R"):
     """Return {mdf_hz, fatigue_label, confidence, fatigue_state} for one window."""
@@ -157,7 +232,23 @@ def classify_endpoint(subject: int, t_start: float, side: str = "R"):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Liveness plus readiness.
+
+    "ok" means the port is open; "warm" means the model is loaded and the
+    prompt prefix is cached, which is the difference between a ~13 s answer
+    and a ~27 s one. They are reported separately because a question asked
+    while warm-up is still running queues behind it -- so "wait for warm"
+    is real advice, not a nicety. See frontend/turn.py's warm_up().
+    """
+    from llm import TRUNCATIONS, NUM_PREDICT  # noqa: E402
+    return {"status": "ok",
+            "warm": bool(turn_engine.WARM.get("ready")),
+            "warm_error": turn_engine.WARM.get("error"),
+            # Answers cut off by the token cap since this process started.
+            # Expected to stay 0; a non-zero count means NUM_PREDICT is too
+            # low for some real question. See frontend/llm.py.
+            "token_cap": NUM_PREDICT,
+            "answers_truncated": len(TRUNCATIONS)}
 
 
 if __name__ == "__main__":

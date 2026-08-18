@@ -105,7 +105,6 @@
   .theme-pill.selected { background: var(--surface); color: var(--text-1); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
   #settings-btn { display: flex; align-items: center; gap: 9px; border-radius: 3px; padding: 8px 10px; font-size: 13px; color: var(--text-2); transition: background 120ms ease, color 120ms ease; width: 100%; text-align: left; }
   #settings-btn:hover { background: var(--bg-2); color: var(--text-1); }
-  #disclaimer { font-size: 11px; line-height: 1.55; color: var(--text-3); padding: 0 10px; }
 
   /* ---------- main column ---------- */
   #main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-0); }
@@ -114,23 +113,9 @@
   #header-title { flex: none; max-width: 100%; font-size: 16px; font-weight: 600; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #header-sub { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #header-right { flex: none; display: flex; align-items: center; gap: 8px; }
-  #model-btn { display: flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 3px; padding: 6px 10px; font-size: 12.5px; color: var(--text-2); transition: border-color 120ms ease, background 120ms ease; }
-  #model-btn:hover { border-color: var(--border-strong); background: var(--bg-1); }
-  #model-btn.open { border-color: var(--border-strong); }
-  #model-btn .name { font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 12px; color: var(--text-1); max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #model-btn svg { font-size: 14px; color: var(--text-3); }
   #show-figures-btn { width: 30px; height: 30px; border-radius: 3px; font-size: 16px; }
   #show-figures-btn:hover { background: var(--bg-1); color: var(--text-1); }
   #show-figures-btn.hidden { display: none; }
-
-  #model-popover { position: absolute; top: 58px; right: 40px; z-index: 5; width: 230px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 3px; padding: 6px; box-shadow: var(--shadow); animation: emg-in 160ms cubic-bezier(.25,1,.3,1); }
-  #model-popover.hidden { display: none; }
-  .model-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 2px; transition: background 120ms ease; width: 100%; text-align: left; }
-  .model-row:hover { background: var(--bg-2); }
-  .model-row svg { font-size: 14px; color: transparent; }
-  .model-row.selected svg { color: var(--accent); }
-  .model-row .name { flex: 1; min-width: 0; font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 12.5px; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .model-row .note { font-size: 11px; color: var(--text-3); }
 
   #thread { flex: 1; padding: 24px 40px; display: flex; flex-direction: column; gap: 26px; overflow-y: auto; }
   #empty-state { max-width: 640px; margin: auto 0; display: flex; flex-direction: column; gap: 24px; animation: emg-in 260ms cubic-bezier(.25,1,.3,1); }
@@ -464,7 +449,6 @@
         <button id="theme-dark" class="theme-pill"><svg class="icon"><use href="#i-moon"/></svg>Dark</button>
       </div>
       <button id="settings-btn"><svg class="icon"><use href="#i-settings"/></svg><span>Settings</span></button>
-      <div id="disclaimer">Educational final-year project demo. Not medical advice.</div>
     </div>
   </div>
 
@@ -475,10 +459,8 @@
         <div id="header-sub">Research dataset, subjects 1&ndash;13</div>
       </div>
       <div id="header-right">
-        <button id="model-btn" aria-label="Choose model"><span class="name" id="model-btn-name">&nbsp;</span><svg class="icon"><use href="#i-chevron-down"/></svg></button>
         <button id="show-figures-btn" class="icon-btn hidden" title="Show figures" aria-label="Show figures"><svg class="icon"><use href="#i-panel-right-open"/></svg></button>
       </div>
-      <div id="model-popover" class="hidden"></div>
     </div>
 
     <div id="thread">
@@ -560,17 +542,29 @@
   var STATE = {
     theme: "light",
     sidebar: "open",   // open | rail
-    pane: "open",      // open | rail | hidden
+    // Closed until asked for. Nothing is drawn until "Show graph" is pressed
+    // (POST /chart), so an open panel on load would be an empty frame taking
+    // a third of the window to say "No figure yet". It opens on that click
+    // and stays open from then on.
+    pane: "hidden",    // open | rail | hidden
     full: false,
     vw: window.innerWidth,
     search: "",
     chats: [],
     activeChatId: null,
     pendingFile: null,
-    model: null,
-    models: [],
+    activeChartRef: null,  // {ref, caption, windowInfo, groupId} of the ref-based
+                            // chart on screen, so a theme toggle can redraw it
     figStatus: "none",  // none | loading | ready
-    paneW: 452          // user-resizable; clamped to [PANE_MIN, PANE_MAX]
+    paneW: 452,         // user-resizable; clamped to [PANE_MIN, PANE_MAX]
+    // Nothing here used to stop a second message going out while the first
+    // was still awaiting its ~15s LLM answer -- POST /turn for the same
+    // session_id then ran concurrently, and the session state each read
+    // (last_params, last_answer) could be the one from BEFORE the earlier
+    // turn had finished writing it back. serve.py now also locks per
+    // session, but this is the fix that stops the race from happening at
+    // all rather than only serialising it after it starts.
+    busy: false
   };
   var sidebarByUser = false;
   var paneByUser = false;
@@ -593,6 +587,7 @@
     STATE.theme = t;
     try { localStorage.setItem("emg_theme", t); } catch (e) {}
     applyTheme();
+    redrawActiveChart();
   }
   (function initTheme() {
     var saved = null;
@@ -619,7 +614,13 @@
 
     $("fig-rail").classList.toggle("hidden", STATE.pane !== "rail");
     $("fig-pane").classList.toggle("hidden", STATE.pane !== "open");
-    $("show-figures-btn").classList.toggle("hidden", STATE.pane !== "hidden");
+    // The way back to a closed panel, shown only once there is something in
+    // it. With the panel now closed by default, an always-visible button
+    // would sit in the header from load offering to open an empty frame.
+    // (FIG_GROUPS is declared further down; `var` hoists the name but not the
+    // value, so guard against applyLayout running before that line does.)
+    $("show-figures-btn").classList.toggle(
+      "hidden", STATE.pane !== "hidden" || !(FIG_GROUPS || []).length);
 
     if (STATE.pane === "open") {
       $("fig-pane").classList.toggle("fullscreen", STATE.full);
@@ -655,12 +656,15 @@
   function onResize() {
     var w = window.innerWidth;
     STATE.vw = w;
+    // Width only ever narrows the panel, never opens it. "hidden" is the
+    // resting state now, so a rule widening hidden -> rail would put an empty
+    // panel back on screen the moment the window was resized, undoing the
+    // whole point of it being closed until asked for.
     if (w < 1280 && !paneByUser && STATE.pane === "open") STATE.pane = "rail";
     if (w >= 1280 && !paneByUser && STATE.pane === "rail") STATE.pane = "open";
     if (w < 1100 && !sidebarByUser && STATE.sidebar === "open") STATE.sidebar = "rail";
     if (w >= 1100 && !sidebarByUser && STATE.sidebar === "rail") STATE.sidebar = "open";
     if (w < 780 && !paneByUser && STATE.pane !== "hidden") STATE.pane = "hidden";
-    if (w >= 780 && !paneByUser && STATE.pane === "hidden") STATE.pane = "rail";
     applyLayout();
   }
   window.addEventListener("resize", onResize);
@@ -755,52 +759,6 @@
     });
   })();
 
-  // ================= models =================
-  function loadModels() {
-    fetch(API + "/models").then(function (r) { return r.json(); }).then(function (j) {
-      STATE.models = j.models || [];
-      STATE.model = j.default || STATE.models[0] || null;
-      renderModelButton();
-    }).catch(function () {
-      STATE.models = ["llama3.1:8b"];
-      STATE.model = "llama3.1:8b";
-      renderModelButton();
-    });
-  }
-  function renderModelButton() {
-    $("model-btn-name").textContent = STATE.model || "model";
-  }
-  function renderModelPopover() {
-    var pop = $("model-popover");
-    pop.innerHTML = "";
-    STATE.models.forEach(function (name) {
-      var row = document.createElement("button");
-      row.className = "model-row" + (name === STATE.model ? " selected" : "");
-      row.innerHTML = '<svg class="icon"><use href="#i-check"/></svg><span class="name narrow"></span><span class="note"></span>';
-      row.querySelector(".name").textContent = name;
-      row.querySelector(".note").textContent = name === STATE.model ? "current" : "";
-      row.addEventListener("click", function () {
-        STATE.model = name;
-        renderModelButton();
-        closeModelPopover();
-      });
-      pop.appendChild(row);
-    });
-  }
-  var modelOpen = false;
-  function toggleModelPopover() {
-    modelOpen = !modelOpen;
-    if (modelOpen) renderModelPopover();
-    $("model-popover").classList.toggle("hidden", !modelOpen);
-    $("model-btn").classList.toggle("open", modelOpen);
-  }
-  function closeModelPopover() {
-    modelOpen = false;
-    $("model-popover").classList.add("hidden");
-    $("model-btn").classList.remove("open");
-  }
-  $("model-btn").addEventListener("click", function (e) { e.stopPropagation(); toggleModelPopover(); });
-
   // ================= settings popover =================
   var settingsOpenManually = false;
   function setSettingsOpen(open) {
@@ -813,7 +771,6 @@
     if (!$("settings-popover").classList.contains("hidden") && !$("settings-popover").contains(e.target) && e.target !== $("settings-btn") && !$("settings-btn").contains(e.target)) {
       setSettingsOpen(false);
     }
-    if (modelOpen && !$("model-popover").contains(e.target) && !$("model-btn").contains(e.target)) closeModelPopover();
   });
   $("clear-history").addEventListener("click", function () {
     STATE.chats = [];
@@ -1055,6 +1012,16 @@
       wrap.appendChild(rec);
     }
 
+    // Drawing the figure is the single most expensive thing the server does
+    // per answer (~2 s of CPU competing with the model, 3.3 MB of HTML), and
+    // most answers are read without anyone looking at a chart. So the answer
+    // carries a reference and this button redeems it -- nothing is rendered
+    // until it is pressed.
+    if (final.chart_ref) {
+      wrap.appendChild(showGraphButton(final.chart_ref, final.chart_caption,
+                                       final.window));
+    }
+
     if (final.provenance) {
       var prov = document.createElement("div");
       prov.className = "reading-provenance";
@@ -1126,6 +1093,47 @@
     appendToThread(wrap);
   }
 
+  // A button per answer that has a figure available. Fetches it on click,
+  // shows its own progress (the render takes a couple of seconds), then hands
+  // the result to the figures panel. Stays disabled afterwards with the label
+  // changed, so a second click cannot queue a second identical render.
+  function showGraphButton(ref, caption, windowInfo) {
+    var row = document.createElement("div");
+    row.className = "reading-actions";
+    var btn = document.createElement("button");
+    btn.className = "suggestion";
+    btn.innerHTML = '<svg class="icon" style="font-size:13px;display:inline-block;vertical-align:-2px;margin-right:6px"><use href="#i-chart-spline"/></svg>Show graph';
+    btn.addEventListener("click", function () {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = "Drawing the graph…";
+      var fd = new FormData();
+      fd.append("session_id", STATE.activeChatId || "default");
+      fd.append("source", ref.source || "dataset");
+      if (ref.subject != null) fd.append("subject", ref.subject);
+      if (ref.t_start != null) fd.append("t_start", ref.t_start);
+      if (ref.side) fd.append("side", ref.side);
+      fd.append("theme", STATE.theme || "light");
+      openPane();
+      figLoading();
+      fetch(API + "/chart", {method: "POST", body: fd}).then(function (r) {
+        if (!r.ok) throw new Error("chart request failed");
+        return r.json();
+      }).then(function (j) {
+        var gid = figShowHtml(j.chart_html, caption, null, null, windowInfo);
+        STATE.activeChartRef = {ref: ref, caption: caption, windowInfo: windowInfo, groupId: gid};
+        btn.textContent = "Graph shown";
+      }).catch(function () {
+        figClearPending();
+        figRestoreStatus();
+        btn.disabled = false;
+        btn.textContent = "Show graph (retry)";
+      });
+    });
+    row.appendChild(btn);
+    return row;
+  }
+
   // ================= figures pane =================
   function setFigStatus(t) { $("fig-status").textContent = t; }
   // Name what's actually on screen ("Subject 13 - 60s, right") rather than
@@ -1164,8 +1172,8 @@
     content.insertBefore(pending, content.firstChild);
     content.scrollTop = 0;
     setFigStatus("Working on it");
-    if (STATE.pane === "hidden") { /* leave hidden; header button will surface it */ }
-    else if (STATE.pane !== "open" && !paneByUser) { STATE.pane = "open"; }
+    // No opening from here. figLoading() now only runs after "Show graph" has
+    // been pressed, and that handler opens the panel itself.
     applyLayout();
   }
   // The Play/Pause/Jump-to-asked-time/Reset-zoom row is a Plotly updatemenu
@@ -1323,11 +1331,43 @@
       : "Click the figure to enlarge it.";
 
     setFigStatus(title);
-    if (STATE.pane === "hidden" && !paneByUser) STATE.pane = "rail";
-    if (STATE.pane !== "open" && !paneByUser) STATE.pane = "open";
+    // Deliberately does NOT open the panel. Reading charts get here only via
+    // the "Show graph" button, which opens it first; forecast charts get here
+    // with the answer, and those must not shove a panel onto the screen
+    // nobody asked for -- the header's figures button surfaces them instead.
     applyLayout();
     figScaleThumbs();
     content.scrollTop = 0;
+    return gid;
+  }
+
+  // Re-fetches a dataset/upload chart already on screen with the current
+  // theme and swaps it in place -- without this, toggling light/dark only
+  // affected charts drawn AFTER the toggle, so a chart opened before it kept
+  // rendering in whatever theme was active when "Show graph" was pressed.
+  // Only the ref-based chart (dataset/upload, via POST /chart) can be
+  // re-drawn this way; a forecast chart is baked into its /turn response with
+  // no redraw endpoint of its own, so it is left as-is until the next answer.
+  function redrawActiveChart() {
+    var info = STATE.activeChartRef;
+    if (!info) return;
+    var group = FIG_GROUPS.filter(function (g) { return g.id === info.groupId; })[0];
+    if (!group || !group.figs[0]) return;
+    var fd = new FormData();
+    fd.append("session_id", STATE.activeChatId || "default");
+    fd.append("source", info.ref.source || "dataset");
+    if (info.ref.subject != null) fd.append("subject", info.ref.subject);
+    if (info.ref.t_start != null) fd.append("t_start", info.ref.t_start);
+    if (info.ref.side) fd.append("side", info.ref.side);
+    fd.append("theme", STATE.theme || "light");
+    fetch(API + "/chart", {method: "POST", body: fd}).then(function (r) {
+      if (!r.ok) throw new Error("chart request failed");
+      return r.json();
+    }).then(function (j) {
+      group.figs[0].html = j.chart_html;
+      var frame = document.getElementById(info.groupId + "-0");
+      if (frame) frame.srcdoc = withHiddenButtons(j.chart_html);
+    }).catch(function () {});   // theme is cosmetic -- a failed redraw just leaves the old one up
   }
 
   // ================= figure modal =================
@@ -1430,7 +1470,7 @@
     var fd = new FormData();
     fd.append("session_id", sessionId);
     fd.append("user_text", userText || "");
-    fd.append("model", STATE.model || "");
+    fd.append("theme", STATE.theme || "light");
     var sampleRate = $("sample-rate").value ? parseFloat($("sample-rate").value) : null;
     if (sampleRate) fd.append("sample_rate", sampleRate);
     var note = $("athlete-note") ? $("athlete-note").value : "";
@@ -1502,21 +1542,22 @@
     renderChatGroups();
     setHeader(c.title, c.subtitle);
     clearThread();
-    // Replay every charted answer, oldest first, so reopening a chat restores
-    // the same stack of figures it had rather than only its most recent one.
     // figIdle() first: it resets FIG_GROUPS, so figures do not carry over from
-    // whichever chat was open before.
+    // whichever chat was open before. Reading charts are NOT replayed -- each
+    // answer keeps its "Show graph" button, so reopening a chat costs nothing
+    // and any figure that is wanted is one click away. Forecast charts are
+    // replayed because they were built with the answer and are already here.
     figIdle();
     var charted = [];
     (c.messages || []).forEach(function (m) {
       if (m.role === "user") appendUserBubble(m.content);
       else {
         renderAnswer(m);
-        if (m.chart_html || m.forecast_chart_html) charted.push(m);
+        if (m.forecast_chart_html) charted.push(m);
       }
     });
     charted.forEach(function (m) {
-      figShowHtml(m.chart_html, m.chart_caption,
+      figShowHtml(null, null,
         m.forecast_chart_html, m.forecast_chart_caption, m.window);
     });
   }
@@ -1557,28 +1598,33 @@
     upsertChat(chatId, isNewChat ? autoTitle(displayText) : null, { role: "user", content: displayText });
 
     var loadingRow = renderLoading(file ? "Reading the uploaded recording" : "Working on it");
-    figLoading();
+    // No figLoading() here any more: nothing is being drawn during the answer,
+    // so promising a figure in the panel would be a lie for the ~12 s the
+    // model takes. The panel is only touched when "Show graph" is pressed.
 
+    STATE.busy = true;
+    updateSendState();
     apiTurn(chatId, text, file).then(function (final) {
+      STATE.busy = false;
+      updateSendState();
       loadingRow.remove();
       renderAnswer(final);
       upsertChat(chatId, null, {
         role: "assistant", content: final.content, recommendation: final.recommendation,
-        provenance: final.provenance, chart_html: final.chart_html, chart_caption: final.chart_caption,
+        provenance: final.provenance, chart_ref: final.chart_ref, chart_caption: final.chart_caption,
         forecast_chart_html: final.forecast_chart_html, forecast_chart_caption: final.forecast_chart_caption,
         window: final.window
       });
-      if (final.chart_html || final.forecast_chart_html) {
-        figShowHtml(final.chart_html, final.chart_caption, final.forecast_chart_html, final.forecast_chart_caption, final.window);
-      } else {
-        // A chartless answer (a definition, the catalogue, a comparison table)
-        // must not wipe the figures already collected -- it just has nothing
-        // to add. Only clearing the in-flight placeholder, so the panel keeps
-        // showing the readings from earlier in the chat.
-        figClearPending();
-        figRestoreStatus();
+      if (final.forecast_chart_html) {
+        // Forecast charts are still built with the answer: they are only made
+        // when a horizon was actually asked for, and at 380px they are a
+        // fraction of the reading chart's size and cost.
+        figShowHtml(null, null, final.forecast_chart_html,
+                    final.forecast_chart_caption, final.window);
       }
     }).catch(function (err) {
+      STATE.busy = false;
+      updateSendState();
       loadingRow.remove();
       renderFailure(null, (err && err.detail) ||
         "The model server did not respond. Check that `python models/serve.py` is running, then retry.",
@@ -1592,11 +1638,13 @@
 
   // ================= submit =================
   function updateSendState() {
-    var canSend = !!$("q-input").value.trim() || !!STATE.pendingFile;
+    var canSend = !STATE.busy && (!!$("q-input").value.trim() || !!STATE.pendingFile);
     $("send-btn").classList.toggle("enabled", canSend);
     $("send-btn").classList.toggle("disabled", !canSend);
+    $("q-input").disabled = STATE.busy;
   }
   function submitQuery() {
+    if (STATE.busy) return;   // previous turn still awaiting its answer
     var text = $("q-input").value.trim();
     if (!text && !STATE.pendingFile) return;
 
@@ -1644,7 +1692,6 @@
   // ================= init =================
   loadChats();
   renderChatGroups();
-  loadModels();
   onResize();
   newChat();
 })();

@@ -53,10 +53,27 @@ LABEL_COLOR = {0: "#2ecc71", 1: "#f39c12", 2: "#e74c3c"}
 LABEL_NAME = {0: "Fresh", 1: "Transition", 2: "Fatigued"}
 
 ASK_COLOR = "#b388ff"   # persistent "asked: Ns" marker (distinct from the
-                        # white scrub cursor and the yellow FFT-MDF line)
+                        # scrub cursor and the yellow FFT-MDF line)
 SEL_COLOR = "#9aa5b1"   # shaded select-to-inspect span on the MDF panel; a
                         # neutral slate (not blue) so the transient span never
                         # blends with the always-on #58a6ff fatigue-trend line
+
+# This chart always rendered plotly_dark, with a "white" scrub cursor line
+# that only makes sense against a dark plot background -- so a reader on the
+# UI's light theme (viz/chatbot_ui.html's STATE.theme) got a black chart in a
+# white card, and would have gotten an invisible white-on-white cursor too had
+# the template alone been swapped. Both are threaded together per theme so
+# swapping one can't leave the other stranded.
+_THEME = {
+    "dark":  {"template": "plotly_dark",  "cursor": "#ffffff",
+             "key_bg": "#161616", "key_fg": "#ccc", "key_border": "#333"},
+    "light": {"template": "plotly_white", "cursor": "#1a1a1a",
+             "key_bg": "#f4f4f4", "key_fg": "#333", "key_border": "#ddd"},
+}
+
+
+def _theme(theme: str) -> dict:
+    return _THEME.get(theme, _THEME["dark"])
 
 ALL_SUBJECTS = list(range(1, 14))
 
@@ -77,20 +94,24 @@ BUTTON_Y = 1.10
 # that works from inside a sandboxed iframe is postMessage; Open WebUI's own
 # listener there checks `data.type === 'iframe:height'` (same file). This
 # snippet reports the real height once Plotly finishes drawing
-# (plotly_afterplot, not a timing guess), and adds a fullscreen button (the
-# embed iframe already carries `allowfullscreen`).
+# (plotly_afterplot, not a timing guess).
 #
 # NOTE for the animated (scrub/playback) chart: plotly_afterplot fires on
 # EVERY frame during playback (~100+ times). postHeight() dedupes on the last
 # posted height and debounces, so animation never floods Open WebUI's resize
 # listener - the figure height is fixed, so only the first draw and genuine
-# resize/fullscreen changes post.
+# resize changes post.
+#
+# This used to also draw its own "Fullscreen" button, calling
+# document.documentElement.requestFullscreen() from inside the chart's own
+# iframe. viz/chatbot_ui.html renders every chart in an
+# <iframe sandbox="allow-scripts"> with no `allowfullscreen` attribute and no
+# Permissions-Policy allowance, so the Fullscreen API silently refuses the
+# request there -- the button did nothing, in the one place it was actually
+# used. Removed rather than fixed: the panel already has its own working
+# fullscreen toggle (#fig-fullscreen in chatbot_ui.html), so there is nothing
+# for a second, chart-level one to add even where it would work.
 _IFRAME_CHROME = """
-<button id="__viz_fs_btn" style="position:fixed;top:8px;right:8px;z-index:9999;
-  padding:6px 10px;background:#222;color:#eee;border:1px solid #555;
-  border-radius:6px;cursor:pointer;font:12px sans-serif;opacity:0.85;">
-  ⛶ Fullscreen
-</button>
 <script>
 (function () {
   var _lastH = -1, _timer = null;
@@ -113,12 +134,6 @@ _IFRAME_CHROME = """
   });
   window.addEventListener('load', function () { setTimeout(postHeight, 300); });
   window.addEventListener('resize', function () { setTimeout(postHeight, 100); });
-
-  var btn = document.getElementById('__viz_fs_btn');
-  btn.addEventListener('click', function () {
-    var el = document.documentElement;
-    (el.requestFullscreen || el.webkitRequestFullscreen || function () {}).call(el);
-  });
 })();
 </script>
 """
@@ -325,7 +340,9 @@ def _rgba(hex_color: str, alpha: float) -> str:
 # second line and landed directly on top of the title text below it. A plain
 # HTML strip has no such failure mode: it wraps like any other paragraph, so
 # it can never overlap plot content regardless of the embedding width.
-def _key_html() -> str:
+def _key_html(theme: str = "dark") -> str:
+    th = _theme(theme)
+
     def _dot(color: str, label: str) -> str:
         return (f'<span style="display:inline-flex;align-items:center;'
                 f'margin:2px 14px 2px 0;white-space:nowrap">'
@@ -347,13 +364,14 @@ def _key_html() -> str:
         + _line("#58a6ff", "fatigue trend")
         + _line(ASK_COLOR, "time asked about")
     )
-    return (f'<div style="font:12px -apple-system,sans-serif;color:#ccc;'
-            f'background:#161616;padding:8px 14px;display:flex;'
-            f'flex-wrap:wrap;border-bottom:1px solid #333">{items}</div>')
+    return (f'<div style="font:12px -apple-system,sans-serif;color:{th["key_fg"]};'
+            f'background:{th["key_bg"]};padding:8px 14px;display:flex;'
+            f'flex-wrap:wrap;border-bottom:1px solid {th["key_border"]}">{items}</div>')
 
 
 def _single_subject_html(subject: int, t_start: float, side: str,
-                         model_pred: dict | None = None) -> str:
+                         model_pred: dict | None = None,
+                         theme: str = "dark") -> str:
     """Interactive 3-panel single-subject chart with scrub + playback.
 
     Deliberately reproduces viz/signal_viewer.py's supervisor-liked layout
@@ -372,6 +390,7 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     if subject not in ALL_SUBJECTS:
         raise ValueError(f"subject must be 1-13, got {subject}")
 
+    th = _theme(theme)
     seg, fs, lab_t, lab_v = _load_subject(subject, side)
     x = seg.data[:, 0].astype(float)
     t = seg.t.astype(float)
@@ -504,7 +523,7 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         line=dict(width=0.7, color="#00d4ff")), row=1, col=1)
     fig.add_trace(go.Scatter(                                   # base+2 scrub cursor
         x=[float(mdf_t[k0]), float(mdf_t[k0])], y=[mlo, mhi], mode="lines",
-        line=dict(color="white", dash="dash", width=1.2),
+        line=dict(color=th["cursor"], dash="dash", width=1.2),
         hoverinfo="skip", showlegend=False), row=2, col=1)
     fig.add_trace(go.Scatter(                                   # base+3 FFT power
         x=freqs_band, y=frame_spec[k0], mode="lines", name="FFT power",
@@ -588,7 +607,7 @@ def _single_subject_html(subject: int, t_start: float, side: str,
             }])])])
 
     fig.update_layout(
-        template="plotly_dark", height=920 if animate else 820, showlegend=False,
+        template=th["template"], height=920 if animate else 820, showlegend=False,
         # Title pinned to the top of the *figure* (yref="container"), not
         # centred in the top margin as Plotly defaults to. Centred, it landed
         # in the same band as the Play/Pause/Jump/Reset-zoom updatemenus above
@@ -643,12 +662,12 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     # .animate() on load and scrolls the chart away from t_start immediately.
     chart = fig.to_html(full_html=False, auto_play=False, include_plotlyjs=False,
                         config={"responsive": True, "scrollZoom": True})
-    return (_key_html() + _wrap_for_iframe(chart)
+    return (_key_html(theme) + _wrap_for_iframe(chart)
             + _select_inspect_html(mdf_t, mdf_v, mdf_labels))
 
 
 def render_window(subject: int, t_start: float, side: str = "R",
-                  model_pred: dict | None = None) -> str:
+                  model_pred: dict | None = None, theme: str = "dark") -> str:
     """Return an interactive Plotly chart as an HTML fragment (no full_html wrapper).
 
     3-panel single-subject view (raw EMG / MDF / FFT) at t_start, the same
@@ -664,7 +683,8 @@ def render_window(subject: int, t_start: float, side: str = "R",
     side = _validate_side(side)
     if subject is None:
         raise ValueError("subject is required (the all-subjects overview was removed)")
-    return _single_subject_html(int(subject), t_start, side, model_pred=model_pred)
+    return _single_subject_html(int(subject), t_start, side,
+                                model_pred=model_pred, theme=theme)
 
 
 if __name__ == "__main__":

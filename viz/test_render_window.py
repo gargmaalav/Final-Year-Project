@@ -87,6 +87,20 @@ class HappyPath(unittest.TestCase):
         # ~3.1MB); a regression that re-bloats the payload should trip here.
         self.assertLess(len(self.html), 5_000_000)
 
+    def test_theme_selects_a_matching_template_and_cursor(self):
+        # Was hardcoded to plotly_dark with a "white" scrub cursor regardless
+        # of theme -- a light-mode reader got a black chart in a white card,
+        # and swapping only the template would have left the cursor invisible
+        # against the new light background. plotly_dark's own template bakes
+        # in its dark paper colour as "rgb(17,17,17)" -- present only when
+        # that template was actually applied, not just requested.
+        dark = render_window(13, 120.0, "R", theme="dark")
+        light = render_window(13, 120.0, "R", theme="light")
+        self.assertIn("rgb(17,17,17)", dark)
+        self.assertNotIn("rgb(17,17,17)", light)
+        self.assertIn("#1a1a1a", light)     # light-theme scrub cursor
+        self.assertNotEqual(dark, light)
+
 
 @_needs_data
 class LabelsAbsentFallback(unittest.TestCase):
