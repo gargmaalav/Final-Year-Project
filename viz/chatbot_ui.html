@@ -18,13 +18,13 @@
     --grid: #EDF2F3; --grid-bg: #FBFDFD; --shadow: 0 16px 40px rgba(14,26,31,0.10);
   }
   html[data-theme="dark"] {
-    --bg-0: #0C1012; --bg-1: #10161A; --bg-2: #1A2226; --surface: #12181B;
-    --border: #232E33; --border-strong: #3A474D;
-    --text-1: #F0F5F7; --text-2: #AEBBC0; --text-3: #7C8B91;
-    --accent: #0E7C78; --accent-hover: #12908B; --accent-ink: #F2FBFA; --accent-soft: #13282B;
+    --bg-0: #14161C; --bg-1: #1A1D25; --bg-2: #23262F; --surface: #1D2028;
+    --border: #2C303A; --border-strong: #454B58;
+    --text-1: #F1F2F5; --text-2: #B4B8C2; --text-3: #82879A;
+    --accent: #4C7CF0; --accent-hover: #6690F5; --accent-ink: #FFFFFF; --accent-soft: #1E2A47;
     --fatigued: #E8817C; --fresh: #5FCFA6; --warn: #D9A94E; --error: #E5484D;
-    --warn-bg: #1E1913; --warn-border: #5A4620; --error-border: #5C2A2B;
-    --grid: #141A1D; --grid-bg: #0A0E10; --shadow: 0 16px 40px rgba(0,0,0,0.45);
+    --warn-bg: #23201A; --warn-border: #5A4620; --error-border: #5C2A2B;
+    --grid: #1C1F28; --grid-bg: #101218; --shadow: 0 16px 40px rgba(0,0,0,0.45);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -91,11 +91,13 @@
   .settings-title-row .t { font-size: 12.5px; font-weight: 500; color: var(--text-1); }
   #rate-field { display: flex; flex-direction: column; gap: 5px; }
   #rate-label-row { display: flex; justify-content: space-between; align-items: center; }
-  #rate-label { font-size: 11.5px; display: flex; align-items: center; gap: 6px; color: var(--text-3); }
-  #rate-label svg { font-size: 13px; }
+  #rate-label, .note-label { font-size: 11.5px; display: flex; align-items: center; gap: 6px; color: var(--text-3); }
+  #rate-label svg, .note-label svg { font-size: 13px; }
   #rate-unit { font-size: 11px; color: var(--text-3); }
-  #sample-rate { background: var(--bg-2); border: 1px solid var(--border); border-radius: 2px; padding: 8px 10px; font-size: 13px; color: var(--text-1); outline: none; width: 100%; }
+  #sample-rate, #athlete-note { background: var(--bg-2); border: 1px solid var(--border); border-radius: 2px; padding: 8px 10px; font-size: 13px; color: var(--text-1); outline: none; width: 100%; }
+  #sample-rate:focus, #athlete-note:focus { border-color: var(--accent); }
   #rate-help { font-size: 11.5px; line-height: 1.55; color: var(--text-2); }
+  #note-field { display: flex; flex-direction: column; gap: 5px; }
   #clear-history { border-top: 1px solid var(--border); padding-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); transition: color 120ms ease; width: 100%; }
   #clear-history:hover { color: var(--error); }
   #theme-seg { display: flex; align-items: center; gap: 6px; padding: 3px; background: var(--bg-2); border-radius: 3px; }
@@ -103,7 +105,6 @@
   .theme-pill.selected { background: var(--surface); color: var(--text-1); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
   #settings-btn { display: flex; align-items: center; gap: 9px; border-radius: 3px; padding: 8px 10px; font-size: 13px; color: var(--text-2); transition: background 120ms ease, color 120ms ease; width: 100%; text-align: left; }
   #settings-btn:hover { background: var(--bg-2); color: var(--text-1); }
-  #disclaimer { font-size: 11px; line-height: 1.55; color: var(--text-3); padding: 0 10px; }
 
   /* ---------- main column ---------- */
   #main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-0); }
@@ -112,23 +113,9 @@
   #header-title { flex: none; max-width: 100%; font-size: 16px; font-weight: 600; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #header-sub { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #header-right { flex: none; display: flex; align-items: center; gap: 8px; }
-  #model-btn { display: flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 3px; padding: 6px 10px; font-size: 12.5px; color: var(--text-2); transition: border-color 120ms ease, background 120ms ease; }
-  #model-btn:hover { border-color: var(--border-strong); background: var(--bg-1); }
-  #model-btn.open { border-color: var(--border-strong); }
-  #model-btn .name { font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 12px; color: var(--text-1); max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #model-btn svg { font-size: 14px; color: var(--text-3); }
   #show-figures-btn { width: 30px; height: 30px; border-radius: 3px; font-size: 16px; }
   #show-figures-btn:hover { background: var(--bg-1); color: var(--text-1); }
   #show-figures-btn.hidden { display: none; }
-
-  #model-popover { position: absolute; top: 58px; right: 40px; z-index: 5; width: 230px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 3px; padding: 6px; box-shadow: var(--shadow); animation: emg-in 160ms cubic-bezier(.25,1,.3,1); }
-  #model-popover.hidden { display: none; }
-  .model-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 2px; transition: background 120ms ease; width: 100%; text-align: left; }
-  .model-row:hover { background: var(--bg-2); }
-  .model-row svg { font-size: 14px; color: transparent; }
-  .model-row.selected svg { color: var(--accent); }
-  .model-row .name { flex: 1; min-width: 0; font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 12.5px; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .model-row .note { font-size: 11px; color: var(--text-3); }
 
   #thread { flex: 1; padding: 24px 40px; display: flex; flex-direction: column; gap: 26px; overflow-y: auto; }
   #empty-state { max-width: 640px; margin: auto 0; display: flex; flex-direction: column; gap: 24px; animation: emg-in 260ms cubic-bezier(.25,1,.3,1); }
@@ -162,7 +149,7 @@
   .reading-when { font-size: 12px; color: var(--text-3); }
   .reading-verdict-row { display: flex; align-items: center; gap: 12px; }
   .reading-verdict-row svg { font-size: 20px; }
-  .reading-verdict { font-size: 26px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.15; }
+  .reading-verdict { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.3; }
   .reading-meaning { font-size: 15px; line-height: 1.6; color: var(--text-2); max-width: 46ch; text-wrap: pretty; }
   .conf-row { display: flex; align-items: center; gap: 10px; padding-top: 16px; border-top: 1px solid var(--border); flex-wrap: wrap; }
   .conf-row svg { font-size: 15px; }
@@ -179,6 +166,12 @@
   .stat .value { font-family: 'Archivo Narrow', system-ui, sans-serif; font-size: 15px; font-variant-numeric: tabular-nums; color: var(--text-1); }
   .reading-prose { margin: 0; max-width: 68ch; font-size: 15.5px; line-height: 1.75; color: var(--text-2); text-wrap: pretty; }
   .reading-prose strong { font-weight: 600; color: var(--text-1); }
+  .answer-body { max-width: 68ch; font-size: 15.5px; line-height: 1.75; color: var(--text-2); text-wrap: pretty; }
+  .answer-body p { margin: 0 0 12px; }
+  .answer-body p:last-child { margin-bottom: 0; }
+  .answer-body ul { margin: 0 0 12px; padding-left: 20px; }
+  .answer-body strong { font-weight: 600; color: var(--text-1); }
+  .answer-body em { color: var(--text-3); font-style: italic; }
   .reading-note { font-size: 12.5px; color: var(--warn); }
   .forecast-block { border-top: 1px solid var(--border); padding-top: 16px; display: flex; flex-direction: column; gap: 10px; }
   .forecast-block .f-title { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
@@ -247,30 +240,119 @@
   #fig-rail svg { font-size: 16px; color: var(--text-3); }
   #fig-rail .label { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--text-3); writing-mode: vertical-rl; }
 
-  #fig-pane { flex: none; background: var(--bg-1); border-left: 1px solid var(--border); display: flex; flex-direction: column; padding: 20px; gap: 18px; overflow-y: auto; transition: width 240ms cubic-bezier(.25,1,.3,1); }
+  /* The panel reads as a card floating over the page rather than a flush
+     wall welded to the window edge: inset by a margin on three sides,
+     rounded, with its own border and shadow. That's what makes an artifact
+     panel feel like a separate object you can dismiss, instead of a second
+     half of the app you're stuck with. */
+  #fig-pane { position: relative; flex: none; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin: 10px 10px 10px 0; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow); transition: width 240ms cubic-bezier(.25,1,.3,1); }
   #fig-pane.hidden { display: none; }
-  #fig-pane-header { display: flex; align-items: center; justify-content: space-between; flex: none; }
-  #fig-pane-header .left { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  #fig-pane-header .left svg { font-size: 15px; color: var(--accent); }
-  #fig-pane-header .title { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--text-2); }
-  #fig-pane-header .status { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* No width transition mid-drag -- the 240ms ease makes the panel lag the
+     cursor and the drag feels broken rather than smooth. */
+  #fig-pane.resizing { transition: none; user-select: none; }
+
+  /* Fullscreen was a dead class: the JS toggled it (applyLayout) and set the
+     button's icon, but no rule ever matched, so "fullscreen" only meant the
+     panel grew from 452px to 760px and the sidebar's own controls stayed
+     covered. Now it's a real overlay over the whole app -- and because the
+     header (with the exit button) is inside the pane, the way out travels
+     with it. Escape also exits, wired further down. */
+  #fig-pane.fullscreen { position: fixed; inset: 0; margin: 0; width: auto !important; border-radius: 0; border: none; z-index: 60; }
+
+  /* Drag-to-resize, like an artifact panel's divider: charts here are laid
+     out at a fixed 1100px (see FIG_SIZES in the script), so how much you can
+     see at a glance is worth putting under the reader's control rather than
+     fixing at 452px. */
+  #fig-resize { position: absolute; left: -3px; top: 0; bottom: 0; width: 9px; cursor: col-resize; z-index: 2; }
+  #fig-resize::after { content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 3px; height: 36px; border-radius: 2px; background: var(--border-strong); opacity: 0; transition: opacity 140ms ease; }
+  #fig-resize:hover::after, #fig-pane.resizing #fig-resize::after { opacity: .8; }
+  #fig-pane.fullscreen #fig-resize { display: none; }
+
+  #fig-pane-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: none; padding: 13px 10px 13px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); }
+  #fig-pane-header .left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  #fig-pane-header .left svg { font-size: 15px; color: var(--accent); flex: none; }
+  #fig-pane-header .heading { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  /* Sentence case, not the uppercase tracked-out label the rest of the
+     clinical chrome uses -- this is the artifact's own title bar, and it
+     should read like a document's name. */
+  #fig-pane-header .title { font-size: 13.5px; font-weight: 600; color: var(--text-1); letter-spacing: -0.005em; line-height: 1.25; }
+  #fig-pane-header .status { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
   #fig-pane-header .right { display: flex; align-items: center; gap: 2px; flex: none; }
-  #fig-pane-header .right .icon-btn { width: 28px; height: 28px; font-size: 14px; }
+  #fig-pane-header .right .icon-btn { width: 28px; height: 28px; font-size: 14px; border-radius: 6px; }
+
+  /* Header and footer are fixed chrome; only the figures themselves scroll,
+     so the title bar and its controls never leave the viewport on a tall
+     chart. Previously the whole pane scrolled as one. */
+  #fig-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 18px; }
 
   .fig-block { display: flex; flex-direction: column; gap: 10px; }
-  .fig-frame-wrap { border: 1px solid var(--border); border-radius: 3px; overflow: hidden; background: var(--grid-bg); box-shadow: var(--shadow); }
+
+  /* One group per charted answer. The header names which reading the figures
+     under it belong to -- with several stacked, "Subject 11 · 60s · right" is
+     the only thing telling them apart. */
+  .fig-group { display: flex; flex-direction: column; gap: 10px; }
+  .fig-group + .fig-group { padding-top: 16px; border-top: 1px solid var(--border); }
+  .fig-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .fig-group-title { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: .01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fig-group-time { font-size: 11px; color: var(--text-3); flex: none; }
+
+  /* The chart is laid out by Plotly at a fixed pixel width designed for a
+     full-page view (see the natural sizes below). Two ways to fit that into a
+     ~450px panel, and only one of them works:
+       - Plotly's own `responsive: true` reflows the canvas but NOT the
+         fixed-pixel title/margin/legend/button text, so everything overlaps.
+       - a CSS transform scales the rendered result uniformly, text included,
+         so the chart just gets smaller and stays correct.
+     So the panel shows a true scaled-down thumbnail of the whole figure --
+     the reader sees the shape of the trend at a glance without maximising
+     anything. It used to sit at natural width in a horizontally scrolling
+     box, which meant about a third of one chart was visible and the rest
+     needed a sideways scroll nobody thought to try. */
+  .fig-frame-wrap { position: relative; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--grid-bg); }
   .fig-frame-wrap.no-shadow { box-shadow: none; }
-  #fig-frame { width: 100%; height: 340px; border: none; display: block; background: var(--grid-bg); }
-  #fig-pane.fullscreen #fig-frame { height: 58vh; }
-  #forecast-frame { width: 100%; height: 180px; border: none; display: block; background: var(--grid-bg); }
+  .fig-frame-wrap:hover { border-color: var(--border-strong); }
+  .fig-frame-wrap iframe { border: none; display: block; background: var(--grid-bg); transform-origin: top left; }
+
+  /* Thumbnail mode: the iframe is scaled by JS (figScaleThumbs) and must not
+     take pointer events -- a 0.4x Plotly chart is impossible to scrub, and
+     scroll-zoom over it would hijack the panel's own scroll. The whole tile
+     is one click target that opens the modal instead. */
+  .fig-frame-wrap.thumb { cursor: zoom-in; }
+  .fig-frame-wrap.thumb iframe { pointer-events: none; }
+  .fig-thumb-hint { position: absolute; right: 8px; bottom: 8px; display: flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 6px; font-size: 11.5px; background: var(--bg-0); color: var(--text-2); border: 1px solid var(--border); opacity: 0; transform: translateY(3px); transition: opacity 140ms ease, transform 140ms ease; pointer-events: none; }
+  .fig-frame-wrap.thumb:hover .fig-thumb-hint, .fig-frame-wrap.thumb:focus-visible .fig-thumb-hint { opacity: 1; transform: none; }
+
+  /* Natural (unscaled) figure sizes live in one place only -- FIG_SIZES in
+     the script below, which also writes them onto each iframe inline. They
+     have to match what the Python emits, so a second copy here would be a
+     second thing to forget to update. */
+
+  /* ---------- figure modal (click a thumbnail to read it properly) ---------- */
+  #fig-modal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(8,10,14,0.62); animation: emg-in 160ms ease both; }
+  #fig-modal.hidden { display: none; }
+  #fig-modal-card { display: flex; flex-direction: column; width: 100%; height: 100%; max-width: 1180px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  #fig-modal-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 10px 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); }
+  #fig-modal-header .heading { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  #fig-modal-header .title { font-size: 13.5px; font-weight: 600; color: var(--text-1); }
+  #fig-modal-header .status { font-size: 11.5px; color: var(--text-3); }
+  /* Scrolls both ways at natural size: this is the "read it properly" view,
+     so the chart is never scaled down here, even on a small window. */
+  #fig-modal-body { flex: 1; min-height: 0; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; background: var(--bg-0); }
+  #fig-modal-body iframe { border: none; display: block; background: var(--grid-bg); border-radius: 10px; flex: none; }
   .fig-caption { font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
-  .fig-grid-placeholder { height: 340px; background: repeating-linear-gradient(0deg, var(--grid) 0 1px, var(--grid-bg) 1px 30px), repeating-linear-gradient(90deg, var(--grid) 0 1px, var(--grid-bg) 1px 52px); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; }
+  .fig-grid-placeholder { height: 340px; border-radius: 10px; background: repeating-linear-gradient(0deg, var(--grid) 0 1px, var(--grid-bg) 1px 30px), repeating-linear-gradient(90deg, var(--grid) 0 1px, var(--grid-bg) 1px 52px); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; }
   .fig-grid-placeholder.small { height: 180px; }
   .fig-grid-placeholder .fig-loading-label { font-size: 13px; color: var(--text-3); }
-  .fig-empty { border: 1px dashed var(--border-strong); border-radius: 3px; height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-3); }
+  .fig-empty { border: 1px dashed var(--border); border-radius: 10px; height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-3); }
   .fig-empty svg { font-size: 18px; }
   .fig-empty span { font-size: 13px; }
-  #fig-footer { margin-top: auto; font-size: 12px; line-height: 1.6; color: var(--text-3); flex: none; }
+  /* Footer sits outside the scroll area now (see #fig-content), so it reads
+     as part of the card's chrome rather than trailing text under the chart. */
+  #fig-footer { flex: none; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--bg-1); font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
+  /* Figures arrive after an answer, so they land in a pane the reader is
+     already looking at -- a short fade-up marks the swap instead of the
+     content silently teleporting. Honours prefers-reduced-motion above. */
+  .fig-block { animation: emg-in 220ms cubic-bezier(.25,1,.3,1) both; }
 
   .hidden { display: none !important; }
 </style>
@@ -354,6 +436,11 @@
           <input id="sample-rate" class="narrow" type="number" placeholder="enter a value" min="1" step="1" aria-label="Sample rate in hertz">
           <div id="rate-help">How many readings per second the recording holds.</div>
         </div>
+        <div id="note-field">
+          <div class="note-label"><svg class="icon"><use href="#i-activity"/></svg><span>Sport / goal (optional)</span></div>
+          <input id="athlete-note" type="text" placeholder="e.g. competitive rock climbing" aria-label="Sport or goal, for recommendations">
+          <div id="rate-help">Used only if you ask for training advice.</div>
+        </div>
         <button id="clear-history"><svg class="icon"><use href="#i-trash"/></svg><span>Clear all history</span></button>
       </div>
 
@@ -372,10 +459,8 @@
         <div id="header-sub">Research dataset, subjects 1&ndash;13</div>
       </div>
       <div id="header-right">
-        <button id="model-btn" aria-label="Choose model"><span class="name" id="model-btn-name">&nbsp;</span><svg class="icon"><use href="#i-chevron-down"/></svg></button>
         <button id="show-figures-btn" class="icon-btn hidden" title="Show figures" aria-label="Show figures"><svg class="icon"><use href="#i-panel-right-open"/></svg></button>
       </div>
-      <div id="model-popover" class="hidden"></div>
     </div>
 
     <div id="thread">
@@ -399,6 +484,7 @@
         <input id="q-input" type="text" placeholder="Ask about a subject, or attach your own EMG recording" aria-label="Your question">
         <button id="send-btn" class="disabled" aria-label="Send"><svg class="icon"><use href="#i-arrow-up"/></svg></button>
       </div>
+      <div id="composer-help">Answers use the real classifier and, when available, a local model for the written reply. Press <span class="narrow">Enter</span> to send.</div>
     </div>
   </div>
 
@@ -408,11 +494,14 @@
   </button>
 
   <div id="fig-pane">
+    <div id="fig-resize" role="separator" aria-orientation="vertical" aria-label="Resize figures panel" tabindex="0"></div>
     <div id="fig-pane-header">
       <div class="left">
         <svg class="icon"><use href="#i-chart-spline"/></svg>
-        <span class="title">Figures</span>
-        <span class="status" id="fig-status">No reading yet</span>
+        <div class="heading">
+          <span class="title">Figures</span>
+          <span class="status" id="fig-status">No reading yet</span>
+        </div>
       </div>
       <div class="right">
         <button id="fig-fullscreen" class="icon-btn" title="Fullscreen" aria-label="Fullscreen"><svg class="icon"><use href="#i-maximize"/></svg></button>
@@ -426,6 +515,22 @@
     <div id="fig-footer">Holds the newest reading. Figures are not stored with chat history.</div>
   </div>
 
+  <div id="fig-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="fig-modal-title">
+    <div id="fig-modal-card">
+      <div id="fig-modal-header">
+        <div class="left" style="display:flex; align-items:center; gap:9px; min-width:0;">
+          <svg class="icon" style="font-size:15px; color:var(--accent); flex:none;"><use href="#i-chart-spline"/></svg>
+          <div class="heading">
+            <span class="title" id="fig-modal-title">Figures</span>
+            <span class="status" id="fig-modal-status"></span>
+          </div>
+        </div>
+        <button id="fig-modal-close" class="icon-btn" title="Close (Esc)" aria-label="Close figure view"><svg class="icon"><use href="#i-x"/></svg></button>
+      </div>
+      <div id="fig-modal-body"></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -437,19 +542,38 @@
   var STATE = {
     theme: "light",
     sidebar: "open",   // open | rail
-    pane: "open",      // open | rail | hidden
+    // Closed until asked for. Nothing is drawn until "Show graph" is pressed
+    // (POST /chart), so an open panel on load would be an empty frame taking
+    // a third of the window to say "No figure yet". It opens on that click
+    // and stays open from then on.
+    pane: "hidden",    // open | rail | hidden
     full: false,
     vw: window.innerWidth,
     search: "",
     chats: [],
     activeChatId: null,
     pendingFile: null,
-    model: null,
-    models: [],
-    figStatus: "none"  // none | loading | ready
+    activeChartRef: null,  // {ref, caption, windowInfo, groupId} of the ref-based
+                            // chart on screen, so a theme toggle can redraw it
+    figStatus: "none",  // none | loading | ready
+    paneW: 452,         // user-resizable; clamped to [PANE_MIN, PANE_MAX]
+    // Nothing here used to stop a second message going out while the first
+    // was still awaiting its ~15s LLM answer -- POST /turn for the same
+    // session_id then ran concurrently, and the session state each read
+    // (last_params, last_answer) could be the one from BEFORE the earlier
+    // turn had finished writing it back. serve.py now also locks per
+    // session, but this is the fix that stops the race from happening at
+    // all rather than only serialising it after it starts.
+    busy: false
   };
   var sidebarByUser = false;
   var paneByUser = false;
+  var PANE_MIN = 280, PANE_MAX = 1120;
+  (function initPaneW() {
+    var saved = null;
+    try { saved = parseInt(localStorage.getItem("emg_pane_w"), 10); } catch (e) {}
+    if (saved && saved >= PANE_MIN && saved <= PANE_MAX) STATE.paneW = saved;
+  })();
 
   function $(id) { return document.getElementById(id); }
 
@@ -463,6 +587,7 @@
     STATE.theme = t;
     try { localStorage.setItem("emg_theme", t); } catch (e) {}
     applyTheme();
+    redrawActiveChart();
   }
   (function initTheme() {
     var saved = null;
@@ -484,26 +609,43 @@
     $("main-header").style.padding = narrow ? "18px 16px 16px" : "18px 40px 16px";
     $("composer").style.padding = narrow ? "16px 16px 26px" : "16px 40px 26px";
     document.querySelectorAll(".msg-user").forEach(function (el) { el.style.maxWidth = narrow ? "88%" : "66%"; });
-    document.querySelectorAll(".reading-verdict").forEach(function (el) { el.style.fontSize = narrow ? "22px" : "26px"; });
+    document.querySelectorAll(".reading-verdict").forEach(function (el) { el.style.fontSize = narrow ? "16px" : "18px"; });
     $("main").style.minWidth = narrow ? "0" : "340px";
 
     $("fig-rail").classList.toggle("hidden", STATE.pane !== "rail");
     $("fig-pane").classList.toggle("hidden", STATE.pane !== "open");
-    $("show-figures-btn").classList.toggle("hidden", STATE.pane !== "hidden");
+    // The way back to a closed panel, shown only once there is something in
+    // it. With the panel now closed by default, an always-visible button
+    // would sit in the header from load offering to open an empty frame.
+    // (FIG_GROUPS is declared further down; `var` hoists the name but not the
+    // value, so guard against applyLayout running before that line does.)
+    $("show-figures-btn").classList.toggle(
+      "hidden", STATE.pane !== "hidden" || !(FIG_GROUPS || []).length);
 
     if (STATE.pane === "open") {
-      var sideW = STATE.sidebar === "open" ? 272 : (STATE.sidebar === "rail" ? 52 : 0);
-      var avail = STATE.vw - sideW - 340;
-      var w = Math.min(STATE.full ? 760 : 452, Math.max(280, avail));
-      $("fig-pane").style.width = w + "px";
       $("fig-pane").classList.toggle("fullscreen", STATE.full);
-      // structural guard: never let sidebar+thread-floor+panel-min overflow
-      if (STATE.sidebar === "open" && sideW + 340 + 280 > STATE.vw) {
-        STATE.sidebar = "rail";
-        $("settings-popover").classList.add("hidden");
-        applyLayout();
-        return;
+      var targetW = STATE.full ? STATE.vw : null;
+      // Fullscreen is an overlay pinned to the viewport, so it must not carry
+      // an inline width -- an inline style beats the class rule, and the panel
+      // would sit at 760px in the corner of a "fullscreen" backdrop. Clearing
+      // it lets the .fullscreen rule own the geometry outright.
+      if (STATE.full) {
+        $("fig-pane").style.width = "";
+      } else {
+        var sideW = STATE.sidebar === "open" ? 272 : (STATE.sidebar === "rail" ? 52 : 0);
+        var avail = STATE.vw - sideW - 340;
+        var w = Math.min(STATE.paneW, Math.max(PANE_MIN, avail));
+        $("fig-pane").style.width = w + "px";
+        targetW = w;
+        // structural guard: never let sidebar+thread-floor+panel-min overflow
+        if (STATE.sidebar === "open" && sideW + 340 + PANE_MIN > STATE.vw) {
+          STATE.sidebar = "rail";
+          $("settings-popover").classList.add("hidden");
+          applyLayout();
+          return;
+        }
       }
+      figScaleThumbs(targetW);
     }
     $("fig-fullscreen").title = STATE.full ? "Exit fullscreen" : "Fullscreen";
     $("fig-fullscreen").setAttribute("aria-label", STATE.full ? "Exit fullscreen" : "Fullscreen");
@@ -514,18 +656,25 @@
   function onResize() {
     var w = window.innerWidth;
     STATE.vw = w;
+    // Width only ever narrows the panel, never opens it. "hidden" is the
+    // resting state now, so a rule widening hidden -> rail would put an empty
+    // panel back on screen the moment the window was resized, undoing the
+    // whole point of it being closed until asked for.
     if (w < 1280 && !paneByUser && STATE.pane === "open") STATE.pane = "rail";
     if (w >= 1280 && !paneByUser && STATE.pane === "rail") STATE.pane = "open";
     if (w < 1100 && !sidebarByUser && STATE.sidebar === "open") STATE.sidebar = "rail";
     if (w >= 1100 && !sidebarByUser && STATE.sidebar === "rail") STATE.sidebar = "open";
     if (w < 780 && !paneByUser && STATE.pane !== "hidden") STATE.pane = "hidden";
-    if (w >= 780 && !paneByUser && STATE.pane === "hidden") STATE.pane = "rail";
     applyLayout();
   }
   window.addEventListener("resize", onResize);
 
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && STATE.full) {
+    if (e.key !== "Escape") return;
+    // Innermost layer first: with the modal open over a fullscreen panel, one
+    // Escape should close the modal and leave the panel as it was.
+    if (figModalOpen()) { figCloseModal(); return; }
+    if (STATE.full) {
       STATE.full = false;
       applyLayout();
     }
@@ -543,52 +692,72 @@
   $("fig-to-rail").addEventListener("click", railPane);
   $("fig-close").addEventListener("click", hidePane);
   $("fig-fullscreen").addEventListener("click", function () { STATE.full = !STATE.full; applyLayout(); });
+  // Safety net for the width transition: whatever target applyLayout passed,
+  // re-measure once the panel has actually settled there.
+  $("fig-pane").addEventListener("transitionend", function (e) {
+    if (e.propertyName === "width") figScaleThumbs();
+  });
 
-  // ================= models =================
-  function loadModels() {
-    fetch(API + "/models").then(function (r) { return r.json(); }).then(function (j) {
-      STATE.models = j.models || [];
-      STATE.model = j.default || STATE.models[0] || null;
-      renderModelButton();
-    }).catch(function () {
-      STATE.models = ["llama3.1:8b"];
-      STATE.model = "llama3.1:8b";
-      renderModelButton();
+  // Drag the panel's left edge to resize. Pointer events (not mouse) so a
+  // trackpad, pen or touch drag all work, and setPointerCapture keeps the
+  // drag alive when the cursor crosses the chart iframe -- without capture
+  // the iframe swallows the move events and the panel sticks mid-drag.
+  (function initPaneResize() {
+    var handle = $("fig-resize"), startX = 0, startW = 0, dragging = false;
+
+    function clamp(w) {
+      var sideW = STATE.sidebar === "open" ? 272 : (STATE.sidebar === "rail" ? 52 : 0);
+      // Leave the thread its 340px floor, the same figure applyLayout guards.
+      return Math.max(PANE_MIN, Math.min(PANE_MAX, w, STATE.vw - sideW - 340));
+    }
+    function persist() {
+      try { localStorage.setItem("emg_pane_w", String(STATE.paneW)); } catch (e) {}
+    }
+
+    handle.addEventListener("pointerdown", function (e) {
+      if (STATE.full) return;
+      dragging = true; startX = e.clientX; startW = $("fig-pane").offsetWidth;
+      handle.setPointerCapture(e.pointerId);
+      $("fig-pane").classList.add("resizing");
+      e.preventDefault();
     });
-  }
-  function renderModelButton() {
-    $("model-btn-name").textContent = STATE.model || "model";
-  }
-  function renderModelPopover() {
-    var pop = $("model-popover");
-    pop.innerHTML = "";
-    STATE.models.forEach(function (name) {
-      var row = document.createElement("button");
-      row.className = "model-row" + (name === STATE.model ? " selected" : "");
-      row.innerHTML = '<svg class="icon"><use href="#i-check"/></svg><span class="name narrow"></span><span class="note"></span>';
-      row.querySelector(".name").textContent = name;
-      row.querySelector(".note").textContent = name === STATE.model ? "current" : "";
-      row.addEventListener("click", function () {
-        STATE.model = name;
-        renderModelButton();
-        closeModelPopover();
-      });
-      pop.appendChild(row);
+    handle.addEventListener("pointermove", function (e) {
+      if (!dragging) return;
+      // Panel is on the right, so dragging left (negative dx) widens it.
+      STATE.paneW = clamp(startW - (e.clientX - startX));
+      $("fig-pane").style.width = STATE.paneW + "px";
+      // Rescale live so the thumbnail grows under the cursor rather than
+      // snapping to its new size only once the drag is released.
+      figScaleThumbs(STATE.paneW);
     });
-  }
-  var modelOpen = false;
-  function toggleModelPopover() {
-    modelOpen = !modelOpen;
-    if (modelOpen) renderModelPopover();
-    $("model-popover").classList.toggle("hidden", !modelOpen);
-    $("model-btn").classList.toggle("open", modelOpen);
-  }
-  function closeModelPopover() {
-    modelOpen = false;
-    $("model-popover").classList.add("hidden");
-    $("model-btn").classList.remove("open");
-  }
-  $("model-btn").addEventListener("click", function (e) { e.stopPropagation(); toggleModelPopover(); });
+    function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
+      $("fig-pane").classList.remove("resizing");
+      persist();
+      applyLayout();
+    }
+    handle.addEventListener("pointerup", endDrag);
+    handle.addEventListener("pointercancel", endDrag);
+
+    // Keyboard equivalent: the handle is focusable, so arrows must resize it
+    // too, or the panel width is mouse-only. Steps measure from STATE.paneW,
+    // never from offsetWidth: the panel has a 240ms width transition, so a
+    // held arrow key reads a width still animating toward the last target
+    // and every press recomputes the same step -- the panel sticks one notch
+    // from where it started. The drag path is immune (it captures startW once
+    // and .resizing kills the transition), so this only bites the keyboard.
+    handle.addEventListener("keydown", function (e) {
+      var step = e.shiftKey ? 64 : 16;
+      if (e.key === "ArrowLeft") STATE.paneW = clamp(STATE.paneW + step);
+      else if (e.key === "ArrowRight") STATE.paneW = clamp(STATE.paneW - step);
+      else return;
+      e.preventDefault();
+      persist();
+      applyLayout();
+    });
+  })();
 
   // ================= settings popover =================
   var settingsOpenManually = false;
@@ -602,7 +771,6 @@
     if (!$("settings-popover").classList.contains("hidden") && !$("settings-popover").contains(e.target) && e.target !== $("settings-btn") && !$("settings-btn").contains(e.target)) {
       setSettingsOpen(false);
     }
-    if (modelOpen && !$("model-popover").contains(e.target) && !$("model-btn").contains(e.target)) closeModelPopover();
   });
   $("clear-history").addEventListener("click", function () {
     STATE.chats = [];
@@ -646,14 +814,6 @@
     }
   }
   $("sample-rate").addEventListener("input", evalSampleRateState);
-  function markSampleRateRequired(required) {
-    sampleRateRequired = required;
-    evalSampleRateState();
-    // force the sidebar open to surface the required field, but this is the
-    // app acting, not the user toggling the sidebar -- must NOT set
-    // sidebarByUser, or auto-collapse on narrow viewports breaks permanently
-    if (required && !settingsOpenManually) { STATE.sidebar = "open"; applyLayout(); setSettingsOpen(true); }
-  }
   evalSampleRateState();
 
   // ================= persistence =================
@@ -661,9 +821,27 @@
     try { STATE.chats = JSON.parse(localStorage.getItem("emg_chats") || "[]"); }
     catch (e) { STATE.chats = []; }
   }
+  // Rendered Plotly HTML runs to megabytes per chart, and localStorage caps
+  // out around 5MB. Serialising it did not just fail to keep the charts -- it
+  // threw QuotaExceededError, the catch below swallowed it, and NOTHING got
+  // saved from the first charted answer onward. A reloaded page came back with
+  // the questions and none of the answers.
+  //
+  // So the chart HTML is dropped on the way to storage. It stays on the
+  // message object in memory, which is what openChat() replays from, so
+  // figures still accumulate and still survive switching between chats within
+  // a session -- they just do not survive a reload, which is what the panel
+  // footer has always said.
+  var _HEAVY_KEYS = {chart_html: 1, forecast_chart_html: 1};
   function saveChats() {
-    try { localStorage.setItem("emg_chats", JSON.stringify(STATE.chats)); }
-    catch (e) { /* quota exceeded or private-mode storage -- chat still works this session */ }
+    try {
+      localStorage.setItem("emg_chats", JSON.stringify(STATE.chats,
+        function (k, v) { return _HEAVY_KEYS[k] ? undefined : v; }));
+    } catch (e) {
+      // Genuinely out of room even without the charts (many long chats).
+      // Say so rather than letting history quietly stop saving.
+      console.warn("[emg] chat history not saved:", e && e.name);
+    }
   }
 
   function fmtAgo(ts) {
@@ -727,10 +905,21 @@
   $("search-input").addEventListener("input", function () { STATE.search = $("search-input").value; renderChatGroups(); });
 
   // ================= suggestions =================
+  // One example per intent the router actually handles (frontend/intent.py:
+  // READING, ONSET, OVERVIEW, COMPARE, RANKING, CATALOGUE, EXPLAIN) rather
+  // than three phrasings of READING -- a blank chat is the only place the
+  // assistant gets to say what it can do, and three variations of the same
+  // question advertise it as far narrower than it is. Every one of these runs
+  // the real pipeline, so the list doubles as an honest demo of breadth.
   var SUGGESTIONS = [
-    "Is subject 4's left side fatigued at 90 s?",
     "Is subject 11's right side fatigued at 60 s?",
-    "Is subject 13 fatigued at 60 seconds on the right side, and in 40 seconds?"
+    "Is subject 13 fatigued at 60 seconds on the right side, and in 40 seconds?",
+    "When did subject 13 start fatiguing?",
+    "Summarise subject 7",
+    "Compare subject 5 and 9",
+    "Which subject fatigued the most?",
+    "What does median frequency mean?",
+    "What data do you have?"
   ];
   function renderSuggestions() {
     var wrap = $("suggestions");
@@ -794,242 +983,66 @@
       .replace(/(-?\d+(?:\.\d+)?\s?(?:Hz|%|s\b))/g, "<strong>$1</strong>")
       .replace(/\b(fatigued|not fatigued)\b/gi, "<strong>$1</strong>");
   }
-  // strip bare confidence percentages from generated prose -- confidence is
-  // language-only in this UI (spec requirement); best-effort since llmText
-  // comes from an uncontrolled local model and may still phrase this oddly.
-  function stripConfidencePercent(text) {
-    return text
-      .replace(/\bwith\s+\d{1,3}%\s+(?:model\s+)?confidence\b/gi, "")
-      .replace(/\bconfidence(?:\s+of|\s+level)?\s*[:\-]?\s*\d{1,3}%/gi, "")
-      .replace(/\d{1,3}%\s+confiden(?:t|ce)\b/gi, "")
-      .replace(/\s{2,}/g, " ")
-      .replace(/\s+\./g, ".")
-      .trim();
-  }
-
-  // ================= verdict mapping =================
-  var CONFIDENCE_LOW = 0.6; // reuses this codebase's existing low-confidence line
-  function verdictKind(cur) {
-    if (cur.confidence < CONFIDENCE_LOW) return "unclear";
-    return cur.fatigue_state === "fatigue" ? "fatigued" : "fresh";
-  }
-  var VERDICT_META = {
-    fatigued: { word: "Fatigued", color: "var(--fatigued)", icon: "i-trending-down",
-      meaning: "The muscle is working noticeably harder than when the recording started.",
-      confWord: "Confident call", confWhy: "clear, steady pattern", confIcon: "i-circle-check", confColor: "var(--fresh)" },
-    fresh: { word: "Not fatigued", color: "var(--fresh)", icon: "i-circle-check",
-      meaning: "The muscle is still performing much as it did at the start.",
-      confWord: "Confident call", confWhy: "clear, steady pattern", confIcon: "i-circle-check", confColor: "var(--fresh)" },
-    unclear: { word: "Inconclusive", color: "var(--text-2)", icon: "i-circle-help",
-      meaning: "The signs point both ways, so this reading shouldn't be relied on.",
-      confWord: "Low confidence", confWhy: "noisy stretch of recording", confIcon: "i-triangle-alert", confColor: "var(--warn)" }
-  };
-
-  function renderForecastBlock(forecast) {
-    var div = document.createElement("div");
-    div.className = "forecast-block";
-    if (!forecast || forecast.ok === false) {
-      div.innerHTML = '<div class="f-title">Forecast</div><div class="f-body">Not enough history yet to fit a trend for this window.</div>';
-      return div;
-    }
-    var lastIdx = forecast.y_future ? forecast.y_future.length - 1 : -1;
-    var projected = lastIdx >= 0 ? forecast.y_future[lastIdx] : null;
-    var loBand = lastIdx >= 0 ? forecast.pi_lo[lastIdx] : null;
-    var hiBand = lastIdx >= 0 ? forecast.pi_hi[lastIdx] : null;
-    var methodLabel = forecast.method === "lstm" ? "sequence model" : "trend line";
-    div.innerHTML =
-      '<div class="f-title">Forecast +' + forecast.horizon_sec.toFixed(0) + ' s</div>' +
-      '<div class="f-row">' +
-        (projected !== null
-          ? '<div><div class="stat"><div class="label">Projected MDF</div><div class="value narrow">' + projected.toFixed(1) + ' Hz</div></div></div>' +
-            '<div><div class="stat"><div class="label">95% range</div><div class="value narrow">' + loBand.toFixed(1) + '–' + hiBand.toFixed(1) + ' Hz</div></div></div>'
-          : '') +
-        '<div><div class="stat"><div class="label">Method</div><div class="value narrow">' + methodLabel + '</div></div></div>' +
-      '</div>' +
-      '<div class="f-body"></div>';
-    div.querySelector(".f-body").textContent = forecast.summary;
-    return div;
-  }
-
-  function buildAnswerText(cur, base, subject, side, tStart) {
-    var kind = verdictKind(cur);
-    var meta = VERDICT_META[kind];
-    var sideWord = side === "L" ? "left" : "right";
-    var subjectPhrase = typeof subject === "number" ? "Subject " + subject + "'s " + sideWord + "-side" : "This recording's";
-    var lead = kind === "fatigued"
-      ? "Yes. " + subjectPhrase + " signal is fatigued at the " + tStart + "-second mark."
-      : kind === "fresh"
-        ? "No. " + subjectPhrase + " signal is not fatigued at the " + tStart + "-second mark."
-        : "I can't call this one either way at the " + tStart + "-second mark.";
-    var body;
-    var deltaPct = null;
-    if (base) {
-      deltaPct = ((cur.mdf_hz - base.mdf_hz) / base.mdf_hz) * 100;
-      body = "Median frequency is " + cur.mdf_hz.toFixed(1) + " Hz against a " + base.mdf_hz.toFixed(1) +
-        " Hz reading at 0 s, a " + deltaPct.toFixed(1) + "% change.";
-    } else {
-      body = "Median frequency is " + cur.mdf_hz.toFixed(1) + " Hz, calibrated fresh from the first " +
-        (cur.calibration ? cur.calibration.baseline_sec : "60") + "s of this recording.";
-    }
-    var caveat = kind === "unclear" ? " Treat this reading as indicative rather than certain; this stretch of the signal was noisier than usual." : "";
-    return { text: lead + " " + body + caveat, meta: meta, kind: kind, deltaPct: deltaPct };
-  }
-
-  function renderReading(opts) {
+  // ================= answer rendering (/turn response) =================
+  // The server (frontend/turn.py) has already decided the verdict, phrased
+  // the prose, and picked which chart(s) apply -- this just lays out what
+  // it sent back. No client-side verdict logic, no client-side forecast
+  // math: those used to live here when the UI called /classify+/answer
+  // directly, but frontend/turn.py's _finalize() (and interpret.py inside
+  // it) already owns all of that now.
+  function renderAnswer(final) {
     var wrap = document.createElement("div");
     wrap.className = "msg-wrap msg-reading";
 
-    var built = buildAnswerText(opts.cur, (opts.base && opts.tStart !== 0) ? opts.base : null, opts.subject, opts.side, opts.tStart);
-    var meta = built.meta;
-
     var eyebrow = document.createElement("div");
     eyebrow.className = "reading-eyebrow";
-    eyebrow.innerHTML = '<span class="tile"><svg class="icon"><use href="#i-activity"/></svg></span>Reading';
+    eyebrow.innerHTML = '<span class="tile"><svg class="icon"><use href="#i-activity"/></svg></span>Answer';
     wrap.appendChild(eyebrow);
 
-    var hasRealBaseline = !!opts.base && opts.tStart !== 0;
+    var body = document.createElement("div");
+    body.className = "answer-body";
+    body.innerHTML = mdToHtml(final.content || "");
+    wrap.appendChild(body);
 
-    var card = document.createElement("div");
-    card.className = "reading-card";
-    card.innerHTML =
-      '<div class="reading-top">' +
-        '<span class="bar" style="background:' + meta.color + '"></span>' +
-        '<div class="body">' +
-          '<div class="reading-when">At ' + opts.tStart.toFixed(1) + ' seconds into the recording</div>' +
-          '<div class="reading-verdict-row"><svg class="icon" style="color:' + meta.color + '"><use href="#' + meta.icon + '"/></svg>' +
-            '<span class="reading-verdict" style="color:' + meta.color + '; font-size:' + (STATE.vw < 780 ? "22px" : "26px") + '">' + meta.word + '</span></div>' +
-          '<div class="reading-meaning"></div>' +
-        '</div>' +
-      '</div>' +
-      '<div class="conf-row">' +
-        '<svg class="icon" style="color:' + meta.confColor + '"><use href="#' + meta.confIcon + '"/></svg>' +
-        '<span class="conf-word"></span><span class="conf-sep">·</span><span class="conf-why"></span>' +
-        '<button class="numbers-toggle"><svg class="icon"><use href="#i-chevron-down"/></svg><span>Show the numbers</span></button>' +
-      '</div>' +
-      '<div class="numbers-drawer hidden"></div>';
-    card.querySelector(".reading-meaning").textContent = meta.meaning;
-    card.querySelector(".conf-word").textContent = meta.confWord;
-    card.querySelector(".conf-why").textContent = meta.confWhy;
-
-    var baselineStat = hasRealBaseline
-      ? ["0 s reading", opts.base.mdf_hz.toFixed(1) + " Hz"]
-      : opts.upload
-        ? ["Calibration", "fresh, " + (opts.cur.calibration ? opts.cur.calibration.baseline_sec : "60") + "s"]
-        : ["Calibration", "stored, this is the 0 s reading"];
-    var stats = [
-      ["Median freq", opts.cur.mdf_hz.toFixed(1) + " Hz"],
-      baselineStat,
-      ["Confidence", (opts.cur.confidence * 100).toFixed(0) + "%"],
-      ["Window", opts.tStart.toFixed(1) + " s"]
-    ];
-    if (hasRealBaseline && built.deltaPct !== null) {
-      stats.splice(2, 0, ["Change from 0 s", (built.deltaPct >= 0 ? "+" : "") + built.deltaPct.toFixed(1) + "%"]);
-    }
-    var drawer = card.querySelector(".numbers-drawer");
-    stats.forEach(function (s) {
-      var d = document.createElement("div");
-      d.className = "stat";
-      d.innerHTML = '<div class="label"></div><div class="value narrow"></div>';
-      d.querySelector(".label").textContent = s[0];
-      d.querySelector(".value").textContent = s[1];
-      drawer.appendChild(d);
-    });
-    var toggleBtn = card.querySelector(".numbers-toggle");
-    var numbersOpen = false;
-    toggleBtn.addEventListener("click", function () {
-      numbersOpen = !numbersOpen;
-      drawer.classList.toggle("hidden", !numbersOpen);
-      toggleBtn.querySelector("use").setAttribute("href", numbersOpen ? "#i-chevron-up" : "#i-chevron-down");
-      toggleBtn.querySelector("span").textContent = numbersOpen ? "Hide the numbers" : "Show the numbers";
-    });
-
-    wrap.appendChild(card);
-
-    var p = document.createElement("p");
-    p.className = "reading-prose";
-    var proseSource = opts.llmText ? stripConfidencePercent(opts.llmText) : built.text;
-    // llmText is untrusted model output: escape first, THEN bold -- never
-    // run boldNumbers on raw text and set innerHTML directly.
-    p.innerHTML = boldNumbers(escapeHtml(proseSource));
-    wrap.appendChild(p);
-
-    if (opts.note) {
-      var note = document.createElement("div");
-      note.className = "reading-note";
-      note.textContent = opts.note;
-      wrap.appendChild(note);
+    if (final.recommendation) {
+      var rec = document.createElement("div");
+      rec.className = "upload-warn";
+      rec.innerHTML = '<svg class="icon"><use href="#i-activity"/></svg><div><div class="upload-warn-title">Suggestion</div><div class="upload-warn-body"></div></div>';
+      rec.querySelector(".upload-warn-body").innerHTML = mdToHtml(final.recommendation);
+      wrap.appendChild(rec);
     }
 
-    if (opts.forecast) wrap.appendChild(renderForecastBlock(opts.forecast));
+    // Drawing the figure is the single most expensive thing the server does
+    // per answer (~2 s of CPU competing with the model, 3.3 MB of HTML), and
+    // most answers are read without anyone looking at a chart. So the answer
+    // carries a reference and this button redeems it -- nothing is rendered
+    // until it is pressed.
+    if (final.chart_ref) {
+      wrap.appendChild(showGraphButton(final.chart_ref, final.chart_caption,
+                                       final.window));
+    }
 
-    var subjectLabel = opts.label || (typeof opts.subject === "number" ? "Subject " + opts.subject : opts.subject);
-    var prov = document.createElement("div");
-    prov.className = "reading-provenance";
-    prov.textContent = subjectLabel + " · " + (opts.side === "L" ? "left side" : "right side") + " · " +
-      opts.tStart.toFixed(1) + " s in · " + opts.source;
-    wrap.appendChild(prov);
+    if (final.provenance) {
+      var prov = document.createElement("div");
+      prov.className = "reading-provenance";
+      prov.textContent = final.provenance;
+      wrap.appendChild(prov);
+    }
 
-    var actions = document.createElement("div");
-    actions.className = "reading-actions";
-    actions.innerHTML =
-      '<span class="fig-chip"><svg class="icon"><use href="#i-chart-spline"/></svg>Figure shown</span>';
-    if (opts.forecast) {
-      var fchip = document.createElement("button");
-      fchip.className = "fig-chip-forecast";
-      fchip.innerHTML = '<svg class="icon"><use href="#i-trending-down"/></svg>Figure 2, forecast';
-      fchip.addEventListener("click", function () { openPane(); STATE.full = false; applyLayout(); });
-      actions.appendChild(fchip);
+    var suggestions = final.suggestions || [];
+    if (suggestions.length) {
+      var sugWrap = document.createElement("div");
+      sugWrap.className = "reading-actions";
+      sugWrap.style.flexWrap = "wrap";
+      suggestions.forEach(function (pair) {
+        var b = document.createElement("button");
+        b.className = "suggestion";
+        b.textContent = pair[0];
+        b.addEventListener("click", function () { $("q-input").value = pair[1]; submitQuery(); });
+        sugWrap.appendChild(b);
+      });
+      wrap.appendChild(sugWrap);
     }
-    var right = document.createElement("div");
-    right.className = "actions-right";
-    var copyBtn = document.createElement("button");
-    copyBtn.className = "icon-btn";
-    copyBtn.title = "Copy reply"; copyBtn.setAttribute("aria-label", "Copy reply");
-    copyBtn.innerHTML = '<svg class="icon"><use href="#i-copy"/></svg>';
-    function showCopied() {
-      var flag = document.createElement("span");
-      flag.className = "copied-flag";
-      flag.innerHTML = '<svg class="icon"><use href="#i-check"/></svg>Copied';
-      right.insertBefore(flag, copyBtn);
-      setTimeout(function () { flag.remove(); }, 1600);
-    }
-    function fallbackCopy(text) {
-      // clipboard API is unavailable outside a secure context (e.g. a
-      // teammate opening this over plain http://<lan-ip>:8000)
-      var ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.focus(); ta.select();
-      try { if (document.execCommand("copy")) showCopied(); }
-      catch (e) { /* no copy mechanism available; leave silently as-is */ }
-      ta.remove();
-    }
-    copyBtn.addEventListener("click", function () {
-      var textToCopy = proseSource;
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(textToCopy).then(showCopied, function () { fallbackCopy(textToCopy); });
-      } else {
-        fallbackCopy(textToCopy);
-      }
-    });
-    var regenBtn = document.createElement("button");
-    regenBtn.className = "icon-btn";
-    regenBtn.title = "Regenerate"; regenBtn.setAttribute("aria-label", "Regenerate");
-    regenBtn.innerHTML = '<svg class="icon"><use href="#i-rotate-ccw"/></svg>';
-    regenBtn.addEventListener("click", function () {
-      wrap.remove();
-      if (opts.upload && opts.file) {
-        runUploadReading(opts.file, opts.tStart, opts.sampleRate, opts.question, STATE.activeChatId, opts.horizonSec);
-      } else if (!opts.upload) {
-        runReading(opts.subject, opts.side, opts.tStart, false, STATE.activeChatId, opts.question, opts.horizonSec);
-      }
-    });
-    right.appendChild(copyBtn);
-    right.appendChild(regenBtn);
-    actions.appendChild(right);
-    wrap.appendChild(actions);
 
     appendToThread(wrap);
     return wrap;
@@ -1051,31 +1064,6 @@
     wrap.className = "msg-wrap msg-guidance";
     wrap.innerHTML = '<div class="guidance-rule"></div><p class="guidance-text"></p>';
     wrap.querySelector("p").innerHTML = boldNumbers(text);
-    appendToThread(wrap);
-  }
-
-  function renderUploadNotice(filename, detail) {
-    var wrap = document.createElement("div");
-    wrap.className = "msg-wrap msg-upload";
-    var p = document.createElement("p");
-    p.className = "guidance-text";
-    p.style.margin = "0";
-    p.innerHTML = 'I can read <span class="narrow">' + escapeHtml(filename) + '</span>, but it has a <strong>single column</strong> of amplitude values and no timestamps, so I don’t know how fast it was sampled. Enter the <strong>sample rate</strong> in Settings and I’ll classify it.';
-    wrap.appendChild(p);
-    var warn = document.createElement("div");
-    warn.className = "upload-warn";
-    warn.innerHTML =
-      '<svg class="icon"><use href="#i-triangle-alert"/></svg>' +
-      '<div><div class="upload-warn-title">Sample rate needed before this recording can be read</div>' +
-      '<div class="upload-warn-body"></div>' +
-      '<button class="set-rate-btn"><svg class="icon"><use href="#i-settings"/></svg>Set sample rate</button></div>';
-    warn.querySelector(".upload-warn-body").textContent = detail || "Typical surface EMG rigs record at 1000–2000 Hz. Guessing wrong shifts every frequency reading, so there is no default.";
-    warn.querySelector(".set-rate-btn").addEventListener("click", function () {
-      STATE.sidebar = "open"; applyLayout();
-      setSettingsOpen(true);
-      $("sample-rate").focus();
-    });
-    wrap.appendChild(warn);
     appendToThread(wrap);
   }
 
@@ -1105,129 +1093,435 @@
     appendToThread(wrap);
   }
 
+  // A button per answer that has a figure available. Fetches it on click,
+  // shows its own progress (the render takes a couple of seconds), then hands
+  // the result to the figures panel. Stays disabled afterwards with the label
+  // changed, so a second click cannot queue a second identical render.
+  function showGraphButton(ref, caption, windowInfo) {
+    var row = document.createElement("div");
+    row.className = "reading-actions";
+    var btn = document.createElement("button");
+    btn.className = "suggestion";
+    btn.innerHTML = '<svg class="icon" style="font-size:13px;display:inline-block;vertical-align:-2px;margin-right:6px"><use href="#i-chart-spline"/></svg>Show graph';
+    btn.addEventListener("click", function () {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = "Drawing the graph…";
+      var fd = new FormData();
+      fd.append("session_id", STATE.activeChatId || "default");
+      fd.append("source", ref.source || "dataset");
+      if (ref.subject != null) fd.append("subject", ref.subject);
+      if (ref.t_start != null) fd.append("t_start", ref.t_start);
+      if (ref.side) fd.append("side", ref.side);
+      fd.append("theme", STATE.theme || "light");
+      openPane();
+      figLoading();
+      fetch(API + "/chart", {method: "POST", body: fd}).then(function (r) {
+        if (!r.ok) throw new Error("chart request failed");
+        return r.json();
+      }).then(function (j) {
+        var gid = figShowHtml(j.chart_html, caption, null, null, windowInfo);
+        STATE.activeChartRef = {ref: ref, caption: caption, windowInfo: windowInfo, groupId: gid};
+        btn.textContent = "Graph shown";
+      }).catch(function () {
+        figClearPending();
+        figRestoreStatus();
+        btn.disabled = false;
+        btn.textContent = "Show graph (retry)";
+      });
+    });
+    row.appendChild(btn);
+    return row;
+  }
+
   // ================= figures pane =================
   function setFigStatus(t) { $("fig-status").textContent = t; }
+  // Name what's actually on screen ("Subject 13 - 60s, right") rather than
+  // the generic "Latest reading": the pane holds only the newest figure, so
+  // once you've scrolled the thread the subtitle is the only thing tying the
+  // chart back to the question that produced it.
+  function figSubtitle(w) {
+    if (!w) return "Latest reading";
+    if (w.source === "upload") return w.name ? "Upload - " + w.name : "Uploaded recording";
+    var bits = [];
+    if (w.subject != null) bits.push("Subject " + w.subject);
+    if (w.t_start != null) bits.push(Math.round(w.t_start) + "s");
+    if (w.side) bits.push(w.side === "L" ? "left" : "right");
+    return bits.length ? bits.join(" · ") : "Latest reading";
+  }
+  // The placeholder is prepended, not written over #fig-content: blowing the
+  // panel away on every new question destroyed the figures already there while
+  // leaving them in FIG_GROUPS, so the footer counted figures that no longer
+  // existed and the earlier readings were gone before the new one arrived.
+  function figClearPending() {
+    var p = document.getElementById("fig-pending");
+    if (p) p.remove();
+  }
   function figLoading() {
     STATE.figStatus = "loading";
-    $("fig-content").innerHTML =
-      '<div class="fig-block"><div class="fig-grid-placeholder"><span class="dot"></span><span class="fig-loading-label">Rendering figures</span></div>' +
-      '<div class="fig-caption">Figures appear once the window has been classified.</div></div>';
-    setFigStatus("Awaiting reading");
-    if (STATE.pane === "hidden") { /* leave hidden; header button will surface it */ }
-    else if (STATE.pane !== "open" && !paneByUser) { STATE.pane = "open"; }
+    figClearPending();
+    var content = $("fig-content");
+    var emptyState = content.querySelector(".fig-empty");
+    if (emptyState) emptyState.remove();
+    var pending = document.createElement("div");
+    pending.id = "fig-pending";
+    pending.className = "fig-block";
+    pending.innerHTML =
+      '<div class="fig-grid-placeholder"><span class="dot"></span>' +
+      '<span class="fig-loading-label">Rendering figures</span></div>';
+    content.insertBefore(pending, content.firstChild);
+    content.scrollTop = 0;
+    setFigStatus("Working on it");
+    // No opening from here. figLoading() now only runs after "Show graph" has
+    // been pressed, and that handler opens the panel itself.
     applyLayout();
   }
-  function figShow(html, captionSubject, side, tStart, forecast) {
+  // The Play/Pause/Jump-to-asked-time/Reset-zoom row is a Plotly updatemenu
+  // (viz/render_window.py's fig.update_layout(updatemenus=...)), rendered as
+  // an SVG <g class="updatemenu-container"> positioned right over the chart
+  // title. Can't reach into the iframe's CSS from the parent document, so
+  // this is injected into the chart's own HTML before it becomes srcdoc:
+  // hidden until the chart is hovered, rather than permanently overlapping
+  // the title.
+  var _HIDE_UPDATEMENU_CSS =
+    "<style>.updatemenu-container{opacity:0;transition:opacity 120ms ease;}" +
+    ".plotly-graph-div:hover .updatemenu-container{opacity:1;}</style>";
+  function withHiddenButtons(html) {
+    return html ? _HIDE_UPDATEMENU_CSS + html : html;
+  }
+
+  // Every figure group currently on screen, oldest first. Kept so the modal
+  // can re-mount a group at natural size and so a resize can rescale the
+  // thumbnails without reloading anything.
+  var FIG_GROUPS = [];
+
+  // Natural [width, height] of each chart, matching what the Python emits --
+  // viz/render_window.py's animated 3-panel chart (height=920, its top margin
+  // stacks title over the button row), and frontend/charts.py's upload chart
+  // (560) and forecast chart (380). These have to track the Python: a height
+  // that is too small crops the figure, too large leaves dead space under it,
+  // and either way the thumbnail scale is computed off the wrong number.
+  var FIG_SIZES = {reading: [1100, 920], upload: [1100, 560], forecast: [700, 380]};
+
+  // Fit a figure's natural pixel size into the space the panel actually has.
+  // Never scales past 1: in fullscreen (or a wide dragged-out panel) there is
+  // room for the real thing, and blowing a chart up past 100% would just
+  // soften the text.
+  // `paneWidth` is the width the panel is heading for, not the one it has:
+  // #fig-pane animates its width over 240ms, so reading clientWidth here
+  // during a resize or a fullscreen toggle samples a value still in flight and
+  // scales every thumbnail to a size the panel is about to stop being. Callers
+  // pass the target; a transitionend listener re-runs it as a safety net.
+  function figScaleThumbs(paneWidth) {
+    var content = $("fig-content");
+    if (!content) return;
+    var paneW = paneWidth || $("fig-pane").clientWidth;
+    // 32 = #fig-content's 16px padding each side.
+    var avail = paneW - 32 - (STATE.full ? 0 : 2);  // 2 = the card's l/r border
+    if (avail <= 0) return;
+    content.querySelectorAll(".fig-frame-wrap").forEach(function (wrap) {
+      var frame = wrap.querySelector("iframe");
+      if (!frame) return;
+      var natW = parseFloat(frame.dataset.w), natH = parseFloat(frame.dataset.h);
+      if (!natW || !natH) return;
+      var scale = Math.min(1, avail / natW);
+      frame.style.transform = scale < 1 ? "scale(" + scale + ")" : "";
+      // The wrapper has to be told the *scaled* height: a CSS transform does
+      // not change layout size, so without this the tile keeps reserving the
+      // full 900px and leaves a tall empty gap under a 360px thumbnail.
+      wrap.style.height = Math.round(natH * scale) + "px";
+      wrap.classList.toggle("thumb", scale < 1);
+      wrap.setAttribute("tabindex", scale < 1 ? "0" : "-1");
+    });
+  }
+
+  function figTile(id, html, caption, natW, natH, label, groupId) {
+    var block = document.createElement("div");
+    block.className = "fig-block";
+    block.innerHTML =
+      '<div class="fig-frame-wrap"><iframe sandbox="allow-scripts"></iframe>' +
+      '<span class="fig-thumb-hint"><svg class="icon" style="font-size:12px"><use href="#i-maximize"/></svg>Click to enlarge</span></div>' +
+      '<div class="fig-caption"></div>';
+    var frame = block.querySelector("iframe");
+    frame.id = id;
+    frame.dataset.w = natW;
+    frame.dataset.h = natH;
+    // Sized inline from the natural dimensions rather than by an id rule in
+    // the stylesheet: the sizes now have to agree with what the Python
+    // actually emits (FIG_SIZES), and two places to update is one too many.
+    frame.style.width = natW + "px";
+    frame.style.height = natH + "px";
+    frame.srcdoc = withHiddenButtons(html);
+    block.querySelector(".fig-caption").textContent = caption || "";
+    var wrap = block.querySelector(".fig-frame-wrap");
+    function open() { if (wrap.classList.contains("thumb")) figOpenModal(groupId); }
+    wrap.addEventListener("click", open);
+    wrap.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+    wrap.setAttribute("role", "button");
+    wrap.setAttribute("aria-label", "Enlarge " + label);
+    return block;
+  }
+
+  // Figures accumulate rather than replace. Each answer that produces charts
+  // adds a group to the top of the panel, so the reading you asked about three
+  // questions ago is still there to compare against -- scrapping it on every
+  // turn meant the panel could only ever answer "what did I just ask?".
+  //
+  // Capped, unlike a chat transcript: every figure kept is a live Plotly
+  // instance in its own iframe, and an hour of questions would leave dozens
+  // animating at once. The oldest group past the cap is dropped, with the
+  // footer saying so rather than having figures quietly vanish.
+  var FIG_GROUP_CAP = 8;
+  var _figGroupSeq = 0;
+
+  function figShowHtml(chartHtml, chartCaption, forecastHtml, forecastCaption, windowInfo) {
+    if (!chartHtml && !forecastHtml) return;
     STATE.figStatus = "ready";
     var content = $("fig-content");
-    content.innerHTML =
-      '<div class="fig-block"><div class="fig-frame-wrap"><iframe id="fig-frame" sandbox="allow-scripts"></iframe></div>' +
-      '<div class="fig-caption" id="fig-caption"></div></div>';
-    document.getElementById("fig-frame").srcdoc = html;
-    document.getElementById("fig-caption").innerHTML =
-      'Figure 1. How tired subject ' + escapeHtml(String(captionSubject)) + '’s muscle is over the session, ' +
-      'plus a close-up of the ' + (side === "L" ? "left" : "right") + '-side signal. Cursor at ' +
-      '<span class="narrow">' + tStart.toFixed(1) + ' s</span>.';
-    if (forecast) {
-      var fBlock = document.createElement("div");
-      fBlock.className = "fig-block";
-      fBlock.innerHTML =
-        '<div class="fig-frame-wrap no-shadow"><div class="fig-grid-placeholder small"><span class="fig-loading-label">forecast not available as a standalone figure</span></div></div>' +
-        '<div class="fig-caption">Figure 2. Where the trend is heading over the next stretch of the session.</div>';
-      content.appendChild(fBlock);
+    figClearPending();
+    var emptyState = content.querySelector(".fig-empty");
+    if (emptyState) emptyState.remove();
+
+    // dataset readings render viz/render_window.py's taller 3-panel chart;
+    // uploads render frontend/charts.py's shorter 2-panel one -- see the
+    // natural sizes in FIG_SIZES above.
+    var isUpload = !!(windowInfo && windowInfo.source === "upload");
+    var figs = [];
+    if (chartHtml) {
+      figs.push({html: chartHtml, caption: chartCaption,
+                 w: FIG_SIZES.reading[0],
+                 h: isUpload ? FIG_SIZES.upload[1] : FIG_SIZES.reading[1],
+                 label: "the signal chart"});
     }
-    setFigStatus("Latest reading");
-    if (STATE.pane === "hidden" && !paneByUser) STATE.pane = "rail";
-    if (STATE.pane !== "open" && !paneByUser) STATE.pane = "open";
+    if (forecastHtml) {
+      figs.push({html: forecastHtml, caption: forecastCaption,
+                 w: FIG_SIZES.forecast[0], h: FIG_SIZES.forecast[1],
+                 label: "the forecast chart"});
+    }
+
+    var gid = "figgroup-" + (++_figGroupSeq);
+    var title = figSubtitle(windowInfo);
+    var group = document.createElement("section");
+    group.className = "fig-group";
+    group.id = gid;
+    group.innerHTML =
+      '<div class="fig-group-head"><span class="fig-group-title"></span>' +
+      '<span class="fig-group-time narrow"></span></div>';
+    group.querySelector(".fig-group-title").textContent = title;
+    group.querySelector(".fig-group-time").textContent =
+      new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    FIG_GROUPS.push({id: gid, title: title, figs: figs});
+    figs.forEach(function (f, i) {
+      group.appendChild(figTile(gid + "-" + i, f.html, f.caption, f.w, f.h, f.label, gid));
+    });
+
+    // Newest on top: the answer just given is the one being read, and pushing
+    // it to the bottom would mean scrolling past history to reach it.
+    content.insertBefore(group, content.firstChild);
+    while (FIG_GROUPS.length > FIG_GROUP_CAP) {
+      var dropped = FIG_GROUPS.shift();
+      var el = document.getElementById(dropped.id);
+      if (el) el.remove();
+    }
+    $("fig-footer").textContent = FIG_GROUPS.length > 1
+      ? ("Showing the last " + FIG_GROUPS.length + " figures from this chat. "
+         + "Click any to enlarge.")
+      : "Click the figure to enlarge it.";
+
+    setFigStatus(title);
+    // Deliberately does NOT open the panel. Reading charts get here only via
+    // the "Show graph" button, which opens it first; forecast charts get here
+    // with the answer, and those must not shove a panel onto the screen
+    // nobody asked for -- the header's figures button surfaces them instead.
     applyLayout();
+    figScaleThumbs();
+    content.scrollTop = 0;
+    return gid;
   }
+
+  // Re-fetches a dataset/upload chart already on screen with the current
+  // theme and swaps it in place -- without this, toggling light/dark only
+  // affected charts drawn AFTER the toggle, so a chart opened before it kept
+  // rendering in whatever theme was active when "Show graph" was pressed.
+  // Only the ref-based chart (dataset/upload, via POST /chart) can be
+  // re-drawn this way; a forecast chart is baked into its /turn response with
+  // no redraw endpoint of its own, so it is left as-is until the next answer.
+  function redrawActiveChart() {
+    var info = STATE.activeChartRef;
+    if (!info) return;
+    var group = FIG_GROUPS.filter(function (g) { return g.id === info.groupId; })[0];
+    if (!group || !group.figs[0]) return;
+    var fd = new FormData();
+    fd.append("session_id", STATE.activeChatId || "default");
+    fd.append("source", info.ref.source || "dataset");
+    if (info.ref.subject != null) fd.append("subject", info.ref.subject);
+    if (info.ref.t_start != null) fd.append("t_start", info.ref.t_start);
+    if (info.ref.side) fd.append("side", info.ref.side);
+    fd.append("theme", STATE.theme || "light");
+    fetch(API + "/chart", {method: "POST", body: fd}).then(function (r) {
+      if (!r.ok) throw new Error("chart request failed");
+      return r.json();
+    }).then(function (j) {
+      group.figs[0].html = j.chart_html;
+      var frame = document.getElementById(info.groupId + "-0");
+      if (frame) frame.srcdoc = withHiddenButtons(j.chart_html);
+    }).catch(function () {});   // theme is cosmetic -- a failed redraw just leaves the old one up
+  }
+
+  // ================= figure modal =================
+  // A fresh iframe per open rather than moving the panel's: an iframe that is
+  // re-parented in the DOM reloads its srcdoc, which would reset the Plotly
+  // animation and lose the "asked" frame the reader was on. Two independent
+  // copies is cheaper than trying to preserve one.
+  function figOpenModal(groupId) {
+    var group = FIG_GROUPS.filter(function (g) { return g.id === groupId; })[0]
+                || FIG_GROUPS[FIG_GROUPS.length - 1];
+    if (!group) return;
+    var body = $("fig-modal-body");
+    body.innerHTML = "";
+    group.figs.forEach(function (f) {
+      var frame = document.createElement("iframe");
+      frame.sandbox = "allow-scripts";
+      frame.style.width = f.w + "px";
+      frame.style.height = f.h + "px";
+      frame.dataset.w = f.w;
+      frame.dataset.h = f.h;
+      frame.srcdoc = withHiddenButtons(f.html);
+      body.appendChild(frame);
+    });
+    $("fig-modal-status").textContent = group.title;
+    $("fig-modal").classList.remove("hidden");
+    $("fig-modal-close").focus();
+  }
+  function figCloseModal() {
+    $("fig-modal").classList.add("hidden");
+    // Drop the srcdocs so two live Plotly instances aren't left animating in
+    // the background for the rest of the session.
+    $("fig-modal-body").innerHTML = "";
+  }
+  function figModalOpen() { return !$("fig-modal").classList.contains("hidden"); }
+  $("fig-modal-close").addEventListener("click", figCloseModal);
+  $("fig-modal").addEventListener("click", function (e) {
+    if (e.target === $("fig-modal")) figCloseModal();   // scrim only, not the card
+  });
+  // Put the header subtitle back to whatever the newest kept figure is, after
+  // a turn that showed the "Working on it" status but produced no figure.
+  function figRestoreStatus() {
+    var newest = FIG_GROUPS[FIG_GROUPS.length - 1];
+    if (newest) {
+      STATE.figStatus = "ready";
+      setFigStatus(newest.title);
+    } else {
+      STATE.figStatus = "none";
+      setFigStatus("No reading yet");
+      if (!$("fig-content").querySelector(".fig-empty")) {
+        $("fig-content").innerHTML =
+          '<div class="fig-empty"><svg class="icon"><use href="#i-chart-spline"/></svg><span>No figure yet</span></div>';
+      }
+    }
+  }
+
   function figIdle() {
     STATE.figStatus = "none";
+    FIG_GROUPS = [];
+    figClearPending();
     $("fig-content").innerHTML = '<div class="fig-empty"><svg class="icon"><use href="#i-chart-spline"/></svg><span>No figure yet</span></div>';
     setFigStatus("No reading yet");
+    $("fig-footer").textContent =
+      "Figures from this chat collect here. They are not saved with chat history.";
     applyLayout();
   }
 
-  // ================= query parsing =================
-  function parseQuery(text) {
-    var subjMatch = text.match(/subject\s+(\d+)/i);
-    var sideMatch = text.match(/\bleft\b/i) ? "L" : (text.match(/\bright\b/i) ? "R" : null);
-    var hMatch = text.match(/\b(?:and\s+)?in(?:\s+the\s+next)?\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?\b/i);
-    var textForT = hMatch ? text.slice(0, hMatch.index) + text.slice(hMatch.index + hMatch[0].length) : text;
-    var tMatch = textForT.match(/at\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?\b/i) ||
-                 textForT.match(/(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?\b/i);
-    return {
-      subject: subjMatch ? parseInt(subjMatch[1], 10) : null,
-      side: sideMatch || "R",
-      tStart: tMatch ? parseFloat(tMatch[1]) : 0,
-      horizonSec: hMatch ? parseFloat(hMatch[1]) : null
-    };
-  }
+  // The chart iframes measure their own document and post the real height back
+  // (see render_window.py's _IFRAME_CHROME). Without listening for it, the
+  // iframe stays at the estimated FIG_SIZES height while its content -- the
+  // colour key, the chart, and the select-to-inspect panel underneath -- is
+  // taller, so the iframe grew its own inner scrollbar next to the panel's.
+  // Two scrollbars side by side read as the figure being rendered twice.
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!d || d.type !== "iframe:height" || !d.height) return;
+    var frames = document.querySelectorAll("#fig-content iframe, #fig-modal-body iframe");
+    for (var i = 0; i < frames.length; i++) {
+      // Sandboxed srcdoc frames are opaque-origin, so identify the sender by
+      // its window object rather than by e.origin (which is just "null").
+      if (frames[i].contentWindow !== e.source) continue;
+      var h = Math.ceil(d.height);
+      if (Math.abs(h - parseFloat(frames[i].dataset.h || 0)) < 2) return;
+      frames[i].dataset.h = h;
+      frames[i].style.height = h + "px";
+      figScaleThumbs();
+      return;
+    }
+  });
 
   // ================= API =================
-  function handleApiResponse(r) {
-    if (r.status === 502) return r.json().then(function (j) { throw { ollamaFailure: true, detail: j.detail }; });
-    if (r.status >= 400 && r.status < 500) {
-      return r.json().then(function (j) { throw { guidance: true, detail: j.detail || ("request failed (" + r.status + ")") }; })
-        .catch(function (e) { throw (e && e.guidance) ? e : { guidance: true, detail: "request failed (" + r.status + ")" }; });
-    }
-    if (!r.ok) throw { detail: "server error (" + r.status + ")" };
-    return r.json();
-  }
-  function apiClassify(subject, tStart, side) {
-    return fetch(API + "/classify?subject=" + subject + "&t_start=" + tStart + "&side=" + side).then(handleApiResponse);
-  }
-  function apiAnswer(subject, tStart, side, question, model, horizonSec) {
-    var url = API + "/answer?subject=" + subject + "&t_start=" + tStart + "&side=" + side +
-      "&question=" + encodeURIComponent(question || "") + "&model=" + encodeURIComponent(model || "") +
-      (horizonSec ? "&horizon_sec=" + horizonSec : "");
-    return fetch(url).then(handleApiResponse);
-  }
-  function apiAnswerUpload(file, tStart, sampleRate, question, model, horizonSec) {
+  // One call per turn: the server (frontend/turn.py via models/serve.py's
+  // POST /turn) resolves intent, classifies, forecasts, and phrases the
+  // answer itself -- this replaces the old classify+answer+forecast+render
+  // chain entirely. session_id is a per-chat uuid so the server can keep
+  // "why?" / "and at 90 seconds?" follow-up context between turns.
+  function apiTurn(sessionId, userText, file) {
+    // Always multipart, even without a file -- models/serve.py's POST /turn
+    // takes plain FastAPI Form() fields (needed anyway for the file case),
+    // so one request shape covers both instead of branching JSON vs. form.
     var fd = new FormData();
-    fd.append("file", file);
-    fd.append("t_start", tStart);
-    if (sampleRate) fd.append("sample_rate_hz", sampleRate);
-    fd.append("question", question || "");
-    fd.append("model", model || "");
-    if (horizonSec) fd.append("horizon_sec", horizonSec);
-    return fetch(API + "/answer_upload", { method: "POST", body: fd }).then(handleApiResponse);
+    fd.append("session_id", sessionId);
+    fd.append("user_text", userText || "");
+    fd.append("theme", STATE.theme || "light");
+    var sampleRate = $("sample-rate").value ? parseFloat($("sample-rate").value) : null;
+    if (sampleRate) fd.append("sample_rate", sampleRate);
+    var note = $("athlete-note") ? $("athlete-note").value : "";
+    if (note) fd.append("athlete_note", note);
+    if (file) fd.append("file", file);
+    return fetch(API + "/turn", { method: "POST", body: fd }).then(function (r) {
+      if (!r.ok) return r.json().catch(function () { return {}; })
+        .then(function (j) { throw { detail: j.detail || ("request failed (" + r.status + ")") }; });
+      return r.json();
+    });
   }
-  function apiForecast(subject, tStart, side, horizonSec) {
-    return fetch(API + "/forecast?subject=" + subject + "&t_start=" + tStart + "&side=" + side +
-      "&horizon_sec=" + horizonSec).then(handleApiResponse).then(function (j) { return j.forecast; });
-  }
-  function apiForecastUpload(file, tStart, sampleRate, horizonSec) {
-    var fd = new FormData();
-    fd.append("file", file);
-    fd.append("t_start", tStart);
-    if (sampleRate) fd.append("sample_rate_hz", sampleRate);
-    fd.append("horizon_sec", horizonSec);
-    return fetch(API + "/forecast_upload", { method: "POST", body: fd }).then(handleApiResponse).then(function (j) { return j.forecast; });
-  }
-  function apiRender(subject, tStart, side) {
-    return fetch(API + "/render?subject=" + subject + "&t_start=" + tStart + "&side=" + side)
-      .then(function (r) { if (!r.ok) throw new Error("render failed"); return r.json(); })
-      .then(function (j) { return j.html; });
-  }
-  function apiClassifyUpload(file, tStart, sampleRate) {
-    var fd = new FormData();
-    fd.append("file", file);
-    fd.append("t_start", tStart);
-    if (sampleRate) fd.append("sample_rate_hz", sampleRate);
-    return fetch(API + "/classify_upload", { method: "POST", body: fd }).then(handleApiResponse);
-  }
-  function apiRenderUpload(file, tStart, sampleRate) {
-    var fd = new FormData();
-    fd.append("file", file);
-    fd.append("t_start", tStart);
-    if (sampleRate) fd.append("sample_rate_hz", sampleRate);
-    return fetch(API + "/render_upload", { method: "POST", body: fd })
-      .then(function (r) { if (!r.ok) throw new Error("render failed"); return r.json(); })
-      .then(function (j) { return j.html; });
+
+  // ================= markdown (server prose only -- **bold**, _italic_, "- " lists) =================
+  function mdToHtml(text) {
+    var escaped = escapeHtml(text || "");
+    var lines = escaped.split("\n");
+    var html = "", inList = false;
+    lines.forEach(function (line) {
+      var bullet = /^[-*]\s+(.*)/.exec(line);
+      if (bullet) {
+        if (!inList) { html += "<ul>"; inList = true; }
+        html += "<li>" + bullet[1] + "</li>";
+        return;
+      }
+      if (inList) { html += "</ul>"; inList = false; }
+      if (line.trim() === "") { html += ""; return; }
+      html += "<p>" + line + "</p>";
+    });
+    if (inList) html += "</ul>";
+    return html
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/_(.+?)_/g, "<em>$1</em>");
   }
 
   // ================= chat lifecycle =================
+  // Each chat gets a session_id (a uuid) that the server keys its in-memory
+  // conversation state on (frontend/turn.py's `session` dict -- last params,
+  // last upload, last answer, etc, for "why?" / "and at 90 seconds?"
+  // follow-ups). The message transcript, including chart HTML, is kept in
+  // localStorage -- unlike frontend/history.py's disk-based chat history
+  // (which deliberately drops chart HTML for size), so a large enough chat
+  // history can hit the browser's localStorage quota; saveChats() already
+  // degrades gracefully (chat still works this session, it just won't
+  // persist across a reload) rather than throwing. Reopening an old chat
+  // replays its text and its most recent chart, but the server-side
+  // conversation state is gone, so it can't itself be followed up on until a
+  // new question re-establishes context.
+  function newSessionId() {
+    return (Date.now() + "-" + Math.random().toString(36).slice(2));
+  }
+
   function newChat() {
     STATE.activeChatId = null;
     STATE.pendingFile = null;
@@ -1248,13 +1542,24 @@
     renderChatGroups();
     setHeader(c.title, c.subtitle);
     clearThread();
-    if (c.upload) {
-      renderGuidance("This chat used an uploaded recording (<strong>" + escapeHtml(c.title) + "</strong>). Uploads aren’t stored between sessions — attach the file again to continue.");
-      figIdle();
-    } else {
-      figLoading();
-      runReading(c.subject, c.side, c.tStart, false, id);
-    }
+    // figIdle() first: it resets FIG_GROUPS, so figures do not carry over from
+    // whichever chat was open before. Reading charts are NOT replayed -- each
+    // answer keeps its "Show graph" button, so reopening a chat costs nothing
+    // and any figure that is wanted is one click away. Forecast charts are
+    // replayed because they were built with the answer and are already here.
+    figIdle();
+    var charted = [];
+    (c.messages || []).forEach(function (m) {
+      if (m.role === "user") appendUserBubble(m.content);
+      else {
+        renderAnswer(m);
+        if (m.forecast_chart_html) charted.push(m);
+      }
+    });
+    charted.forEach(function (m) {
+      figShowHtml(null, null,
+        m.forecast_chart_html, m.forecast_chart_caption, m.window);
+    });
   }
 
   function clearAttachChip() {
@@ -1262,199 +1567,97 @@
     $("attach-row").innerHTML = "";
   }
 
-  // ================= run a reading (dataset subject) =================
-  function runReading(subject, side, tStart, isRetryFresh, chatId, question, horizonSec) {
-    if (threadHasEmptyState()) clearThread();
-    var loadingRow = renderLoading("Classifying the " + tStart.toFixed(1) + " s window");
-    figLoading();
-
-    var needBaseline = tStart !== 0;
-    var baselineP = needBaseline ? apiClassify(subject, 0, side) : Promise.resolve(null);
-
-    apiAnswer(subject, tStart, side, question, STATE.model, horizonSec).then(function (answer) {
-      return baselineP.then(function (base) {
-        loadingRow.remove();
-        renderReading({
-          subject: subject, side: side, tStart: tStart,
-          cur: answer.result, base: needBaseline ? base : answer.result,
-          source: "research dataset", upload: false, llmText: answer.text, question: question,
-          horizonSec: horizonSec, forecast: answer.forecast
-        });
-        finishReading(subject, side, tStart, chatId, !!answer.forecast);
-      });
-    }).catch(function (err) {
-      if (err && err.ollamaFailure) {
-        var needBaseline2 = tStart !== 0;
-        Promise.all([
-          apiClassify(subject, tStart, side),
-          needBaseline2 ? apiClassify(subject, 0, side) : Promise.resolve(null),
-          horizonSec ? apiForecast(subject, tStart, side, horizonSec).catch(function () { return null; }) : Promise.resolve(null)
-        ]).then(function (res) {
-          loadingRow.remove();
-          var cur = res[0], base = needBaseline2 ? res[1] : res[0];
-          renderReading({
-            subject: subject, side: side, tStart: tStart, cur: cur, base: base,
-            source: "research dataset", upload: false, question: question,
-            horizonSec: horizonSec, forecast: res[2],
-            note: "Chat model (Ollama) unreachable — showing the computed summary instead of a generated one."
-          });
-          finishReading(subject, side, tStart, chatId, !!res[2]);
-        }).catch(function () {
-          loadingRow.remove();
-          renderFailure(null, "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
-            runReading(subject, side, tStart, false, chatId, question, horizonSec);
-          });
-          figIdle();
-        });
-        return;
-      }
-      loadingRow.remove();
-      if (err && err.guidance) {
-        renderGuidance(escapeHtml(err.detail || ""));
-        figIdle();
-      } else {
-        renderFailure(null, "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
-          runReading(subject, side, tStart, false, chatId, question, horizonSec);
-        });
-        figIdle();
-      }
-    });
-  }
-
-  function finishReading(subject, side, tStart, chatId, forecast) {
-    apiRender(subject, tStart, side).then(function (html) {
-      figShow(html, subject, side, tStart, forecast);
-    }).catch(function () {
-      figIdle();
-    });
-    upsertChat(chatId, {
-      title: "Subject " + subject + ", " + (side === "L" ? "left" : "right") + " side",
-      subtitle: "Research dataset, 13 subjects",
-      subject: subject, side: side, tStart: tStart, upload: false
-    });
-  }
-
-  // ================= run an uploaded-file reading =================
-  function runUploadReading(file, tStart, sampleRate, question, chatId, horizonSec) {
-    if (threadHasEmptyState()) clearThread();
-    var loadingRow = renderLoading("Classifying the uploaded recording");
-    figLoading();
-
-    function finishUpload(forecast) {
-      apiRenderUpload(file, tStart, sampleRate).then(function (html) {
-        figShow(html, file.name, "R", tStart, forecast);
-      }).catch(function () { figIdle(); });
-      upsertChat(chatId, { title: file.name, subtitle: "Your recording", upload: true });
-    }
-
-    apiAnswerUpload(file, tStart, sampleRate, question, STATE.model, horizonSec).then(function (answer) {
-      loadingRow.remove();
-      renderReading({
-        subject: file.name, side: "R", tStart: tStart,
-        cur: answer.result, base: null,
-        source: "uploaded recording", upload: true, label: file.name, llmText: answer.text,
-        file: file, sampleRate: sampleRate, question: question,
-        horizonSec: horizonSec, forecast: answer.forecast
-      });
-      finishUpload(!!answer.forecast);
-    }).catch(function (err) {
-      if (err && err.ollamaFailure) {
-        Promise.all([
-          apiClassifyUpload(file, tStart, sampleRate),
-          horizonSec ? apiForecastUpload(file, tStart, sampleRate, horizonSec).catch(function () { return null; }) : Promise.resolve(null)
-        ]).then(function (res) {
-          loadingRow.remove();
-          renderReading({
-            subject: file.name, side: "R", tStart: tStart, cur: res[0], base: null,
-            source: "uploaded recording", upload: true, label: file.name,
-            file: file, sampleRate: sampleRate, question: question,
-            horizonSec: horizonSec, forecast: res[1],
-            note: "Chat model (Ollama) unreachable — showing the computed summary instead of a generated one."
-          });
-          finishUpload(!!res[1]);
-        }).catch(function () {
-          loadingRow.remove();
-          renderFailure(file.name + " — am I fatigued?", "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
-            runUploadReading(file, tStart, sampleRate, question, chatId, horizonSec);
-          });
-          figIdle();
-        });
-        return;
-      }
-      loadingRow.remove();
-      if (err && err.guidance) {
-        var needsRate = /sample_rate_hz|sample rate/i.test(err.detail || "");
-        if (needsRate) {
-          markSampleRateRequired(true);
-          renderUploadNotice(file.name, err.detail);
-        } else {
-          renderGuidance(escapeHtml(err.detail || ""));
-        }
-        figIdle();
-      } else {
-        renderFailure(file.name + " — am I fatigued?", "The model server did not respond, so nothing was classified. Check that `python models/serve.py` is running, then retry.", function () {
-          runUploadReading(file, tStart, sampleRate, question, chatId, horizonSec);
-        });
-        figIdle();
-      }
-    });
-  }
-
-  function upsertChat(existingId, fields) {
-    var id = existingId || (Date.now() + "-" + Math.random().toString(36).slice(2));
+  function upsertChat(id, title, message) {
     var existing = STATE.chats.filter(function (c) { return c.id === id; })[0];
-    var chat = existing || { id: id };
-    chat.title = fields.title;
-    chat.subtitle = fields.subtitle;
+    var chat = existing || { id: id, messages: [] };
+    if (!chat.title && title) chat.title = title;
+    chat.subtitle = chat.subtitle || "EMG fatigue chatbot";
     chat.ts = Date.now();
-    chat.subject = fields.subject;
-    chat.side = fields.side;
-    chat.tStart = fields.tStart;
-    chat.upload = fields.upload;
+    chat.messages.push(message);
     if (!existing) STATE.chats.unshift(chat);
     saveChats();
     STATE.activeChatId = id;
     renderChatGroups();
-    setHeader(chat.title, chat.subtitle);
+    setHeader(chat.title || "New chat", chat.subtitle);
+  }
+
+  function autoTitle(text) {
+    var t = text.trim().replace(/\s+/g, " ");
+    return t.length <= 40 ? t : t.slice(0, 40).trim() + "...";
+  }
+
+  // ================= run a turn (dataset question, follow-up, or upload) ==
+  function runTurn(text, file) {
+    if (threadHasEmptyState()) clearThread();
+    var chatId = STATE.activeChatId || newSessionId();
+    var isNewChat = !STATE.activeChatId;
+    STATE.activeChatId = chatId;
+
+    var displayText = text || (file ? "[uploaded " + file.name + "]" : "");
+    appendUserBubble(displayText);
+    upsertChat(chatId, isNewChat ? autoTitle(displayText) : null, { role: "user", content: displayText });
+
+    var loadingRow = renderLoading(file ? "Reading the uploaded recording" : "Working on it");
+    // No figLoading() here any more: nothing is being drawn during the answer,
+    // so promising a figure in the panel would be a lie for the ~12 s the
+    // model takes. The panel is only touched when "Show graph" is pressed.
+
+    STATE.busy = true;
+    updateSendState();
+    apiTurn(chatId, text, file).then(function (final) {
+      STATE.busy = false;
+      updateSendState();
+      loadingRow.remove();
+      renderAnswer(final);
+      upsertChat(chatId, null, {
+        role: "assistant", content: final.content, recommendation: final.recommendation,
+        provenance: final.provenance, chart_ref: final.chart_ref, chart_caption: final.chart_caption,
+        forecast_chart_html: final.forecast_chart_html, forecast_chart_caption: final.forecast_chart_caption,
+        window: final.window
+      });
+      if (final.forecast_chart_html) {
+        // Forecast charts are still built with the answer: they are only made
+        // when a horizon was actually asked for, and at 380px they are a
+        // fraction of the reading chart's size and cost.
+        figShowHtml(null, null, final.forecast_chart_html,
+                    final.forecast_chart_caption, final.window);
+      }
+    }).catch(function (err) {
+      STATE.busy = false;
+      updateSendState();
+      loadingRow.remove();
+      renderFailure(null, (err && err.detail) ||
+        "The model server did not respond. Check that `python models/serve.py` is running, then retry.",
+        function () { runTurn(text, file); });
+      // Same reasoning: a failed turn produced no figure, it did not
+      // invalidate the ones already on screen.
+      figClearPending();
+      figRestoreStatus();
+    });
   }
 
   // ================= submit =================
   function updateSendState() {
-    var canSend = !!$("q-input").value.trim() || !!STATE.pendingFile;
+    var canSend = !STATE.busy && (!!$("q-input").value.trim() || !!STATE.pendingFile);
     $("send-btn").classList.toggle("enabled", canSend);
     $("send-btn").classList.toggle("disabled", !canSend);
+    $("q-input").disabled = STATE.busy;
   }
   function submitQuery() {
+    if (STATE.busy) return;   // previous turn still awaiting its answer
     var text = $("q-input").value.trim();
     if (!text && !STATE.pendingFile) return;
 
     if (STATE.pendingFile) {
       var file = STATE.pendingFile;
-      var parsed = parseQuery(text || "");
-      appendUserBubbleForUpload(file.name, text);
-      var sampleRate = $("sample-rate").value ? parseFloat($("sample-rate").value) : null;
-      runUploadReading(file, parsed.tStart || 0, sampleRate, text, null, parsed.horizonSec);
+      runTurn(text, file);
       STATE.pendingFile = null;
       clearAttachChip();
     } else {
-      var parsed2 = parseQuery(text);
-      appendUserBubble(text);
-      if (parsed2.subject === null) {
-        renderGuidance("I couldn't find a subject number in that question — this dataset holds subjects <strong>1</strong>–<strong>13</strong>. Try “Is subject 4 fatigued at 60 s?”, or attach your own recording.");
-        figIdle();
-      } else if (parsed2.subject > 13 || parsed2.subject < 1) {
-        renderGuidance("There is no subject <strong>" + parsed2.subject + "</strong> in this dataset — it holds subjects <strong>1</strong>–<strong>13</strong>. Pick one of those, or attach your own recording.");
-        figIdle();
-      } else {
-        runReading(parsed2.subject, parsed2.side, parsed2.tStart, false, null, text, parsed2.horizonSec);
-      }
+      runTurn(text, null);
     }
     $("q-input").value = "";
     updateSendState();
-  }
-  function appendUserBubbleForUpload(filename, extraText) {
-    if (threadHasEmptyState()) clearThread();
-    appendUserBubble(filename + (extraText ? " — " + extraText : " — am I fatigued?"));
   }
 
   $("send-btn").addEventListener("click", function () { if ($("send-btn").classList.contains("enabled")) submitQuery(); });
@@ -1489,7 +1692,6 @@
   // ================= init =================
   loadChats();
   renderChatGroups();
-  loadModels();
   onResize();
   newChat();
 })();

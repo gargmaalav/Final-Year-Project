@@ -8,14 +8,12 @@ The team integration contract (README.md / docs/superpowers/specs/
   (models/openwebui_tool_reference.py), embedded via Open WebUI's
   (HTMLResponse, result_context) tuple mechanism.
 
-Two panels, simplified for a non-technical chatbot audience (2026-08-06
-redesign): (1) fatigue over the whole session - the hero chart, ground-truth
-dots + the deployed model's own guess, (2) a small "signal right now"
-snapshot. Originally matched viz/signal_viewer.py's 3-panel layout (raw EMG /
-MDF-over-time / FFT); the FFT panel was dropped as too technical to read at a
-glance, and the remaining two got a plain-language static header/legend
-instead of Plotly's own in-canvas title/legend (which had no room in a
-narrow chat embed and reliably overlapped itself).
+Content matches viz/signal_viewer.py's single-subject panels (the tool the
+supervisor previewed and liked): raw EMG window coloured by fatigue label,
+MDF-over-time, FFT of the current window. Interaction model does NOT carry
+over -- this renders one static Plotly figure at the query's t_start (native
+hover/zoom/pan only), not signal_viewer.py's scrub slider + Play button.
+Scrub/playback is an explicit fast-follow, not silently substituted.
 
 Single-subject only. An all-13-subjects overview existed but was dropped
 2026-07-13 (13 overlaid MDF lines were an unreadable spaghetti plot); the
@@ -42,7 +40,6 @@ for _p in (os.path.join(_REPO_ROOT, "zenodo_biceps"),
 
 import loader  # noqa: E402  load_biceps_segment, load_fatigue_labels, mdf_trend
 import core    # noqa: E402  median_frequency
-from reliability_tiers import reliability_tier  # noqa: E402
 
 DATA_ROOT = os.path.join(_REPO_ROOT, "zenodo_biceps", "sEMG_data")
 
@@ -53,18 +50,42 @@ WIN_SEC = 4.0    # authors' MDF window (loader.mdf_trend default)
 STEP_SEC = 2.0   # authors' MDF step   (loader.mdf_trend default)
 
 LABEL_COLOR = {0: "#2ecc71", 1: "#f39c12", 2: "#e74c3c"}
-# Plain-language names for a non-technical reader. The dataset's canonical
-# 3-class scheme is fresh / transition / fatigued; "Getting tired" is the
-# reader-facing wording for the transition class (same class, plainer word).
-LABEL_NAME = {0: "Fresh", 1: "Getting tired", 2: "Fatigued"}
+LABEL_NAME = {0: "Fresh", 1: "Transition", 2: "Fatigued"}
 
 ASK_COLOR = "#b388ff"   # persistent "asked: Ns" marker (distinct from the
-                        # white scrub cursor and the yellow FFT-MDF line)
+                        # scrub cursor and the yellow FFT-MDF line)
 SEL_COLOR = "#9aa5b1"   # shaded select-to-inspect span on the MDF panel; a
                         # neutral slate (not blue) so the transient span never
                         # blends with the always-on #58a6ff fatigue-trend line
 
+# This chart always rendered plotly_dark, with a "white" scrub cursor line
+# that only makes sense against a dark plot background -- so a reader on the
+# UI's light theme (viz/chatbot_ui.html's STATE.theme) got a black chart in a
+# white card, and would have gotten an invisible white-on-white cursor too had
+# the template alone been swapped. Both are threaded together per theme so
+# swapping one can't leave the other stranded.
+_THEME = {
+    "dark":  {"template": "plotly_dark",  "cursor": "#ffffff",
+             "key_bg": "#161616", "key_fg": "#ccc", "key_border": "#333"},
+    "light": {"template": "plotly_white", "cursor": "#1a1a1a",
+             "key_bg": "#f4f4f4", "key_fg": "#333", "key_border": "#ddd"},
+}
+
+
+def _theme(theme: str) -> dict:
+    return _THEME.get(theme, _THEME["dark"])
+
 ALL_SUBJECTS = list(range(1, 14))
+
+# Paper-y for the Play/Pause/Jump/Reset-zoom button rows. The 150px top margin
+# holds three things, and they have to stack without touching:
+#   ~px 23-45   the figure title, pinned to the container top
+#   ~px 79-109  this button row (y=1.10 of a 710px plot region)
+#   ~px 128-146 row 1's subplot title, sitting just above the plot area
+# Lower than this and the buttons cover the subplot title; higher and they
+# cover the figure title. Both rows share the constant so they stay on one
+# line -- change it here rather than at either call site.
+BUTTON_Y = 1.10
 
 # Open WebUI embeds tool HTML in a sandboxed iframe with no `allow-same-origin`
 # (open_webui frontend: FullHeightIframe.svelte), so its own same-origin
@@ -73,20 +94,24 @@ ALL_SUBJECTS = list(range(1, 14))
 # that works from inside a sandboxed iframe is postMessage; Open WebUI's own
 # listener there checks `data.type === 'iframe:height'` (same file). This
 # snippet reports the real height once Plotly finishes drawing
-# (plotly_afterplot, not a timing guess), and adds a fullscreen button (the
-# embed iframe already carries `allowfullscreen`).
+# (plotly_afterplot, not a timing guess).
 #
 # NOTE for the animated (scrub/playback) chart: plotly_afterplot fires on
 # EVERY frame during playback (~100+ times). postHeight() dedupes on the last
 # posted height and debounces, so animation never floods Open WebUI's resize
 # listener - the figure height is fixed, so only the first draw and genuine
-# resize/fullscreen changes post.
+# resize changes post.
+#
+# This used to also draw its own "Fullscreen" button, calling
+# document.documentElement.requestFullscreen() from inside the chart's own
+# iframe. viz/chatbot_ui.html renders every chart in an
+# <iframe sandbox="allow-scripts"> with no `allowfullscreen` attribute and no
+# Permissions-Policy allowance, so the Fullscreen API silently refuses the
+# request there -- the button did nothing, in the one place it was actually
+# used. Removed rather than fixed: the panel already has its own working
+# fullscreen toggle (#fig-fullscreen in chatbot_ui.html), so there is nothing
+# for a second, chart-level one to add even where it would work.
 _IFRAME_CHROME = """
-<button id="__viz_fs_btn" style="position:fixed;top:8px;right:8px;z-index:9999;
-  padding:6px 10px;background:#222;color:#eee;border:1px solid #555;
-  border-radius:6px;cursor:pointer;font:12px sans-serif;opacity:0.85;">
-  ⛶ Fullscreen
-</button>
 <script>
 (function () {
   var _lastH = -1, _timer = null;
@@ -109,12 +134,6 @@ _IFRAME_CHROME = """
   });
   window.addEventListener('load', function () { setTimeout(postHeight, 300); });
   window.addEventListener('resize', function () { setTimeout(postHeight, 100); });
-
-  var btn = document.getElementById('__viz_fs_btn');
-  btn.addEventListener('click', function () {
-    var el = document.documentElement;
-    (el.requestFullscreen || el.webkitRequestFullscreen || function () {}).call(el);
-  });
 })();
 </script>
 """
@@ -146,38 +165,38 @@ def _wrap_for_iframe(plotly_html: str) -> str:
     return f"<script>{_plotly_basic_js()}</script>" + plotly_html + _IFRAME_CHROME
 
 
-# Select-to-inspect + linked navigator on the fatigue panel (the only whole-
+# Select-to-inspect + linked navigator on the MDF panel (the only whole-
 # recording-time axis). Box-select a time span there and the chart (a) reads
-# out the dominant fatigue state + frequency min/mean/max for the span, (b)
-# shades the span so it stays visible, and (c) jumps the small signal-snapshot
-# panel + scrub cursor to that span's centre. Clicking a single point jumps
-# there too. The snapshot panel shows ONE 4 s window by construction, so it
-# navigates TO a point in the selection; it does not stretch to span it.
+# out the dominant fatigue state + MDF min/mean/max for the span, (b) shades
+# the span so it stays visible, and (c) jumps the EMG/FFT detail panels + scrub
+# cursor to that span's centre - the detail view "reflects" the selection.
+# Clicking a single MDF point jumps the detail there too. The detail panels
+# show ONE 4 s window by construction, so they navigate TO a point in the
+# selection; they do not stretch to span it.
 #
-# The fatigue panel is subplot row 1, x-axis 'x', so plotly_selected's range
-# is keyed 'x' and clicked points carry data.xaxis === 'x'. Selections on the
-# signal-snapshot panel (row 2, 'x2', a 0-4 s axis) are NOT recording-time and
-# are never mis-mapped - they show a hint instead. Navigation drives
-# Plotly.animate to the nearest baked frame (same mechanism as the slider);
-# the asked-marker + span rect are layout shapes (indices 0/1) that frames
-# never rewrite, so they survive playback. (Verified in the sandbox.)
+# The MDF panel is subplot row 2, x-axis 'x2', so plotly_selected's range is
+# keyed 'x2' and clicked MDF points carry data.xaxis === 'x2'. Selections on
+# the EMG window (row 1, 'x', a 0-4 s axis) or the FFT (row 3, 'x3', frequency)
+# are NOT recording-time and are never mis-mapped - they show a hint instead.
+# Navigation drives Plotly.animate to the nearest baked frame (same mechanism
+# as the slider); the asked-marker + span rect are layout shapes (indices 0/1)
+# that frames never rewrite, so they survive playback. (Verified in the sandbox.)
 _SELECT_INSPECT = """
 <div id="__viz_readout" style="font:13px/1.5 -apple-system,sans-serif;
   color:#ddd;background:#161616;border-top:1px solid #333;padding:10px 14px;">
-  <span style="color:#888">Tip: to look closer at part of the session, pick the
-  <b>Box Select</b> tool (top-right) and drag across the big chart above. You
-  get the fatigue state for that stretch, and the small chart below jumps to
-  it. Click any dot to jump there too.</span>
+  <span style="color:#888">Tip: pick the <b>Box Select</b> tool (top-right) and
+  drag across the middle MDF panel to inspect a span - the readout and the
+  EMG/FFT panels jump to it. Click a point on that panel to jump there.</span>
 </div>
 <script>
 (function () {
   var D = __VIZ_DATA__;
   var SEL_SHAPE = 1;                 // layout.shapes[1] = the select-span rect
   var box = document.getElementById('__viz_readout');
-  var TIP = '<span style="color:#888">Tip: to look closer at part of the session, '
-          + 'pick the <b>Box Select</b> tool (top-right) and drag across the big '
-          + 'chart above. You get the fatigue state for that stretch, and the '
-          + 'small chart below jumps to it. Click any dot to jump there too.</span>';
+  var TIP = '<span style="color:#888">Tip: pick the <b>Box Select</b> tool '
+          + '(top-right) and drag across the middle MDF panel to inspect a span '
+          + '- the readout and the EMG/FFT panels jump to it. Click a point on '
+          + 'that panel to jump there.</span>';
   var gd = null;
   function hint(msg) { box.innerHTML = '<span style="color:#e0a030">' + msg + '</span>'; }
 
@@ -206,7 +225,7 @@ _SELECT_INSPECT = """
     var lo = Math.min(t0, t1), hi = Math.max(t0, t1);
     var idx = [];
     for (var i = 0; i < D.t.length; i++) if (D.t[i] >= lo && D.t[i] <= hi) idx.push(i);
-    if (!idx.length) { hint('No data between ' + lo.toFixed(0) + 's and '
+    if (!idx.length) { hint('No MDF windows between ' + lo.toFixed(0) + 's and '
                             + hi.toFixed(0) + 's.'); return; }
     var mn = Infinity, mx = -Infinity, sum = 0, cnt = {};
     for (var j = 0; j < idx.length; j++) {
@@ -219,46 +238,34 @@ _SELECT_INSPECT = """
     for (var k in cnt) if (cnt[k] > bestN) { bestN = cnt[k]; dom = k; }
     var name = (D.names[dom] !== undefined) ? D.names[dom] : ('label ' + dom);
     var col = D.colors[dom] || '#888';
-    var disagreeN = 0;
-    for (var m = 0; m < idx.length; m++) {
-      var mv = D.model[idx[m]];
-      if (mv !== -1 && mv !== D.lab[idx[m]]) disagreeN++;
-    }
-    var disagreeMsg = '';
-    if (disagreeN > 0) {
-      disagreeMsg = " &nbsp;|&nbsp; <span style='color:#e0a030'>the tool's own "
-        + "guess disagreed with what the person reported for " + disagreeN
-        + " of " + idx.length + " moments here</span>";
-    }
     box.innerHTML =
       '<b>' + lo.toFixed(0) + '-' + hi.toFixed(0) + ' s</b> &nbsp; '
       + '<span style="background:' + col + ';color:#111;padding:1px 7px;'
       + 'border-radius:10px;font-weight:600">' + name + '</span> '
-      + '<span style="color:#888">(' + bestN + '/' + idx.length + ' moments)</span>'
-      + ' &nbsp;|&nbsp; frequency '
+      + '<span style="color:#888">(' + bestN + '/' + idx.length + ' windows)</span>'
+      + ' &nbsp;|&nbsp; MDF '
       + '<b>' + mn.toFixed(1) + '</b> / <b>' + mean.toFixed(1) + '</b> / '
-      + '<b>' + mx.toFixed(1) + '</b> Hz <span style="color:#888">(lowest / average / highest)</span>'
-      + disagreeMsg;
+      + '<b>' + mx.toFixed(1) + '</b> Hz <span style="color:#888">(min / mean / max)</span>';
   }
 
   function onSelect(ev) {
     if (!ev || !ev.range) return;
     var r = ev.range;
-    if (r.x) {
-      var lo = Math.min(r.x[0], r.x[1]), hi = Math.max(r.x[0], r.x[1]);
+    if (r.x2) {
+      var lo = Math.min(r.x2[0], r.x2[1]), hi = Math.max(r.x2[0], r.x2[1]);
       inspect(lo, hi);           // stats for the span
       shadeSpan(lo, hi);         // keep the span visible on the timeline
-      jumpTo((lo + hi) / 2);     // detail panel reflects the selection (its centre)
+      jumpTo((lo + hi) / 2);     // detail panels reflect the selection (its centre)
     } else {
-      hint('Time spans are read off the big chart above (the whole session). '
-         + 'That box was on the small close-up chart below, which is not the '
-         + 'session timeline - try dragging across the big chart instead.');
+      hint('Time spans are read off the middle MDF panel (whole-recording '
+         + 'time). That box was on the EMG-window or FFT panel, which are not '
+         + 'recording time.');
     }
   }
   function onClick(ev) {
     if (!ev || !ev.points || !ev.points.length) return;
     var pt = ev.points[0];
-    if (pt.data && pt.data.xaxis === 'x') jumpTo(pt.x);   // click a timeline point
+    if (pt.data && pt.data.xaxis === 'x2') jumpTo(pt.x);   // click a timeline point
   }
   function wire() {
     gd = document.getElementsByClassName('plotly-graph-div')[0];
@@ -274,15 +281,11 @@ _SELECT_INSPECT = """
 """
 
 
-def _select_inspect_html(mdf_t, mdf_v, mdf_labels, model_lab=None) -> str:
+def _select_inspect_html(mdf_t, mdf_v, mdf_labels) -> str:
     data = {
         "t": [round(float(v), 2) for v in mdf_t],
         "v": [round(float(v), 2) for v in mdf_v],
         "lab": [int(l) for l in mdf_labels],
-        # -1 sentinel = no model prediction for that window (same convention
-        # as the ground-truth labels-absent fallback, see _dominant_label).
-        "model": [int(l) if l is not None else -1
-                  for l in (model_lab if model_lab is not None else [None] * len(mdf_t))],
         "names": {str(k): v for k, v in LABEL_NAME.items()},
         "colors": {str(k): v for k, v in LABEL_COLOR.items()},
     }
@@ -330,57 +333,46 @@ def _rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
-def _meta_header_html(title_prefix: str, tier_line: str | None, trend_sentence: str) -> str:
-    """Plain static HTML above the chart: subject + reliability tier + trend.
+# Plotly's own legend used to sit in the figure's top margin, horizontally,
+# right above the row-1 subplot title. That's fine at full width, but this
+# chart is usually embedded in a narrower container (the chatbot's collapsed
+# "Show the signal" expander) -- there, the legend's ~5 entries wrapped onto a
+# second line and landed directly on top of the title text below it. A plain
+# HTML strip has no such failure mode: it wraps like any other paragraph, so
+# it can never overlap plot content regardless of the embedding width.
+def _key_html(theme: str = "dark") -> str:
+    th = _theme(theme)
 
-    Kept OUT of the Plotly canvas on purpose -- a Plotly title/legend has a
-    fixed narrow width to fight in the chat embed and reliably overlapped
-    itself there. Plain HTML wraps normally at any container width instead.
-    """
-    tier_html = (f'<span style="color:#8ab4f8;">{tier_line}</span>'
-                f'<span style="color:#555;"> &nbsp;&middot;&nbsp; </span>' if tier_line else "")
-    return (
-        '<div style="font:14px/1.4 -apple-system,sans-serif;color:#eee;'
-        'background:#161616;padding:12px 14px 8px;">'
-        f'<div style="font-weight:600;font-size:15px;">{title_prefix}</div>'
-        f'<div style="margin-top:3px;font-size:12.5px;color:#aaa;">'
-        f'{tier_html}{trend_sentence}</div>'
-        '</div>'
+    def _dot(color: str, label: str) -> str:
+        return (f'<span style="display:inline-flex;align-items:center;'
+                f'margin:2px 14px 2px 0;white-space:nowrap">'
+                f'<span style="display:inline-block;width:10px;height:10px;'
+                f'border-radius:50%;background:{color};margin-right:5px;'
+                f'flex:none"></span>{label}</span>')
+
+    def _line(color: str, label: str) -> str:
+        return (f'<span style="display:inline-flex;align-items:center;'
+                f'margin:2px 14px 2px 0;white-space:nowrap">'
+                f'<span style="display:inline-block;width:16px;height:0;'
+                f'border-top:2px dashed {color};margin-right:5px;'
+                f'flex:none"></span>{label}</span>')
+
+    items = (
+        _dot(LABEL_COLOR[0], LABEL_NAME[0])
+        + _dot(LABEL_COLOR[1], LABEL_NAME[1])
+        + _dot(LABEL_COLOR[2], LABEL_NAME[2])
+        + _line("#58a6ff", "fatigue trend")
+        + _line(ASK_COLOR, "time asked about")
     )
+    return (f'<div style="font:12px -apple-system,sans-serif;color:{th["key_fg"]};'
+            f'background:{th["key_bg"]};padding:8px 14px;display:flex;'
+            f'flex-wrap:wrap;border-bottom:1px solid {th["key_border"]}">{items}</div>')
 
 
-def _legend_row_html(show_model: bool) -> str:
-    """Static colour-key row, replacing Plotly's own in-canvas legend (which
-    has no room to lay out horizontally in a narrow embed without colliding
-    with the title)."""
-    items = [(LABEL_COLOR[0], "Fresh"), (LABEL_COLOR[1], "Getting tired"),
-            (LABEL_COLOR[2], "Fatigued")]
-    swatches = "".join(
-        '<span style="display:inline-flex;align-items:center;gap:5px;'
-        'margin-right:16px;white-space:nowrap;">'
-        f'<span style="width:9px;height:9px;border-radius:50%;background:{c};'
-        'display:inline-block;"></span>' + name + '</span>'
-        for c, name in items
-    )
-    if show_model:
-        swatches += (
-            '<span style="display:inline-flex;align-items:center;gap:5px;'
-            'margin-right:16px;white-space:nowrap;">'
-            '<span style="font-weight:800;color:#888;">&#10005;</span>'
-            "Tool's own guess <span style=\"color:#666;\">"
-            "(green = agrees, red = disagrees)</span></span>"
-        )
-    return (
-        '<div style="font:12px -apple-system,sans-serif;color:#ccc;'
-        'background:#161616;padding:0 14px 10px;display:flex;flex-wrap:wrap;">'
-        + swatches + '</div>'
-    )
-
-
-def _chart_html(seg, fs: int, t_start: float,
-                length_tag: str, title_prefix: str,
-                lab_t=None, lab_v=None, model_preds=None, subject=None) -> str:
-    """Interactive 3-panel chart with scrub + playback, over any core.Segment.
+def _single_subject_html(subject: int, t_start: float, side: str,
+                         model_pred: dict | None = None,
+                         theme: str = "dark") -> str:
+    """Interactive 3-panel single-subject chart with scrub + playback.
 
     Deliberately reproduces viz/signal_viewer.py's supervisor-liked layout
     (the tool the supervisor previewed) as an in-chat Plotly chart:
@@ -394,29 +386,19 @@ def _chart_html(seg, fs: int, t_start: float,
     step), the frames/slider reproduction of signal_viewer.py's slider+Play.
     Every per-frame value reuses loader.mdf_trend windows so the panels and
     the LLM's classify()-grounded numbers stay in agreement (no JS FFT).
-
-    Shared by render_window() (a dataset subject, ground-truth labels) and
-    render_segment() (an uploaded recording, no labels -- lab_t/lab_v=None
-    already renders the grey "no fatigue labels" fallback below).
-    length_tag/title_prefix carry the caller-specific wording
-    ("Subject 13 (R biceps)" vs "your uploaded recording") into error
-    messages and panel titles without duplicating this ~250-line function.
-
-    model_preds: optional {window_centre_time: predicted_label} from the
-    DEPLOYED model (models/classify.py), one entry per MDF window. When
-    given, renders as a second series ("Tool's own guess") distinct from
-    the ground-truth dots -- the chart previously only ever showed ground
-    truth, which a non-technical reader could mistake for the model's own
-    call. subject: used only to look up reliability_tier() for the title;
-    None (the uploaded-recording path) omits the tier.
     """
+    if subject not in ALL_SUBJECTS:
+        raise ValueError(f"subject must be 1-13, got {subject}")
+
+    th = _theme(theme)
+    seg, fs, lab_t, lab_v = _load_subject(subject, side)
     x = seg.data[:, 0].astype(float)
     t = seg.t.astype(float)
 
     win = int(round(WIN_SEC * fs))
     if x.size < win:
         raise ValueError(
-            f"{length_tag} ({x.size / fs:.1f}s) is shorter "
+            f"subject {subject} recording ({x.size / fs:.1f}s) is shorter "
             f"than one {WIN_SEC:.0f}s window")
 
     t_start = min(max(float(t_start), 0.0), float(t[-1]))
@@ -436,21 +418,33 @@ def _chart_html(seg, fs: int, t_start: float,
         mdf_v = np.array([core.median_frequency(x[s0:s0 + win], fs=fs)])
         mdf_labels = np.array([_dominant_label(tc0, lab_t, lab_v)])
 
+    freqs = np.fft.rfftfreq(win, 1.0 / fs)
+    fmax = min(500.0, fs / 2.0)
+    fband = freqs <= fmax
+    freqs_band = freqs[fband]
     tw = (np.arange(win) / fs).tolist()   # per-window time axis, 0..4 s (const)
 
     def _window_start(tc: float) -> int:
         start = int(np.searchsorted(t, tc - WIN_SEC / 2.0))
         return int(min(max(start, 0), x.size - win))
 
-    # bake every frame's EMG snippet once, server-side. Round to keep ~4
-    # significant figures at the signal's own scale (raw EMG is ~1e-3, so a
-    # flat 4 dp would staircase the waveform) - a big chunk of payload size.
+    # bake every frame's payload once, server-side (same np.fft/hanning as the
+    # legacy static path - no JS FFT, so nothing can diverge from classify()).
+    # Round baked floats so the serialized frame payload carries short numbers
+    # (a big chunk of the HTML size) with no visible change: the FFT trace is
+    # already normalised 0..1 so 4 dp is exact enough; raw EMG is ~1e-3, so a
+    # flat 4 dp would staircase the waveform - round to keep ~4 significant
+    # figures at the signal's own scale instead.
     _amp = float(np.max(np.abs(x))) or 1e-12
     _emg_dp = int(np.clip(4 - np.floor(np.log10(_amp)), 4, 10))
-    frame_emg = []
+    frame_emg, frame_spec = [], []
     for tc in mdf_t:
         s = _window_start(float(tc))
-        frame_emg.append(np.round(x[s:s + win], _emg_dp).tolist())
+        w = x[s:s + win]
+        spec = np.abs(np.fft.rfft(w * np.hanning(win))) ** 2
+        spec = spec / (spec.max() + 1e-12)
+        frame_emg.append(np.round(w, _emg_dp).tolist())
+        frame_spec.append(np.round(spec[fband], 4))
     frame_mdf = [round(float(v), 2) for v in mdf_v]
     frame_label = [int(l) for l in mdf_labels]
 
@@ -474,121 +468,107 @@ def _chart_html(seg, fs: int, t_start: float,
     def _tint(k):
         return _rgba(LABEL_COLOR.get(frame_label[k], "#888888"), 0.12)
 
-    # --- model's own prediction, as a distinct series from ground truth ---
-    # Small X markers (not filled dots) so it reads visually as "a guess",
-    # never mistaken for the same kind of mark as the ground-truth dots.
-    # Also builds model_lab, aligned 1:1 with mdf_t, for the select-inspect
-    # disagreement callout (-1 sentinel = no matching prediction).
-    model_lab = [-1] * len(mdf_t)
-    mp_t, mp_v, mp_lab = [], [], []
-    if model_preds:
-        for i, tc in enumerate(mdf_t):
-            key = min(model_preds.keys(), key=lambda k: abs(k - float(tc)))
-            if abs(key - float(tc)) <= STEP_SEC:  # only plot a genuine match
-                mp_t.append(float(tc)); mp_v.append(float(mdf_v[i]))
-                lbl = int(model_preds[key])
-                mp_lab.append(lbl)
-                model_lab[i] = lbl
-
-    # --- fitted MDF trend line + plain-language direction ---
-    # A least-squares line through the whole MDF trend; needs >=2 windows.
-    trend_sentence = "Not enough of the session yet for a trend."
-    _trend_x = _trend_y = None
-    if mdf_v.size >= 2:
-        _slope_hz_s, _mdf_icpt = np.polyfit(mdf_t, mdf_v, 1)
-        _slope_hz_min = _slope_hz_s * 60.0
-        # guard |slope| < 0.05 so wording never flips on noise near zero
-        _direction = ("staying about the same" if abs(_slope_hz_min) < 0.05
-                      else "slowing down over time" if _slope_hz_min < 0
-                      else "speeding up over time")
-        trend_sentence = f"Overall, the signal is {_direction}."
-        _trend_x, _trend_y = mdf_t, _slope_hz_s * mdf_t + _mdf_icpt
-
-    tier_line = reliability_tier(subject) if subject is not None else None
-
-    # --- two panels: (1) fatigue over the whole session - the hero chart a
-    # non-technical reader actually needs, (2) a small signal snapshot for
-    # context. No third (FFT) panel, no in-canvas title/legend - both moved to
-    # plain static HTML above the chart so nothing overlaps in a narrow embed.
     fig = make_subplots(
-        rows=2, cols=1, row_heights=[0.62, 0.38],
+        rows=3, cols=1,
         subplot_titles=(
-            "Is the muscle tiring? (lower = more tired)",
-            "What the signal looks like right now",
+            f"S{subject} {side} biceps - raw EMG of the current 4 s window (bandpass 20-450 Hz)",
+            "Median frequency (MDF) over the whole recording - fatigue marker + scrub cursor",
+            "FFT spectrum of the current window",
         ),
-        vertical_spacing=0.26,
+        vertical_spacing=0.1,
     )
-    # Shrink the subplot titles (default 16px) so they fit the gap alongside
-    # panel 1's x-axis without colliding with it or panel 2's plot area. Only
-    # the two subplot-title annotations exist at this point (the "asked"
-    # annotation is added later), so this can't touch anything else.
-    fig.update_annotations(font_size=13)
 
+    # --- static: MDF-over-time, split by fatigue label (panel 2) ---
     if lab_t is None:
         fig.add_trace(go.Scatter(x=mdf_t, y=mdf_v, mode="markers+lines",
-                                 name="Signal frequency (no fatigue labels for this trial)",
-                                 marker=dict(size=5, color="#888"),
-                                 showlegend=False), row=1, col=1)
+                                 name="MDF (no ground-truth labels)",
+                                 marker=dict(size=5, color="#888")), row=2, col=1)
     else:
         for lbl in (0, 1, 2):
             mask = mdf_labels == lbl
             if mask.any():
                 fig.add_trace(go.Scatter(
                     x=mdf_t[mask], y=mdf_v[mask], mode="markers",
-                    name=LABEL_NAME[lbl], showlegend=False,
-                    marker=dict(size=7, color=LABEL_COLOR[lbl])), row=1, col=1)
+                    name=LABEL_NAME[lbl],
+                    marker=dict(size=6, color=LABEL_COLOR[lbl])), row=2, col=1)
 
-    if mp_t:
-        mp_colors = ["#e74c3c" if l else "#2ecc71" for l in mp_lab]
+    # --- static: fitted MDF decline line + slope (panel 2) ---
+    # A least-squares line through the whole MDF trend; the slope in Hz/min is
+    # the quantitative fatigue signature (median frequency falls as the muscle
+    # fatigues). Static overlay - it does NOT change per frame, so it lives with
+    # the base traces (added before `base` below) and never enters fig.frames.
+    # hoverinfo=skip so it does not steal hover from the coloured MDF dots; the
+    # slope value rides in the legend label. Needs >=2 windows to fit.
+    if mdf_v.size >= 2:
+        _slope_hz_s, _mdf_icpt = np.polyfit(mdf_t, mdf_v, 1)
+        _slope_hz_min = _slope_hz_s * 60.0
+        # guard |slope| < 0.05 so {:+.1f} never renders a bare "-0.0 Hz/min"
+        _trend_lbl = ("fatigue trend ~0 Hz/min (flat)" if abs(_slope_hz_min) < 0.05
+                      else f"fatigue trend {_slope_hz_min:+.1f} Hz/min")
         fig.add_trace(go.Scatter(
-            x=mp_t, y=mp_v, mode="markers", name="Tool's own guess",
-            showlegend=False,
-            marker=dict(size=9, symbol="x", color=mp_colors,
-                        line=dict(width=1.5, color=mp_colors))),
-            row=1, col=1)
-
-    if _trend_x is not None:
-        fig.add_trace(go.Scatter(
-            x=_trend_x, y=_trend_y, mode="lines", name=trend_sentence,
-            showlegend=False,
+            x=mdf_t, y=_slope_hz_s * mdf_t + _mdf_icpt, mode="lines",
+            name=_trend_lbl,
             line=dict(color="#58a6ff", width=2.5, dash="dash"),
-            hoverinfo="skip"), row=1, col=1)
+            hoverinfo="skip"), row=2, col=1)
 
-    # --- animated traces (fixed indices from here): [tint, emg, cursor],
-    #     each rewritten by every frame by position ---
+    # --- animated traces (fixed indices from here): [tint, emg, cursor,
+    #     fft line, fft marker], each rewritten by every frame by position ---
     base = len(fig.data)
     fig.add_trace(go.Scatter(                                   # base+0 window tint
         x=[0, WIN_SEC, WIN_SEC, 0], y=[ylo, ylo, yhi, yhi],
         fill="toself", mode="lines", fillcolor=_tint(k0),
-        line=dict(width=0), hoverinfo="skip", showlegend=False), row=2, col=1)
+        line=dict(width=0), hoverinfo="skip", showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(                                   # base+1 EMG window
-        x=tw, y=frame_emg[k0], mode="lines", name="Muscle signal (this moment)",
-        showlegend=False,
-        line=dict(width=0.7, color="#00d4ff")), row=2, col=1)
+        x=tw, y=frame_emg[k0], mode="lines", name="EMG (current 4 s window)",
+        line=dict(width=0.7, color="#00d4ff")), row=1, col=1)
     fig.add_trace(go.Scatter(                                   # base+2 scrub cursor
         x=[float(mdf_t[k0]), float(mdf_t[k0])], y=[mlo, mhi], mode="lines",
-        line=dict(color="white", dash="dash", width=1.2),
-        hoverinfo="skip", showlegend=False), row=1, col=1)
-    anim_idx = [base, base + 1, base + 2]
+        line=dict(color=th["cursor"], dash="dash", width=1.2),
+        hoverinfo="skip", showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(                                   # base+3 FFT power
+        x=freqs_band, y=frame_spec[k0], mode="lines", name="FFT power",
+        line=dict(color="#ff6b6b")), row=3, col=1)
+    fig.add_trace(go.Scatter(                                   # base+4 window MDF
+        x=[frame_mdf[k0], frame_mdf[k0]], y=[0.0, 1.05], mode="lines",
+        line=dict(color="yellow", dash="dash", width=1.5),
+        name="window MDF", hoverinfo="skip", showlegend=False), row=3, col=1)
+    anim_idx = [base, base + 1, base + 2, base + 3, base + 4]
+
+    def _title(k):
+        # Plain title: subject, queried time, and the window's median frequency.
+        # No per-window fatigue-state label here -- the fatigue stage is shown by
+        # the dot colours (Fresh/Transition/Fatigued), and the model's own verdict
+        # is delivered in the chatbot's text answer, not on the chart.
+        return (f"EMG Fatigue Progression - Subject {subject} ({side} Biceps) | "
+                f"t={mdf_t[k]:.0f}s, window MDF={frame_mdf[k]:.1f} Hz")
 
     if animate:
         frames = []
         for k in range(n_frames):
             # Each frame carries ONLY the attributes that change per frame.
             # Plotly partial-merges a frame trace onto its base trace (same
-            # index), so the CONSTANT x-axis (tw) inherits from the base trace
-            # instead of being re-baked into all ~N frames.
+            # index), so the CONSTANT x-axes (tw, freqs_band) and the constant
+            # y-extents inherit from the base traces instead of being re-baked
+            # into all ~N frames. That redundancy (constant x repeated per
+            # frame) was the bulk of the payload; dropping it is the biggest
+            # single size win with an identical rendered figure.
             frames.append(go.Frame(name=str(k), traces=anim_idx, data=[
                 go.Scatter(fillcolor=_tint(k)),                    # tint: fillcolor only
                 go.Scatter(y=frame_emg[k]),                        # EMG: y only (x=tw inherits)
                 go.Scatter(x=[float(mdf_t[k]), float(mdf_t[k])]),  # cursor: x only
-            ]))
+                go.Scatter(y=frame_spec[k]),                       # FFT: y only (x=freqs inherits)
+                go.Scatter(x=[frame_mdf[k], frame_mdf[k]]),        # window MDF: x only
+            ], layout=go.Layout(title=dict(text=_title(k)))))
         fig.frames = frames
 
+        # "Jump to asked time" reuses the exact same animate call the slider
+        # steps use (just aimed at k0), so it always lands on the frame the
+        # chatbot's text answer is actually describing -- the fast way back
+        # after scrubbing or playing away from it.
         fig.update_layout(
             updatemenus=[dict(
                 type="buttons", direction="left", showactive=False,
-                x=0.0, y=1.16, xanchor="left", yanchor="top",
+                x=0.02, y=BUTTON_Y, xanchor="left", yanchor="top", pad=dict(r=10),
                 buttons=[
                     dict(label="▶ Play", method="animate",
                          args=[None, {"frame": {"duration": 120, "redraw": True},
@@ -596,38 +576,71 @@ def _chart_html(seg, fs: int, t_start: float,
                     dict(label="⏸ Pause", method="animate",
                          args=[[None], {"frame": {"duration": 0, "redraw": False},
                                         "mode": "immediate", "transition": {"duration": 0}}]),
+                    dict(label="⏮ Jump to asked time", method="animate",
+                         args=[[str(k0)], {"frame": {"duration": 0, "redraw": True},
+                                           "mode": "immediate", "transition": {"duration": 0}}]),
                 ])],
             sliders=[dict(
-                active=k0, x=0.0, y=0, len=1.0, xanchor="left", yanchor="top",
-                pad=dict(t=36, b=10), currentvalue=dict(prefix="Time: ", font=dict(size=12)),
-                steps=[dict(method="animate", label=f"{mdf_t[k]:.0f}s",
+                active=k0, x=0.02, y=0, len=0.96, xanchor="left", yanchor="top",
+                pad=dict(t=40, b=10), currentvalue=dict(prefix="Time: ", font=dict(size=12)),
+                # No per-step text label: with a couple hundred 2 s steps
+                # across a long recording, Plotly stacked every one of those
+                # labels along the track and they overlapped into an
+                # unreadable smear of digits. currentvalue above already
+                # shows the selected time, so the steps only need their tick.
+                steps=[dict(method="animate", label="",
                             args=[[str(k)], {"frame": {"duration": 0, "redraw": True},
                                              "mode": "immediate", "transition": {"duration": 0}}])
                        for k in range(n_frames)])])
 
+    # Reset-zoom restores every panel's original axis ranges in one click --
+    # the scroll-zoom + box-select drag mode makes it easy to zoom into a
+    # panel and then have no obvious way back short of a page reload.
     fig.update_layout(
-        template="plotly_dark", height=640 if animate else 580, showlegend=False,
-        margin=dict(t=40 if not animate else 56, b=56, l=52, r=16),
+        updatemenus=list(fig.layout.updatemenus) + [dict(
+            type="buttons", direction="left", showactive=False,
+            x=0.98, y=BUTTON_Y, xanchor="right", yanchor="top",
+            buttons=[dict(label="⤾ Reset zoom", method="relayout", args=[{
+                "xaxis.range": [0, WIN_SEC], "yaxis.range": [ylo, yhi],
+                "xaxis2.range": [float(t[0]), float(t[-1])], "yaxis2.range": [mlo, mhi],
+                "xaxis3.range": [0, fmax], "yaxis3.range": [0, 1.05],
+            }])])])
+
+    fig.update_layout(
+        template=th["template"], height=920 if animate else 820, showlegend=False,
+        # Title pinned to the top of the *figure* (yref="container"), not
+        # centred in the top margin as Plotly defaults to. Centred, it landed
+        # in the same band as the Play/Pause/Jump/Reset-zoom updatemenus above
+        # -- which is why those buttons had to be hidden until hover in the
+        # first place (viz's _HIDE_UPDATEMENU_CSS). The margin is now deep
+        # enough to stack title above buttons above plot, so revealing the
+        # buttons no longer covers the title telling you what you're looking at.
+        title=dict(text=_title(k0), yref="container", y=0.975, yanchor="top"),
+        margin=dict(t=150 if animate else 90, b=60),
         # box-select defaults to a horizontal (time) band for select-to-inspect
-        # on the fatigue panel; scroll-zoom stays available so select mode does
-        # not cost the user zoom.
+        # on the MDF panel; scroll-zoom stays available so select mode does not
+        # cost the user zoom.
         dragmode="select", selectdirection="h",
     )
-    # No x-axis title on panel 1 (redundant with the header above and frees
-    # room in the gap between panel 1's ticks and panel 2's subplot title).
-    fig.update_xaxes(range=[float(t[0]), float(t[-1])], row=1, col=1)
-    fig.update_yaxes(title_text="Signal frequency (Hz)", range=[mlo, mhi], row=1, col=1)
-    fig.update_xaxes(title_text="Time within this snapshot (s)", range=[0, WIN_SEC], row=2, col=1)
-    fig.update_yaxes(title_text="Signal strength", range=[ylo, yhi], row=2, col=1)
+    # Axis titles spell out the technical shorthand (MDF, a.u., norm.) rather
+    # than assuming the reader already knows it -- the panel titles above still
+    # carry the precise terms for anyone who wants them.
+    fig.update_xaxes(title_text="Time in window (s)", range=[0, WIN_SEC], row=1, col=1)
+    fig.update_yaxes(title_text="Signal strength (a.u.)", range=[ylo, yhi], row=1, col=1)
+    fig.update_xaxes(title_text="Time (s)", range=[float(t[0]), float(t[-1])], row=2, col=1)
+    fig.update_yaxes(title_text="Median frequency (Hz)", range=[mlo, mhi], row=2, col=1)
+    fig.update_xaxes(title_text="Frequency (Hz)", range=[0, fmax], row=3, col=1)
+    fig.update_yaxes(title_text="Signal strength (normalised)", range=[0, 1.05], row=3, col=1)
 
-    # Persistent "asked: t_start" marker on the fatigue panel: a fixed vertical
-    # line + label at the exact time the user asked about. Added as layout
-    # shapes/annotations, which frames never rewrite, so it stays put while
-    # playback/scrub moves the white cursor away. shapes[0] = this line.
-    fig.add_vline(x=t_start, row=1, col=1, line=dict(color=ASK_COLOR, width=2))
+    # Persistent "asked: t_start" marker on the MDF panel: a fixed vertical line
+    # + label at the exact time the user asked about. Added as layout shapes/
+    # annotations, which frames never rewrite (frames only set layout.title), so
+    # it stays put while playback/scrub moves the white cursor away - the chart
+    # always shows the moment that was actually queried. shapes[0] = this line.
+    fig.add_vline(x=t_start, row=2, col=1, line=dict(color=ASK_COLOR, width=2))
     # shapes[1] = the select-to-inspect span rect, reserved here (invisible)
     # and shown/moved by the JS on box-select. Kept below the data points.
-    fig.add_shape(type="rect", xref="x", yref="y",
+    fig.add_shape(type="rect", xref="x2", yref="y2",
                   x0=t_start, x1=t_start, y0=mlo, y1=mhi,
                   fillcolor=SEL_COLOR, opacity=0.0, line=dict(width=0),
                   layer="below")
@@ -642,73 +655,36 @@ def _chart_html(seg, fs: int, t_start: float,
     fig.add_annotation(x=t_start, y=mhi, text=f"asked: {t_start:.0f}s",
                        showarrow=False, xanchor=_lab_anchor, yanchor="top",
                        xshift=_lab_shift, yshift=-2,
-                       font=dict(color=ASK_COLOR, size=11), row=1, col=1)
+                       font=dict(color=ASK_COLOR, size=11), row=2, col=1)
 
     # auto_play=False: rest at the opening frame (nearest t_start) until the
     # user hits Play. Plotly's to_html defaults auto_play=True, which fires
     # .animate() on load and scrolls the chart away from t_start immediately.
     chart = fig.to_html(full_html=False, auto_play=False, include_plotlyjs=False,
                         config={"responsive": True, "scrollZoom": True})
-    header = _meta_header_html(title_prefix, tier_line, trend_sentence)
-    legend = _legend_row_html(show_model=bool(mp_t))
-    return (header + legend + _wrap_for_iframe(chart)
-            + _select_inspect_html(mdf_t, mdf_v, mdf_labels, model_lab))
+    return (_key_html(theme) + _wrap_for_iframe(chart)
+            + _select_inspect_html(mdf_t, mdf_v, mdf_labels))
 
 
 def render_window(subject: int, t_start: float, side: str = "R",
-                  model_pred: dict | None = None,
-                  model_preds: dict[float, int] | None = None) -> str:
+                  model_pred: dict | None = None, theme: str = "dark") -> str:
     """Return an interactive Plotly chart as an HTML fragment (no full_html wrapper).
 
     3-panel single-subject view (raw EMG / MDF / FFT) at t_start, the same
     content as viz/signal_viewer.py's build_viewer single-subject mode.
 
-    model_pred: unused, kept only so existing callers passing it don't break.
-    model_preds: optional {window_centre_time: predicted_label} from the
-    DEPLOYED model (models/classify.py), one entry per MDF window. When given,
-    renders as a second series ("Tool's own guess") distinct from the
-    ground-truth dots, so the chart shows where the model agrees/disagrees
-    with the subject's self-report instead of only ever showing ground truth
-    (an earlier on-chart model chip was removed 2026-07-13 for duplicating the
-    chatbot's text answer -- this is a different, per-window design that
-    surfaces disagreement explicitly rather than repeating a single verdict).
+    model_pred: accepted for backward compatibility with models/serve.py, which
+    still passes the classify() result, but no longer drawn. The on-chart model
+    chip was removed 2026-07-13 (it duplicated the chatbot's text answer and the
+    model-vs-ground-truth wording clashed at transition windows); the model's
+    verdict is delivered in the chatbot text, and the chart shows the signal plus
+    the ground-truth fatigue colours.
     """
     side = _validate_side(side)
     if subject is None:
         raise ValueError("subject is required (the all-subjects overview was removed)")
-    if subject not in ALL_SUBJECTS:
-        raise ValueError(f"subject must be 1-13, got {subject}")
-
-    seg, fs, lab_t, lab_v = _load_subject(subject, side)
-    t_start = min(max(float(t_start), 0.0), float(seg.t[-1]))
-    return _chart_html(
-        seg, fs, t_start,
-        length_tag=f"subject {subject} recording",
-        title_prefix=f"Subject {subject} ({side} biceps)",
-        lab_t=lab_t, lab_v=lab_v, model_preds=model_preds, subject=subject)
-
-
-def render_segment(seg, fs: int, t_start: float,
-                   model_pred: dict | None = None,
-                   model_preds: dict[float, int] | None = None) -> str:
-    """Same 3-panel chart as render_window(), for an UPLOADED recording.
-
-    No ground-truth fatigue labels exist for an upload, so panel 2's dots
-    render in the grey "no fatigue labels for this trial" fallback that
-    already existed for dataset trials missing a labels CSV -- this is not a
-    new code path, just the existing lab_t=None branch reached from a new
-    caller. `seg`/`fs` come from loader.to_segment() on the uploaded CSV
-    (models/serve.py's /classify_upload, /render_upload). No subject id
-    exists for an upload, so the title carries no reliability tier.
-
-    model_pred: unused, kept for callers passing it.
-    model_preds: see render_window().
-    """
-    t_start = min(max(float(t_start), 0.0), float(seg.t[-1]))
-    return _chart_html(
-        seg, fs, t_start,
-        length_tag="the uploaded recording",
-        title_prefix="uploaded recording", model_preds=model_preds)
+    return _single_subject_html(int(subject), t_start, side,
+                                model_pred=model_pred, theme=theme)
 
 
 if __name__ == "__main__":

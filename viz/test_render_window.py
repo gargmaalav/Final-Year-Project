@@ -70,30 +70,36 @@ class HappyPath(unittest.TestCase):
         self.assertIn("plotly-graph-div", self.html)
         self.assertGreater(len(self.html), 100_000)
 
-    def test_has_two_panels(self):
-        # 2026-08-06 redesign: the FFT panel was dropped as too technical for
-        # a non-technical viewer; only the fatigue-over-time hero and the
-        # small signal snapshot remain.
-        for marker in ("Is the muscle tiring?", "What the signal looks like right now"):
+    def test_has_three_panels(self):
+        for marker in ("raw EMG", "Median frequency (MDF)", "FFT spectrum"):
             self.assertIn(marker, self.html, f"panel marker missing: {marker}")
-
-    def test_fft_panel_is_gone(self):
-        for marker in ("FFT spectrum", "Frequency mix", "Frequency (Hz)"):
-            self.assertNotIn(marker, self.html, f"dropped FFT panel text still present: {marker}")
 
     def test_asked_marker_pins_queried_time(self):
         self.assertIn("asked: 120s", self.html)
 
     def test_trend_line_present_and_declines(self):
-        # S13's MDF declines with fatigue, so the direction-worded trend
-        # sentence must read "slowing down", not the flat/speeding-up wording.
-        self.assertIn("Overall, the signal is slowing down over time.", self.html)
+        # S13's MDF declines with fatigue, so the fitted slope must be negative;
+        # the legend label reads "fatigue trend -X.X Hz/min".
+        self.assertIn("fatigue trend -", self.html)
 
     def test_payload_stays_optimized(self):
-        # guards the frame-trim + basic-bundle + FFT-panel-removal size (was
-        # ~9.4MB, then ~3.1MB, now ~1.2MB); a regression that re-bloats the
-        # payload should trip here.
-        self.assertLess(len(self.html), 2_500_000)
+        # guards the frame-trim + basic-bundle optimization (was ~9.4MB, now
+        # ~3.1MB); a regression that re-bloats the payload should trip here.
+        self.assertLess(len(self.html), 5_000_000)
+
+    def test_theme_selects_a_matching_template_and_cursor(self):
+        # Was hardcoded to plotly_dark with a "white" scrub cursor regardless
+        # of theme -- a light-mode reader got a black chart in a white card,
+        # and swapping only the template would have left the cursor invisible
+        # against the new light background. plotly_dark's own template bakes
+        # in its dark paper colour as "rgb(17,17,17)" -- present only when
+        # that template was actually applied, not just requested.
+        dark = render_window(13, 120.0, "R", theme="dark")
+        light = render_window(13, 120.0, "R", theme="light")
+        self.assertIn("rgb(17,17,17)", dark)
+        self.assertNotIn("rgb(17,17,17)", light)
+        self.assertIn("#1a1a1a", light)     # light-theme scrub cursor
+        self.assertNotEqual(dark, light)
 
 
 @_needs_data
@@ -105,66 +111,7 @@ class LabelsAbsentFallback(unittest.TestCase):
         with mock.patch.object(loader, "load_fatigue_labels",
                                lambda *a, **k: (None, None)):
             html = render_window(13, 120.0, "R")   # must not raise
-        self.assertIn("no fatigue labels for this trial", html)
-
-
-@_needs_data
-class ModelPredictionOverlay(unittest.TestCase):
-    """Task 2 (honesty/explainability plan): the model's own prediction renders
-    as a distinct series from the ground-truth dots, so a viewer can see where
-    the tool agreed/disagreed instead of only ever seeing ground truth."""
-
-    def test_model_preds_add_a_named_trace(self):
-        # two windows' worth of predictions, keyed by MDF window-centre time
-        preds = {2.0: 0, 122.0: 1}
-        html = render_window(13, 120.0, "R", model_preds=preds)
-        self.assertIn("Tool's own guess", html)
-
-    def test_no_model_preds_is_backward_compatible(self):
-        # existing callers (no model_preds arg) must keep working unchanged
-        html = render_window(13, 120.0, "R")
-        self.assertIsInstance(html, str)
-        self.assertGreater(len(html), 0)
-
-
-@_needs_data
-class DisagreementCallout(unittest.TestCase):
-    """Task 3: model_preds reach the JS payload so the select-inspect readout
-    can flag a disagreement between the model's guess and ground truth."""
-
-    def test_model_preds_embedded_in_js_payload(self):
-        preds = {2.0: 1}
-        html = render_window(13, 0.0, "R", model_preds=preds)
-        self.assertIn('"model"', html)
-
-
-@_needs_data
-class ReliabilityInTitle(unittest.TestCase):
-    """Task 4: the static header above the chart states the deployed model's
-    reliability tier for the subject being viewed (moved out of Plotly's own
-    title in the 2026-08-06 redesign, same information)."""
-
-    def test_held_out_subject_shows_tier_in_title(self):
-        html = render_window(13, 120.0, "R")
-        self.assertIn("Highly reliable", html)
-
-    def test_training_subject_shows_disclaimer_in_title(self):
-        html = render_window(5, 120.0, "R")
-        self.assertIn("Not independently tested for this person", html)
-
-
-@_needs_data
-class PlainLanguageCopy(unittest.TestCase):
-    """Task 5: no Hz/min or raw-EMG jargon in headline chart text (numbers may
-    still live in hover tooltips/legend colours, just not the legend text)."""
-
-    def test_no_hz_per_min_jargon_in_output(self):
-        html = render_window(13, 120.0, "R")
-        self.assertNotIn("Hz/min", html)
-
-    def test_no_raw_emg_jargon_in_panel_title(self):
-        html = render_window(13, 120.0, "R")
-        self.assertNotIn("raw EMG", html)
+        self.assertIn("no ground-truth labels", html)
 
 
 if __name__ == "__main__":
