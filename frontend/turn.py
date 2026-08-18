@@ -1207,6 +1207,14 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
         turn = (_upload_question(user_text, cache, session.get("theme", "dark")) if cache
                 else _dataset_turn(session, user_text, session["last_params"]))
     final = _finalize(session, turn)
+    # A single choke point for every path through _finalize, rather than
+    # editing each rendered f-string in turn.py/prompt.py/recommend.py one at
+    # a time -- see interpret.strip_em_dashes. Also catches anything the
+    # model itself writes with a dash, which no per-string edit could.
+    if final.get("content"):
+        final["content"] = interpret.strip_em_dashes(final["content"])
+    if final.get("recommendation"):
+        final["recommendation"] = interpret.strip_em_dashes(final["recommendation"])
     if uploaded_file is None:
         _note_unanswered(user_text, final)
 

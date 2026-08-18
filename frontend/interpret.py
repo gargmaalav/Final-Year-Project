@@ -757,3 +757,24 @@ def technical_line(reading: dict) -> str:
     if reading["confidence"] is not None:
         bits.append(f"confidence {reading['confidence'] * 100:.1f}%")
     return " · ".join(bits)
+
+
+# Every rendered string in this project reaches for an em dash the way the
+# comments do -- "the two are different lengths -- these are efforts of very
+# different durations" -- and it is exactly the punctuation that reads as
+# machine-written once it is in a chat bubble rather than a code comment. A
+# single choke point at the end of turn.py's handle_turn catches these
+# hand-written strings AND anything the model itself writes, rather than
+# editing every f-string in prompt.py/turn.py/recommend.py one at a time and
+# missing the next one that gets added.
+def strip_em_dashes(text: str) -> str:
+    """Replace em/en dashes with a comma everywhere in `text`."""
+    if not text:
+        return text
+    text = re.sub(r"\s*[–—]\s*", ", ", text)
+    # A run this produces ("word, , word" from two dashes in a row, or a
+    # trailing ", " right before punctuation) is cleaned up rather than left
+    # as a tell of its own.
+    text = re.sub(r",\s*,", ",", text)
+    text = re.sub(r",\s*([.!?])", r"\1", text)
+    return text

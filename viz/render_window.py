@@ -94,20 +94,24 @@ BUTTON_Y = 1.10
 # that works from inside a sandboxed iframe is postMessage; Open WebUI's own
 # listener there checks `data.type === 'iframe:height'` (same file). This
 # snippet reports the real height once Plotly finishes drawing
-# (plotly_afterplot, not a timing guess), and adds a fullscreen button (the
-# embed iframe already carries `allowfullscreen`).
+# (plotly_afterplot, not a timing guess).
 #
 # NOTE for the animated (scrub/playback) chart: plotly_afterplot fires on
 # EVERY frame during playback (~100+ times). postHeight() dedupes on the last
 # posted height and debounces, so animation never floods Open WebUI's resize
 # listener - the figure height is fixed, so only the first draw and genuine
-# resize/fullscreen changes post.
+# resize changes post.
+#
+# This used to also draw its own "Fullscreen" button, calling
+# document.documentElement.requestFullscreen() from inside the chart's own
+# iframe. viz/chatbot_ui.html renders every chart in an
+# <iframe sandbox="allow-scripts"> with no `allowfullscreen` attribute and no
+# Permissions-Policy allowance, so the Fullscreen API silently refuses the
+# request there -- the button did nothing, in the one place it was actually
+# used. Removed rather than fixed: the panel already has its own working
+# fullscreen toggle (#fig-fullscreen in chatbot_ui.html), so there is nothing
+# for a second, chart-level one to add even where it would work.
 _IFRAME_CHROME = """
-<button id="__viz_fs_btn" style="position:fixed;top:8px;right:8px;z-index:9999;
-  padding:6px 10px;background:#222;color:#eee;border:1px solid #555;
-  border-radius:6px;cursor:pointer;font:12px sans-serif;opacity:0.85;">
-  ⛶ Fullscreen
-</button>
 <script>
 (function () {
   var _lastH = -1, _timer = null;
@@ -130,12 +134,6 @@ _IFRAME_CHROME = """
   });
   window.addEventListener('load', function () { setTimeout(postHeight, 300); });
   window.addEventListener('resize', function () { setTimeout(postHeight, 100); });
-
-  var btn = document.getElementById('__viz_fs_btn');
-  btn.addEventListener('click', function () {
-    var el = document.documentElement;
-    (el.requestFullscreen || el.webkitRequestFullscreen || function () {}).call(el);
-  });
 })();
 </script>
 """
