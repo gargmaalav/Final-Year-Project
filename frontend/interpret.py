@@ -683,9 +683,15 @@ def drop_advice(prose: str) -> str:
     IS asked for, recommend.py builds it deliberately, with its disclaimer,
     and this must not run over that.
 
-    Never returns empty: if advice was the entire answer the caller still has
-    the rendered verdict above it, so an empty string here is safe, but the
-    prose is handed back rather than silently blanked.
+    Unlike drop_hertz_comparisons/drop_projection_claims, THIS is allowed to
+    return empty: the caller (turn.py's _finalize) already falls back to the
+    rendered verdict alone when the cleaned prose is blank -- "if cleaned else
+    verdict". Falling back to the unfiltered prose here instead, as this used
+    to, defeats the entire point on the exact case this function exists for:
+    asked "and at 90s?", the model's whole added paragraph was "they will
+    likely need to adjust their grip or technique soon" with nothing else in
+    it, so removing it emptied the paragraph and the old fallback handed the
+    advice straight back.
     """
     if not prose:
         return prose
@@ -695,7 +701,7 @@ def drop_advice(prose: str) -> str:
                 if not (_DIRECTIVE.search(s) and _ADVICE_TOPIC.search(s))]
         if good:
             kept.append(" ".join(good))
-    return "\n\n".join(kept).strip() or prose
+    return "\n\n".join(kept).strip()
 
 
 def strip_invented_numbers(prose: str, who: str | None = None) -> tuple[str, list[str]]:

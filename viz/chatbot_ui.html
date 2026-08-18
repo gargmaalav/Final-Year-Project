@@ -574,7 +574,15 @@
     model: null,
     models: [],
     figStatus: "none",  // none | loading | ready
-    paneW: 452          // user-resizable; clamped to [PANE_MIN, PANE_MAX]
+    paneW: 452,         // user-resizable; clamped to [PANE_MIN, PANE_MAX]
+    // Nothing here used to stop a second message going out while the first
+    // was still awaiting its ~15s LLM answer -- POST /turn for the same
+    // session_id then ran concurrently, and the session state each read
+    // (last_params, last_answer) could be the one from BEFORE the earlier
+    // turn had finished writing it back. serve.py now also locks per
+    // session, but this is the fix that stops the race from happening at
+    // all rather than only serialising it after it starts.
+    busy: false
   };
   var sidebarByUser = false;
   var paneByUser = false;
@@ -1628,7 +1636,11 @@
     // so promising a figure in the panel would be a lie for the ~12 s the
     // model takes. The panel is only touched when "Show graph" is pressed.
 
+    STATE.busy = true;
+    updateSendState();
     apiTurn(chatId, text, file).then(function (final) {
+      STATE.busy = false;
+      updateSendState();
       loadingRow.remove();
       renderAnswer(final);
       upsertChat(chatId, null, {
@@ -1645,6 +1657,8 @@
                     final.forecast_chart_caption, final.window);
       }
     }).catch(function (err) {
+      STATE.busy = false;
+      updateSendState();
       loadingRow.remove();
       renderFailure(null, (err && err.detail) ||
         "The model server did not respond. Check that `python models/serve.py` is running, then retry.",
@@ -1658,11 +1672,13 @@
 
   // ================= submit =================
   function updateSendState() {
-    var canSend = !!$("q-input").value.trim() || !!STATE.pendingFile;
+    var canSend = !STATE.busy && (!!$("q-input").value.trim() || !!STATE.pendingFile);
     $("send-btn").classList.toggle("enabled", canSend);
     $("send-btn").classList.toggle("disabled", !canSend);
+    $("q-input").disabled = STATE.busy;
   }
   function submitQuery() {
+    if (STATE.busy) return;   // previous turn still awaiting its answer
     var text = $("q-input").value.trim();
     if (!text && !STATE.pendingFile) return;
 

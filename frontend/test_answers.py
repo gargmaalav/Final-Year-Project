@@ -1134,10 +1134,18 @@ def _():
         assert interpret.drop_advice(keep) == keep, keep
 
 
-@check("dropping advice never empties an answer")
+@check("dropping advice CAN empty the prose -- the verdict is the fallback")
 def _():
+    # Real bug: "and at 90s?" got a whole added paragraph that was nothing
+    # but "they will likely need to adjust their grip or technique soon", so
+    # removing it emptied the paragraph -- and the old "never return empty"
+    # fallback handed back the unfiltered advice instead of the empty string,
+    # defeating the entire point of this function on the case it exists for.
+    # turn.py's _finalize already falls back to the rendered verdict alone
+    # when this comes back empty ("if cleaned else verdict"), so there is
+    # nothing unsafe about it actually being empty.
     only = "They should take a break and rest."
-    assert interpret.drop_advice(only).strip(), "stripped the answer to nothing"
+    assert interpret.drop_advice(only) == "", interpret.drop_advice(only)
 
 
 @check("a reading about a dataset subject is told to stay in the third person")

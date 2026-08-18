@@ -53,11 +53,34 @@ _UI_PATH = os.path.join(REPO_ROOT, "viz", "chatbot_ui.html")
 # chat) is an acceptable substitute for what was st.session_state.
 SESSIONS: dict[str, dict] = {}
 
+# turn_endpoint is a sync `def`, which FastAPI runs in a threadpool -- so two
+# /turn calls for the SAME session_id can run on different threads at once.
+# The UI now disables the input while a turn is in flight, which is the fix
+# that stops this happening in the normal case, but this is the fix that
+# makes it safe regardless: without it, three messages sent before the first
+# one's ~15s answer came back all read session["last_params"] before that
+# first call had written its result -- "and at 90s?", then "what should they
+# do about it?" and "will they get more tired?" both answered from the stale
+# 60s window as if "and at 90s?" had never happened. Locking only the
+# registry lookup would not have helped; the race is inside handle_turn
+# itself, so the lock has to wrap that whole call, one per session_id so
+# unrelated chats never wait on each other.
+_SESSION_LOCKS: dict[str, threading.Lock] = {}
+_REGISTRY_LOCK = threading.Lock()
+
 
 def _session(session_id: str) -> dict:
-    if session_id not in SESSIONS:
-        SESSIONS[session_id] = turn_engine.new_session()
-    return SESSIONS[session_id]
+    with _REGISTRY_LOCK:
+        if session_id not in SESSIONS:
+            SESSIONS[session_id] = turn_engine.new_session()
+        return SESSIONS[session_id]
+
+
+def _session_lock(session_id: str) -> threading.Lock:
+    with _REGISTRY_LOCK:
+        if session_id not in _SESSION_LOCKS:
+            _SESSION_LOCKS[session_id] = threading.Lock()
+        return _SESSION_LOCKS[session_id]
 
 
 @app.on_event("startup")
@@ -118,23 +141,28 @@ def turn_endpoint(session_id: str = Form(...), user_text: str = Form(""),
                   file: UploadFile | None = File(None)):
     """One user turn in, one finalized answer out -- see frontend/turn.py."""
     session = _session(session_id)
-    if model:
-        session["model"] = model
-    session["sample_rate"] = sample_rate
-    session["athlete_note"] = athlete_note or ""
-    # The theme toggle lives entirely client-side; a chart built for this turn
-    # (the forecast chart, embedded straight in this response) needs to match
-    # it, so the UI reports its current theme on every turn rather than only
-    # when it changes.
-    if theme in ("light", "dark"):
-        session["theme"] = theme
 
     uploaded = None
     if file is not None and file.filename:
         raw = _run_sync(file.read())
         uploaded = _UploadShim(file.filename, raw)
 
-    final = turn_engine.handle_turn(session, user_text, uploaded)
+    # Everything that reads or writes this session's state, serialised per
+    # session_id -- see _SESSION_LOCKS' comment. Two /turn calls for
+    # DIFFERENT sessions never wait on each other.
+    with _session_lock(session_id):
+        if model:
+            session["model"] = model
+        session["sample_rate"] = sample_rate
+        session["athlete_note"] = athlete_note or ""
+        # The theme toggle lives entirely client-side; a chart built for this
+        # turn (the forecast chart, embedded straight in this response) needs
+        # to match it, so the UI reports its current theme on every turn
+        # rather than only when it changes.
+        if theme in ("light", "dark"):
+            session["theme"] = theme
+
+        final = turn_engine.handle_turn(session, user_text, uploaded)
     # Only the JSON-safe, UI-relevant subset -- "features"/"forecast" carry
     # numpy scalars the model already used to build chart_html and content,
     # so the UI has no need of them raw and they aren't JSON-serialisable
