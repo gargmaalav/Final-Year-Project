@@ -1,13 +1,14 @@
 # Handoff — `testing-changes` branch
 
-Written 2026-08-18. Paste this into a fresh session to pick up where things left off.
+Last updated 2026-08-18 after the follow-up and open-ended answer fixes. Paste the
+"start here" block below into a fresh session to pick up where things left off.
 
 ## Where the code is
 
 | Branch | HEAD | State |
 |---|---|---|
 | `feat/merge-chatbot-ui` | `8d1cd74` | Pushed. Matches origin. The UI/port work. |
-| `testing-changes` | `824b249` | Pushed 2026-08-18. Speed + UX work, then the follow-up fixes below. |
+| `testing-changes` | `2069e1d` | Pushed, in sync with origin. Speed + UX work, then the answer-quality fixes below. |
 
 Uncommitted and unrelated (dirty before any of this started, leave alone):
 `.gitignore`, `zenodo_biceps/out/*.csv|.md|.json`
@@ -29,15 +30,21 @@ curl -s localhost:8000/health
 # {"status":"ok","warm":true,"warm_error":null,"token_cap":320,"answers_truncated":0}
 ```
 
-Tests (all passing): `frontend/test_answers.py` 69, `frontend/test_understanding.py` 124,
-`viz/test_render_window.py` 9.
+Tests (all passing): `frontend/test_answers.py` 97, `frontend/test_understanding.py` 190,
+`viz/test_render_window.py` 9. None need Ollama or the dataset except
+`test_understanding.py --live`, which is skipped by default.
 
 **`render_window.py` and `turn.py` are imported at server start** — chart or backend
 changes need a `serve.py` restart. `chatbot_ui.html` reloads on its own (no-store header).
 
-## The 9 commits on `testing-changes`
+## The commits on `testing-changes`
 
 ```
+2069e1d  Stop readings addressing the reader as the subject and volunteering advice
+98549fb  Answer an open-ended question instead of reprinting the last reading
+3c24857  Record the follow-up fixes and that the branch is pushed
+824b249  Make a follow-up add something instead of restating the answer it explains
+397873f  Recognise "so what does this mean" as being about the last answer
 e592311  Keep the figures panel closed until a graph is asked for
 fab9960  Raise the token ceiling clear of the longest real answer
 d22729a  Report when the token cap cuts an answer instead of hiding it
@@ -128,19 +135,27 @@ sentence), keeping it only if nothing complete survived anywhere. `/health` repo
 
 ## Known issues / open items
 
+- **Confidence is called "certainty" in follow-ups.** `prompt.py` strips the
+  confidence line out of the *reading* prompt (rule 3 forbids the word outright),
+  but `build_followup_prompt` passes the full fact lines through unfiltered, so a
+  follow-up wrote "the model's 95% certainty in its fatigued/not-fatigued call".
+  It is the model's confidence in its own call, not a measure of correctness --
+  `interpret.plain_lines` says so in the line itself. Same filter plus a test is
+  the fix; **~10 minutes, and the cheapest real win on this list.**
+- **The model invents reasoning around real numbers** in follow-ups: "it will
+  take approximately 12% of the total recording time before they reach a point
+  where fatigue is likely". No such projection was measured. Narrower than the
+  failures this architecture was built for and no wrong figure reaches the
+  screen, but it is the last soft spot in the follow-up path.
 - **`turn.py` lost ~100 comments in the extraction from `app.py`** (112 → 9 comment
   lines, 10% → 1%). Guards all still run but nothing explains why they exist. Worth
   restoring before `app.py` is deleted.
 - **No Regenerate button** — `app.py` had `_regenerate()`; no equivalent exists.
-- **`frontend/recommend.py`** never ported to this frontend (flagged undecided in
-  `docs/decisions.md`, still undecided).
 - **Charts are always `plotly_dark`** — a black chart in a white card in light mode.
   Needs the theme threaded into `render_window()` and `charts.py`.
 - **Inline verdict echoes survive.** `strip_verdict_echo` works on paragraphs and
   never removes the last one, so an echo written inline ("This means they are not
   showing signs of fatigue") gets through. Deliberate, tested, documented.
-- **The model sometimes volunteers advice** ("they should take a break") on a plain
-  reading question — beyond what was measured, and duplicates the recommendation path.
 - **Google Fonts 404s** (Archivo Narrow) — the UI needs internet to render as designed.
 - **llama3.2:1b is installed but rejected**: it opened all four sampled readings with
   "The person is not fatigued", including two the classifier called FATIGUED. Nothing
@@ -183,15 +198,97 @@ whole answer, not per paragraph — asked for 2-4 it returned nine; and
 means fatigue" (it maps bare "indicating" to "showing" now, and keeps "which
 means" for the comma-anchored connective sense).
 
-Tests: `frontend/test_answers.py` 90, `frontend/test_understanding.py` 155.
+Tests: `frontend/test_answers.py` 97, `frontend/test_understanding.py` 190.
 
-## Not done
+## Open-ended questions, and the catch-all behind them
 
-Decide whether to merge `testing-changes` into `feat/merge-chatbot-ui` or keep
-it separate for A/B testing.
+Reported separately, same shape as the follow-up bug: **"what can u tell me
+about the data"** reprinted the reading already on screen, word for word. It
+named no subject, no time and no side, so it resolved entirely from the
+previous turn and re-ran the classifier on the same window.
 
-Still rough in follow-ups, seen live but not fixed: the model occasionally
-invents reasoning around real numbers ("it will take approximately 12% of the
-total recording time before they reach a point where fatigue is likely" — no
-such projection was measured). Narrower than the old failures and no wrong
-figure reaches the screen, but it is the next thing to look at.
+Two fixes, and the second matters more:
+
+1. `intent.asks_about_the_data()` recognises the open-ended ask. With a
+   recording under discussion it becomes an OVERVIEW of that recording; with
+   none, the catalogue.
+2. **`extract.named_nothing_new()` is the catch-all.** If a message resolved to
+   exactly the window already answered *and* named nothing itself, re-measuring
+   can only reprint -- so it goes to the follow-up path instead. Judged on the
+   resolved window, not on wording, so phrasings nobody has thought of land
+   there too. This is the general fix; the router will keep missing phrasings
+   (there is no finite list of ways to ask a vague question) and every miss now
+   lands somewhere useful.
+
+`turn.py` checks for a recommendation or a forecast request **before** that
+guard. Both resolve to the same window and are caught by it, and sent to the
+follow-up path they lost the very thing they asked for. Pinned in
+`test_understanding.py`.
+
+## Reading-path defects found while testing the above
+
+None of these were the reported bug; all three were live in every reading.
+
+- **It addressed the reader as the subject.** "You may need to adjust your grip
+  or technique" -- about subject 11, to someone who is not subject 11. The
+  prompt literally said *"say it out loud to the person who did the exercise"*,
+  which is true of an upload and false of a dataset subject. Now
+  `prompt._person_rule(window)`.
+- **It volunteered coaching nobody asked for** ("they should take regular
+  breaks to rest and recover") on a plain reading. Nothing in an EMG window
+  measures whether that is warranted. Forbidden in the prompt and enforced by
+  `interpret.drop_advice()`, which is skipped when a recommendation *was*
+  asked for so it cannot gut the real one.
+- **"This indicates they are fatigued" survived as a whole paragraph** of pure
+  restatement -- the echo pattern matched "is fatigued" but not "are fatigued".
+
+Also: `recommend.wants_recommendation()` matched "recommend a training plan"
+but not **"what should I do"**, "any advice" or "should they take a break", so
+the plainest phrasings never produced a recommendation at all. Widened, while
+"should I be worried?" correctly stays a follow-up -- that asks what the
+reading means, not what to do about it.
+
+## Not done / where to pick up
+
+Roughly in order of value:
+
+1. **The confidence-as-certainty filter** (above). Small, self-contained, real.
+2. **Streaming** — the last latency lever. Text in ~3s instead of a blank wait;
+   does not cut total time, changes felt latency more than anything else would.
+3. **Chart theming** — always `plotly_dark`, so a black chart sits in a white
+   card in light mode. Needs the theme threaded through `render_window()` and
+   `charts.py`.
+4. **Restore `turn.py`'s comments** before `app.py` is deleted.
+5. **The merge decision** — fold `testing-changes` into `feat/merge-chatbot-ui`,
+   or keep it separate for A/B testing. Still undecided.
+
+## How to check it still works
+
+Restart the server first — `turn.py`, `prompt.py`, `interpret.py` and
+`extract.py` are all imported at start, so edits to them need a restart. If
+port 8000 is still held by an old process, uvicorn fails to bind and exits, and
+the browser keeps talking to the stale one:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8000 -State Listen |
+  Select-Object -ExpandProperty OwningProcess |
+  ForEach-Object { Stop-Process -Id $_ -Force }
+python models/serve.py
+```
+
+Then, in one chat:
+
+| Ask | Expect |
+|---|---|
+| `Is subject 11's right side fatigued at 60 s?` | Verdict + 1-2 sentences. Never "you"/"your". No advice. |
+| `so what does this mean` | Something new. **No `Reading:` line, no Show graph button** |
+| `what can u tell me about the data` | Whole-recording summary of subject 11, not the 60s reading again |
+| `why?` | Opens "has not moved far enough…", fatigue in the conditional |
+| `and at 90 seconds?` | A fresh reading **at 90s** |
+| `what should they do about it?` | A Recommendation block ending in the disclaimer |
+| `will they get more tired over the next minute?` | A forecast chart |
+
+**The `Reading:` line under a follow-up is the reliable tell that the server is
+running stale code** — a follow-up never touches the classifier, so it has no
+window to cite and no chart to offer. The wording changes run to run; that line
+does not.
