@@ -32,7 +32,16 @@ def _to_html(fig) -> str:
     return f"<script>{_plotly_basic_js()}</script>" + chart
 
 
-def raw_and_mdf_figure(seg, mdf_t, mdf_v, title: str = "Uploaded recording") -> str:
+# Both figures defaulted to plotly_dark unconditionally, so a reader on the
+# UI's light theme (viz/chatbot_ui.html's STATE.theme, default "light") got a
+# black chart inside a white card. The UI's own colours are already threaded
+# through CSS variables for both themes; these two were the one place left
+# hardcoded to one of them.
+_TEMPLATE = {"dark": "plotly_dark", "light": "plotly_white"}
+
+
+def raw_and_mdf_figure(seg, mdf_t, mdf_v, title: str = "Uploaded recording",
+                       theme: str = "dark") -> str:
     fig = make_subplots(
         rows=2, cols=1,
         subplot_titles=("Raw EMG (bandpassed)", "Median frequency over time"))
@@ -46,12 +55,13 @@ def raw_and_mdf_figure(seg, mdf_t, mdf_v, title: str = "Uploaded recording") -> 
     fig.update_xaxes(title_text="Time (s)", row=2, col=1)
     fig.update_yaxes(title_text="EMG (a.u.)", row=1, col=1)
     fig.update_yaxes(title_text="MDF (Hz)", row=2, col=1)
-    fig.update_layout(template="plotly_dark", height=560, title=title,
-                      showlegend=False, margin=dict(t=60, b=40))
+    fig.update_layout(template=_TEMPLATE.get(theme, "plotly_dark"), height=560,
+                      title=title, showlegend=False, margin=dict(t=60, b=40))
     return _to_html(fig)
 
 
-def forecast_figure(forecast: dict, title: str = "Fatigue trend forecast") -> str:
+def forecast_figure(forecast: dict, title: str = "Fatigue trend forecast",
+                    theme: str = "dark") -> str:
     t_future = list(forecast["t_future"])
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -78,8 +88,8 @@ def forecast_figure(forecast: dict, title: str = "Fatigue trend forecast") -> st
     fig.add_trace(go.Scatter(x=t_future, y=list(forecast["y_future"]),
                              mode="lines", name="forecast",
                              line=dict(color="#a78bfa", width=2, dash="dash")))
-    fig.update_layout(template="plotly_dark", height=380, title=title,
-                      xaxis_title="Time (s)", yaxis_title="MDF (Hz)",
+    fig.update_layout(template=_TEMPLATE.get(theme, "plotly_dark"), height=380,
+                      title=title, xaxis_title="Time (s)", yaxis_title="MDF (Hz)",
                       margin=dict(t=50, b=30),
                       legend=dict(orientation="h", y=1.15))
     return _to_html(fig)

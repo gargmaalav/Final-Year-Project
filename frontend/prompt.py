@@ -211,7 +211,18 @@ _FOLLOWUP_NEVER_RESTATE = (
     "they have read it. NEVER open by restating the finding, and never write "
     "a sentence that says the same thing as one of the sentences above. Every "
     "sentence you write must add something that answer did not contain. Do "
-    "not change the conclusion either -- add to it.")
+    "not change the conclusion either -- add to it.\n\n"
+    # No rate of change was measured here -- that only exists on a separate
+    # forecast turn, with its own facts, never handed to a follow-up. Asked
+    # what a reading means, the model wrote "it will take approximately 12% "
+    # "of the total recording time before they reach a point where fatigue is "
+    # "likely" -- confident and specific, and built from nothing measured.
+    "Never say how soon, how long, or at what rate fatigue will arrive, and "
+    "never project when this reading would change if it continued. You have "
+    "no measurement of how the signal is changing over time -- only this one "
+    "moment. You may say how far this reading is from the point where the "
+    "call would flip, using the measured values above, but never how long it "
+    "would take to get there.")
 
 
 def _addressing(who: str | None) -> str:
@@ -254,6 +265,13 @@ def build_followup_prompt(previous_question: str, previous_answer: str,
     """
     task = _FOLLOWUP_TASK.get(kind or intent.MEANING,
                               _FOLLOWUP_TASK[intent.MEANING])
+    # interpret.plain_lines() writes the confidence fact as "the model's own
+    # CERTAINTY in the fatigued/not-fatigued call" -- fine for a human reading
+    # it directly, but handed to the model as ground truth it gets quoted back
+    # ("the model's 95% certainty in its fatigued/not-fatigued call"), which is
+    # exactly the word the reading prompt forbids. build_prompt() already
+    # drops this line for the same reason; do the same here.
+    facts = [f for f in facts if "certainty in the fatigued" not in f]
     body = "\n".join(f"- {f}" for f in facts) if facts else "- (none recorded)"
     # The causal chain is generic physics and was pasted in unconditionally.
     # Asked to re-explain subject 7 -- whose median frequency ROSE, which the

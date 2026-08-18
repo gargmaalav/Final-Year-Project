@@ -100,6 +100,7 @@ def new_session() -> dict:
     """Fresh per-chat state -- what st.session_state held per browser session."""
     return {
         "model": DEFAULT_MODEL,
+        "theme": "light",        # matches chatbot_ui.html's default until told otherwise
         "sample_rate": None,     # blank until the user states it
         "athlete_note": "",
         "uploads": {},           # key -> {"seg", "fs", "baseline", "name", "scan"}
@@ -142,8 +143,8 @@ def _subjects() -> list[int]:
 #
 # maxsize is small on purpose: each entry is a ~3.3 MB HTML string.
 @functools.lru_cache(maxsize=8)
-def _cached_chart(subject: int, t_start: float, side: str) -> str:
-    return render_window(subject, t_start, side)
+def _cached_chart(subject: int, t_start: float, side: str, theme: str) -> str:
+    return render_window(subject, t_start, side, theme=theme)
 
 
 # Loads the recording's samples alongside classify(), which does its own
@@ -155,21 +156,28 @@ _IO_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="segment")
 
 
-def render_chart_ref(session: dict, ref: dict) -> str | None:
+def render_chart_ref(session: dict, ref: dict, theme: str | None = None) -> str | None:
     """Draw the figure a `chart_ref` points at, on demand.
 
     Called by serve.py's GET /chart when the reader clicks "Show graph" --
     the only place a reading chart is built. Returns None rather than raising
     so a chart failure stays a missing picture, not a failed request.
+
+    `theme` is the UI's current light/dark setting. Explicit here rather than
+    read only from the session because the reader can flip the theme toggle
+    between asking a question and clicking "Show graph" -- serve.py passes
+    what the click actually requested; falling back to the session covers
+    callers (tests, older clients) that don't.
     """
     if not ref:
         return None
+    theme = theme or session.get("theme", "dark")
     if ref.get("source") == "upload":
         cache = session["uploads"].get(session["last_upload"])
-        return _upload_chart(cache) if cache else None
+        return _upload_chart(cache, theme) if cache else None
     try:
         return _cached_chart(int(ref["subject"]), float(ref["t_start"]),
-                             str(ref["side"]))
+                             str(ref["side"]), theme)
     except Exception:
         return None
 
@@ -708,7 +716,8 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
         result["fatigue_label"], str(result["fatigue_label"]))
 
     seg, fs = seg_future.result()
-    forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
+    forecast, forecast_chart_html = _forecast(
+        seg, fs, user_text, t_start, session.get("theme", "dark"))
     reading = _plain_reading(result, subject_reference(subject), t_start,
                              float(seg.t[-1]) if seg.t.size else None,
                              f"Subject {subject}")
@@ -743,17 +752,17 @@ def _upload_turn(session: dict, user_text: str, uploaded_file) -> dict:
         session["uploads"][key] = cache
 
     session["last_upload"] = key
-    return _upload_question(user_text, cache)
+    return _upload_question(user_text, cache, session.get("theme", "dark"))
 
 
-def _upload_question(user_text: str, cache: dict) -> dict:
+def _upload_question(user_text: str, cache: dict, theme: str = "dark") -> dict:
     """Any question about an already-loaded uploaded recording."""
     intent = intent_router.route(user_text or "")
     if intent.kind in (intent_router.ONSET, intent_router.OVERVIEW):
         return _upload_analysis(user_text, cache, intent.kind)
     if intent.kind == intent_router.COMPARE:
         return _upload_compare(user_text, cache, intent)
-    return _upload_reading(user_text, cache)
+    return _upload_reading(user_text, cache, theme)
 
 
 def _upload_compare(user_text: str, cache: dict, intent) -> dict:
@@ -826,16 +835,17 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
             "chart_ref": {"source": "upload"}, "window": window}
 
 
-def _upload_chart(cache: dict):
+def _upload_chart(cache: dict, theme: str = "dark"):
     try:
         mdf_t, mdf_v, _ = data_loader.mdf_trend(cache["seg"], fs=cache["fs"])
         return charts.raw_and_mdf_figure(cache["seg"], mdf_t, mdf_v,
-                                         title=f"Uploaded: {cache['name']}")
+                                         title=f"Uploaded: {cache['name']}",
+                                         theme=theme)
     except Exception:
         return None
 
 
-def _upload_reading(user_text: str, cache: dict) -> dict:
+def _upload_reading(user_text: str, cache: dict, theme: str = "dark") -> dict:
     uploaded_name = cache["name"]
     seg, fs = cache["seg"], cache["fs"]
     duration = float(seg.t[-1]) if seg.t.size else 0.0
@@ -854,7 +864,7 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
         result["fatigue_label"], str(result["fatigue_label"]))
 
     notes = []
-    forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start)
+    forecast, forecast_chart_html = _forecast(seg, fs, user_text, t_start, theme)
     try:
         reference = upload_reference(cache["baseline"])
     except Exception:
@@ -872,7 +882,8 @@ def _upload_reading(user_text: str, cache: dict) -> dict:
                        "name": uploaded_name, "notes": notes}}
 
 
-def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
+def _forecast(seg, fs: int, user_text: str, t_start: float | None = None,
+              theme: str = "dark"):
     """Forecast only when the question actually asks about the future."""
     horizon = extract.extract_horizon_seconds(user_text, default=None)
     if horizon is None:
@@ -884,7 +895,7 @@ def _forecast(seg, fs: int, user_text: str, t_start: float | None = None):
     if not forecast.get("ok"):
         return forecast, None
     try:
-        return forecast, charts.forecast_figure(forecast)
+        return forecast, charts.forecast_figure(forecast, theme=theme)
     except Exception:
         return forecast, None
 
@@ -931,6 +942,12 @@ def _finalize(session: dict, turn: dict) -> dict:
                 # above the fresh level of 70.0 Hz" -- both figures real, the
                 # relation between them backwards.
                 content = interpret.drop_hertz_comparisons(content)
+                # A follow-up has no rate of change to work from -- that only
+                # exists on the forecast path, with its own facts -- but it
+                # produced "it will take approximately 12% of the total
+                # recording time before they reach a point where fatigue is
+                # likely" anyway: a confident projection built from nothing.
+                content = interpret.drop_projection_claims(content)
             # Same plain-language and length treatment the reading answers get
             # further down. Three sentences rather than two: an overview has a
             # start, an end and an onset to cover, and the numbers here ARE
@@ -1187,7 +1204,7 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
         turn = _upload_turn(session, user_text, uploaded_file)
     else:
         cache = _followup_upload(session, user_text)
-        turn = (_upload_question(user_text, cache) if cache
+        turn = (_upload_question(user_text, cache, session.get("theme", "dark")) if cache
                 else _dataset_turn(session, user_text, session["last_params"]))
     final = _finalize(session, turn)
     if uploaded_file is None:

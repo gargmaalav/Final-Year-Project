@@ -554,6 +554,22 @@ def _():
     assert "z = " not in built and "confidence 98" not in built, built
 
 
+@check("a follow-up doesn't inherit the certainty wording from plain_lines")
+def _():
+    # session["last_answer"]["facts"] falls back to plain_lines() output,
+    # which is where "certainty in the fatigued/not-fatigued call" lives.
+    # build_prompt() already drops that line; build_followup_prompt() didn't,
+    # so a follow-up quoted it back verbatim -- "the model's 95% certainty in
+    # its fatigued/not-fatigued call".
+    described = _reading(58.2, 62.7, 3.8, 1)
+    lines = interpret.plain_lines(described, "Subject 13")
+    assert any("certainty in the fatigued" in l for l in lines), lines
+    built = prompt.build_followup_prompt(
+        "is subject 13 fatigued?", "Subject 13 is showing signs of fatigue.",
+        lines, "so what does this mean?")
+    assert "certainty in the fatigued" not in built, built
+
+
 @check("the prose notes contain no numbers at all")
 def _():
     # every figure given to the model came back misattributed somewhere: the
@@ -1204,6 +1220,54 @@ def _():
 def _():
     built = prompt.build_followup_prompt("q", "a", [], "why?", intent.WHY)
     assert "never say one hertz figure is above or below another" in built, built
+
+
+@check("a follow-up projecting when fatigue will arrive loses that sentence")
+def _():
+    # Real bug: "it will take approximately 12% of the total recording time
+    # before they reach a point where fatigue is likely" -- no rate of change
+    # is ever measured on the follow-up path, so this is invented outright,
+    # not a real number used wrong (that's drop_hertz_comparisons' job).
+    prose = ("Their signal has eased off a little. It will take approximately "
+             "12% of the total recording time before they reach a point where "
+             "fatigue is likely. It is worth another reading later on.")
+    out = interpret.drop_projection_claims(prose)
+    assert "before they reach a point" not in out, out
+    assert "eased off a little" in out and "another reading later" in out, out
+    # A lone offending sentence falls back to the original text -- same
+    # "never returns empty" rule drop_hertz_comparisons follows -- so each
+    # case here pairs the claim with a sentence that should survive it.
+    for phrasing in (
+            "The reading is steady. At this rate they will be fatigued soon.",
+            "The reading is steady. If this continues, they will reach "
+            "fatigue within a minute.",
+            "The reading is steady. How soon this happens depends on "
+            "their effort.",
+            "The reading is steady. They are expected to reach fatigue "
+            "shortly."):
+        out = interpret.drop_projection_claims(phrasing)
+        assert "The reading is steady" in out, phrasing
+        assert out != phrasing, phrasing
+
+
+@check("how far from the threshold is kept, only how long to get there is dropped")
+def _():
+    for keep in ("They are 5% below the point where this would flip.",
+                 "This reading was taken 60 seconds in.",
+                 "The median frequency here is 66.8 Hz."):
+        assert interpret.drop_projection_claims(keep) == keep, keep
+
+
+@check("dropping projection claims never empties an answer")
+def _():
+    only = "It will take approximately 12% of the recording before they reach fatigue."
+    assert interpret.drop_projection_claims(only).strip(), "stripped to nothing"
+
+
+@check("every follow-up is told not to project when fatigue will arrive")
+def _():
+    built = prompt.build_followup_prompt("q", "a", [], "why?", intent.WHY)
+    assert "never how long it would take to get there" in built, built
 
 
 @check("a total budget caps the whole answer, not just each paragraph")

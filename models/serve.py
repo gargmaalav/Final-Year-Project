@@ -114,13 +114,20 @@ def list_models_endpoint():
 @app.post("/turn")
 def turn_endpoint(session_id: str = Form(...), user_text: str = Form(""),
                   model: str = Form(""), sample_rate: float | None = Form(None),
-                  athlete_note: str = Form(""), file: UploadFile | None = File(None)):
+                  athlete_note: str = Form(""), theme: str = Form(""),
+                  file: UploadFile | None = File(None)):
     """One user turn in, one finalized answer out -- see frontend/turn.py."""
     session = _session(session_id)
     if model:
         session["model"] = model
     session["sample_rate"] = sample_rate
     session["athlete_note"] = athlete_note or ""
+    # The theme toggle lives entirely client-side; a chart built for this turn
+    # (the forecast chart, embedded straight in this response) needs to match
+    # it, so the UI reports its current theme on every turn rather than only
+    # when it changes.
+    if theme in ("light", "dark"):
+        session["theme"] = theme
 
     uploaded = None
     if file is not None and file.filename:
@@ -158,7 +165,7 @@ def _run_sync(coro):
 def chart_endpoint(session_id: str = Form(...), source: str = Form("dataset"),
                    subject: int | None = Form(None),
                    t_start: float | None = Form(None),
-                   side: str = Form("R")):
+                   side: str = Form("R"), theme: str = Form("")):
     """Draw one figure, on request.
 
     Charts used to be rendered for every reading whether or not anyone looked
@@ -172,7 +179,8 @@ def chart_endpoint(session_id: str = Form(...), source: str = Form("dataset"),
     """
     ref = {"source": source, "subject": subject, "t_start": t_start,
            "side": side}
-    html = turn_engine.render_chart_ref(_session(session_id), ref)
+    html = turn_engine.render_chart_ref(
+        _session(session_id), ref, theme if theme in ("light", "dark") else None)
     if html is None:
         raise HTTPException(status_code=404,
                             detail="That figure could not be drawn.")

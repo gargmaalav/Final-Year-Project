@@ -1169,6 +1169,7 @@
       if (ref.subject != null) fd.append("subject", ref.subject);
       if (ref.t_start != null) fd.append("t_start", ref.t_start);
       if (ref.side) fd.append("side", ref.side);
+      fd.append("theme", STATE.theme || "light");
       openPane();
       figLoading();
       fetch(API + "/chart", {method: "POST", body: fd}).then(function (r) {
@@ -1495,6 +1496,7 @@
     fd.append("session_id", sessionId);
     fd.append("user_text", userText || "");
     fd.append("model", STATE.model || "");
+    fd.append("theme", STATE.theme || "light");
     var sampleRate = $("sample-rate").value ? parseFloat($("sample-rate").value) : null;
     if (sampleRate) fd.append("sample_rate", sampleRate);
     var note = $("athlete-note") ? $("athlete-note").value : "";

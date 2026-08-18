@@ -611,6 +611,46 @@ def drop_hertz_comparisons(prose: str) -> str:
     return "\n\n".join(kept).strip() or prose
 
 
+# A forward-looking claim about when or how fast fatigue will arrive. No rate
+# of change is measured anywhere on the follow-up path -- that only exists in
+# fatigue_forecast.py's own forecast, which is a different turn with its own
+# chart and its own facts, never handed to a follow-up. A follow-up asked "so
+# what does this mean" produced "it will take approximately 12% of the total
+# recording time before they reach a point where fatigue is likely" -- a
+# specific, confident projection built from nothing: no rate was measured, no
+# trend was fit, and the 12% is not a value the follow-up was ever given.
+_PROJECTION = re.compile(
+    r"\b(?:will take|before (?:they|it|the signal|the (?:muscle|reading))|"
+    r"at (?:this|the current) rate|if this (?:trend |pattern )?continues|"
+    r"continu(?:es|ing) at this rate|how (?:soon|long)|"
+    r"(?:is |are )?(?:projected|expected) to (?:reach|become|hit)|"
+    r"likely to reach|in the next (?:few )?(?:seconds?|minutes?)|"
+    r"reach(?:es)? (?:a point|the point|fatigue) (?:where|in)|"
+    r"until (?:they|it) (?:become|reach|hit))\b", re.IGNORECASE)
+
+
+def drop_projection_claims(prose: str) -> str:
+    """Remove sentences predicting when fatigue will arrive.
+
+    Distinct from drop_hertz_comparisons: those sentences state a real
+    relationship backwards, this one states a rate of change that was never
+    computed at all. "How far this reading is from the threshold" (the
+    measured drop_percent/band) is fine and left alone -- it is "how long
+    until it gets there" that has nothing behind it.
+
+    Never returns empty, for the same reason drop_hertz_comparisons does not.
+    """
+    if not prose:
+        return prose
+    kept = []
+    for para in re.split(r"\n\s*\n", prose.strip()):
+        good = [s for s in re.split(r"(?<=[.!?])\s+", para.strip())
+                if not _PROJECTION.search(s)]
+        if good:
+            kept.append(" ".join(good))
+    return "\n\n".join(kept).strip() or prose
+
+
 # Telling the reader to DO something. Two halves, and a sentence needs both:
 # a directive construction, and a thing to do that this measurement says
 # nothing about. "They should keep going" is advice; "the signal should be
