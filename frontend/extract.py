@@ -538,10 +538,14 @@ _BARE_HORIZON_RE = re.compile(
     r"\b(?:next|following|coming)\s+(minute|min|second|sec)\b", re.IGNORECASE)
 
 # Asking about the future without naming a horizon ("will I get more tired?").
+# "last" is deliberately not a bare alternative here: unqualified it matches
+# "in the last 10 seconds" (backward-looking) as readily as "how long will
+# they last" -- the negative lookbehind excludes "the last ..." (a named
+# recent span) while still catching "last" used as a verb ("will they last").
 _FUTURE_INTENT_RE = re.compile(
     r"\b(will|going to|gonna|predict|forecast|project(?:ion|ed)?|"
     r"keep going|carry on|continue|later on|from here|trend|"
-    r"if i keep|how much longer|hold out|last)\b", re.IGNORECASE)
+    r"if i keep|how much longer|hold out|(?<!the )last)\b", re.IGNORECASE)
 DEFAULT_HORIZON_SEC = 20.0
 
 

@@ -1544,9 +1544,14 @@
     clearThread();
     // figIdle() first: it resets FIG_GROUPS, so figures do not carry over from
     // whichever chat was open before. Reading charts are NOT replayed -- each
-    // answer keeps its "Show graph" button, so reopening a chat costs nothing
-    // and any figure that is wanted is one click away. Forecast charts are
-    // replayed because they were built with the answer and are already here.
+    // answer keeps its "Show graph" button (chart_ref is small and survives
+    // localStorage), so reopening a chat costs nothing and any figure that is
+    // wanted is one click away. Forecast charts have no such button -- they
+    // only exist as the HTML built with the answer, and saveChats() strips
+    // that HTML before writing to localStorage (see _HEAVY_KEYS) -- so this
+    // only replays them within the current browser session; after a reload
+    // `m.forecast_chart_html` is gone and the chart just doesn't come back,
+    // same as the panel footer already says of figures generally.
     figIdle();
     var charted = [];
     (c.messages || []).forEach(function (m) {
@@ -1588,6 +1593,9 @@
 
   // ================= run a turn (dataset question, follow-up, or upload) ==
   function runTurn(text, file) {
+    // Guard here, not just in submitQuery, so every caller is covered --
+    // notably the failure card's Retry button, which calls runTurn directly.
+    if (STATE.busy) return;
     if (threadHasEmptyState()) clearThread();
     var chatId = STATE.activeChatId || newSessionId();
     var isNewChat = !STATE.activeChatId;

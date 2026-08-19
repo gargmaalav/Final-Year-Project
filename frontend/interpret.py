@@ -384,6 +384,8 @@ _PLAIN_WORDS = [
     (", indicating", ", which means"),
     ("indicating that", "which means"),
     ("indicating", "showing"),
+    ("indicated", "showed"),
+    ("indicates", "shows"),
     ("deviation from", "change from"),
     ("deviation", "change"),
 ]

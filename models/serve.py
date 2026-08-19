@@ -207,8 +207,13 @@ def chart_endpoint(session_id: str = Form(...), source: str = Form("dataset"),
     """
     ref = {"source": source, "subject": subject, "t_start": t_start,
            "side": side}
-    html = turn_engine.render_chart_ref(
-        _session(session_id), ref, theme if theme in ("light", "dark") else None)
+    # render_chart_ref reads session["uploads"]/session["last_upload"] for an
+    # upload chart_ref, which /turn also writes under _session_lock -- take
+    # the same lock here so a concurrent /turn for this session_id can't be
+    # read mid-write (see _SESSION_LOCKS' comment above).
+    with _session_lock(session_id):
+        html = turn_engine.render_chart_ref(
+            _session(session_id), ref, theme if theme in ("light", "dark") else None)
     if html is None:
         raise HTTPException(status_code=404,
                             detail="That figure could not be drawn.")

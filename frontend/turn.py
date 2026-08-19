@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import functools
+import hashlib
 import os
 import re
 import sys
@@ -703,19 +704,20 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
     # the reader asks. serve.py's GET /chart redeems it. See _chart_ref below.
     seg_future = _IO_POOL.submit(_load_subject_segment, subject, side)
 
+    # seg/fs passed through so classify() reuses this load instead of
+    # repeating it via its own internal (uncached) loader in
+    # models/classify.py -- without them it does the same disk read again.
     try:
-        result = classify(subject, t_start, side)
+        seg, fs = seg_future.result()
+        result = classify(subject, t_start, side, seg=seg, fs=fs)
     except KeyError:
-        seg_future.cancel()
         return {"content": f"Subject {subject} has no stored fresh-baseline "
                            "calibration, so I can't classify their fatigue yet."}
     except Exception as e:
-        seg_future.cancel()
         return {"content": f"Couldn't classify that window: {e}"}
     result["fatigue_state"] = _FATIGUE_STATE.get(
         result["fatigue_label"], str(result["fatigue_label"]))
 
-    seg, fs = seg_future.result()
     forecast, forecast_chart_html = _forecast(
         seg, fs, user_text, t_start, session.get("theme", "dark"))
     reading = _plain_reading(result, subject_reference(subject), t_start,
@@ -732,7 +734,10 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
 
 
 def _upload_key(f) -> str:
-    return f"{f.name}:{f.size}"
+    # name:size alone collides for two different files that happen to share
+    # both -- a content hash makes the key actually identify the file.
+    digest = hashlib.sha1(f.getvalue()).hexdigest()[:16]
+    return f"{f.name}:{f.size}:{digest}"
 
 
 def _upload_turn(session: dict, user_text: str, uploaded_file) -> dict:
@@ -1010,7 +1015,15 @@ def _finalize(session: dict, turn: dict) -> dict:
             cleaned = interpret.trim_sentences(interpret.plain_words(cleaned), 2)
             content = f"{verdict}\n\n{cleaned}" if cleaned else verdict
         else:
-            content = prose
+            # No verdict to echo/prefix (e.g. _plain_reading() failed), but the
+            # model's prose still needs the same invented-number/advice/length
+            # guards a verdict-bearing reading gets -- this is not a lesser
+            # case, just one without a rendered verdict sentence to lead it.
+            who = (reading or {}).get("who")
+            cleaned, invented = interpret.strip_invented_numbers(prose, who)
+            if not wants_recommendation(user_text):
+                cleaned = interpret.drop_advice(cleaned)
+            content = interpret.trim_sentences(interpret.plain_words(cleaned), 2)
     except LLMError as e:
         if verdict:
             content = (f"{verdict}\n\n_Couldn't add the plain-English notes: "

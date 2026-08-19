@@ -5,58 +5,65 @@ Final year project, AUT ENSE891. Team: Maalav, Aryan, Rayyan.
 ## Architecture
 
 ```
-User query
+Browser (viz/chatbot_ui.html, vanilla JS)
+    |  POST /turn (one message in, one answer out)
+    |  POST /chart (render a figure, on demand)
+models/serve.py  (FastAPI)
     |
-Maalav frontend  ──>  Aryan classify()   ──>  structured features
-                  ──>  Rayyan render_window()  ──>  PNG panel
-                  ──>  Stock LLM (Ollama / API) grounded with features
-                  ──>  Text answer + visual panel displayed side-by-side
+frontend/turn.py  ──>  frontend/intent.py + extract.py   (what was asked, what it names)
+                  ──>  models/classify.py                (the fatigue reading itself)
+                  ──>  models/fatigue_forecast.py         (optional trend projection)
+                  ──>  frontend/interpret.py + prompt.py  (plain-language facts -> LLM prompt)
+                  ──>  Ollama (local LLM)                 (phrases the answer, invents nothing)
+                  ──>  viz/render_window.py / charts.py   (the figure, built only if asked for)
 ```
 
-LLM reads structured features, not images. No model training required.
+The LLM is handed measured numbers and told to phrase them — it never sees a
+chart, never runs the classifier itself, and its prose is post-processed
+(`frontend/interpret.py`) to strip anything it might have invented.
 
 ## Running it
 
 ```bash
 python -m pip install -r requirements.txt
 python models/train_model.py          # once, produces models/fatigue_model.pt
-python models/forecast_lstm.py --skip-loso --horizons 10 20 30 45 60 \
-    --save-model models/forecast_model.pt   # once, for the fatigue forecast
 ```
 
-The forecaster is optional — without `forecast_model.pt` the app falls back to
-an OLS trend line, which is measurably worse (see below).
-
-Also needed: Ollama running locally with a chat model pulled (default
-`llama3.2:3b`), and the Zenodo dataset at `zenodo_biceps/sEMG_data/`.
-
-There are **two frontends over the same `classify()`**, both supported:
+Also needed: [Ollama](https://ollama.com) running locally with a chat model
+pulled (`ollama pull llama3.2:3b`), and the Zenodo dataset at
+`zenodo_biceps/sEMG_data/` (see Dataset, below).
 
 ```bash
-streamlit run frontend/app.py         # Streamlit chat UI (dataset + file upload)
-python models/serve.py                # HTTP bridge for Open WebUI function calling
+python models/serve.py                # UI at http://localhost:8000
 ```
 
-The supervisor asked for Open WebUI + function calling, which is what
-`models/serve.py` and `models/openwebui_tool_reference.py` provide. The
-Streamlit app is a second frontend that calls `classify()` directly in Python
-instead of relying on the LLM to invoke a tool — the 3B model proved
-unreliable at deciding to call the tool. Neither replaces the other, and both
-consume the same contract function.
+That's the one entry point — it serves `viz/chatbot_ui.html` and the `/turn`
+and `/chart` API it calls. The server warms Ollama's prompt cache at startup
+(`[warm-up] ready in ~Ns`) so the first real question isn't the slow one.
+
+`models/openwebui_tool_reference.py` is a second, optional way to reach
+`classify()` via Open WebUI's function calling, kept working but not required
+to run the chatbot above.
 
 ## Directory structure
 
 ```
-zenodo_biceps/   existing EMG pipeline (loader, classifier, core) — do not reorganise
-viz/             Rayyan: render_window() + grounding bridge
-models/          Aryan: LSTM classifier, classify()/classify_upload(),
-                 LSTM fatigue forecaster, serve.py
-frontend/        Maalav: Streamlit chat UI + LLM wiring
+zenodo_biceps/   the EMG dataset + pipeline (loader, classifier, core)
+models/          classify(), the LSTM fatigue forecaster, serve.py (the API + server)
+frontend/        turn.py (turn-handling engine) + intent/extract/interpret/prompt/recommend
+viz/             chatbot_ui.html (the UI) + render_window.py/charts.py (the figures)
+docs/            design docs and decisions log
 ```
+
+`frontend/app.py` is the project's original Streamlit frontend. It's no
+longer used (see `docs/decisions.md`) but kept around until its logic is
+fully accounted for elsewhere — don't build against it.
 
 ## Tests
 
 ```bash
+python frontend/test_answers.py       # the facts handed to the model say the right thing
+python frontend/test_understanding.py # a question resolves to the right intent/window
 python models/test_classify.py        # classify() contract + calibration guards
 python viz/test_render_window.py      # chart rendering
 ```
@@ -70,49 +77,6 @@ next signal value" is not a solvable task on sEMG, the leave-one-subject-out
 benchmark against persistence and OLS baselines, and the finding that the
 straight-line forecast previously used was significantly *worse* than assuming
 no change (−28% at 30 s, −51% at 60 s).
-
-## Integration contract
-
-Agree these signatures before building — a mismatch here breaks the whole system silently.
-
-### viz/render_window.py
-
-```python
-def render_window(subject: int, t_start: float, side: str = "R") -> str:
-    """Return interactive Plotly chart as an HTML string (no full_html wrapper).
-    Embed via innerHTML in JS or st.components.html() in Streamlit.
-    If Maalav uses React + plotly.js, switch return to fig.to_json() instead."""
-```
-
-Produced by: Rayyan. Consumed by: Maalav.
-
-### models/classify.py
-
-```python
-def classify(subject: int, t_start: float, side: str = "R") -> dict:
-    """Return {'mdf_hz': float, 'fatigue_label': int, 'confidence': float}"""
-```
-
-Produced by: Aryan. Consumed by: Maalav.
-
-### frontend/prompt.py
-
-```python
-def build_prompt(features: dict, user_query: str) -> str:
-    """Build the LLM system prompt from pipeline features + user question.
-    Constrain LLM to only use provided feature values — no hallucinated numbers."""
-```
-
-Produced by: Maalav.
-
-## Branch convention
-
-- `main` — stable, reviewed, merged only via PR
-- `feat/rayyan-visualization` — render_window panel + grounding bridge
-- `feat/aryan-ml` — Transformer / LSTM classifier
-- `feat/maalav-frontend` — chat UI + LLM wiring
-
-Open a PR into main when your feature is working end-to-end.
 
 ## Dataset
 

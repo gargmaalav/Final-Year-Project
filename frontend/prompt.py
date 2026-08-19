@@ -856,15 +856,14 @@ def build_prompt(features: dict, user_query: str, forecast: dict | None = None,
         if calib else ""
     )
     # The old wording described a collapsed "Show the signal" expander and
-    # invited the model to point at it -- that was the Streamlit UI, and it
-    # cost a whole sentence ("You can expand the chart below to see the exact
-    # values") on every single answer. The chart is now already on screen in
-    # the figures panel beside the answer, so there is nothing to expand and
-    # nothing worth spending a sentence telling the reader to go and look at.
+    # invited the model to point at it -- that was the Streamlit UI. The
+    # current UI renders charts on demand (GET /chart, behind a "Show graph"
+    # button), not eagerly, so chart_shown means one CAN be drawn, not that
+    # one is already on screen -- don't tell the model otherwise.
     chart_line = (
-        "A chart of this reading is already visible in the figures panel "
-        "beside your answer -- the reader can see it without doing anything. "
-        "Do NOT tell them to open, expand, or look at the chart, and do not "
+        "A chart of this reading is available -- the reader can see it by "
+        "pressing \"Show graph\" below your answer. If they ask to see a "
+        "graph/chart/plot, tell them to press that button; otherwise don't "
         "spend a sentence on it. You cannot see it yourself, so do not "
         "describe values in it beyond what's given above.\n"
         if chart_shown else

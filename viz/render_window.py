@@ -479,7 +479,11 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     )
 
     # --- static: MDF-over-time, split by fatigue label (panel 2) ---
-    if lab_t is None:
+    # Matches _dominant_label's own "no labels" check (line ~304): an empty
+    # (not just None) lab_t means every window's label is the -1 sentinel, so
+    # the labelled branch below would build three all-empty masks and add no
+    # trace at all -- not even this grey fallback.
+    if lab_t is None or lab_t.size == 0:
         fig.add_trace(go.Scatter(x=mdf_t, y=mdf_v, mode="markers+lines",
                                  name="MDF (no ground-truth labels)",
                                  marker=dict(size=5, color="#888")), row=2, col=1)
