@@ -96,7 +96,7 @@
   #rate-unit { font-size: 11px; color: var(--text-3); }
   #sample-rate, #athlete-note { background: var(--bg-2); border: 1px solid var(--border); border-radius: 2px; padding: 8px 10px; font-size: 13px; color: var(--text-1); outline: none; width: 100%; }
   #sample-rate:focus, #athlete-note:focus { border-color: var(--accent); }
-  #rate-help { font-size: 11.5px; line-height: 1.55; color: var(--text-2); }
+  #rate-help, #note-help { font-size: 11.5px; line-height: 1.55; color: var(--text-2); }
   #note-field { display: flex; flex-direction: column; gap: 5px; }
   #clear-history { border-top: 1px solid var(--border); padding-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); transition: color 120ms ease; width: 100%; }
   #clear-history:hover { color: var(--error); }
@@ -434,12 +434,12 @@
             <div id="rate-unit" class="narrow">Hz</div>
           </div>
           <input id="sample-rate" class="narrow" type="number" placeholder="enter a value" min="1" step="1" aria-label="Sample rate in hertz">
-          <div id="rate-help">How many readings per second the recording holds.</div>
+          <div id="rate-help">Required for signal-only CSVs. Two-column CSVs use time in seconds to infer the rate.</div>
         </div>
         <div id="note-field">
           <div class="note-label"><svg class="icon"><use href="#i-activity"/></svg><span>Sport / goal (optional)</span></div>
           <input id="athlete-note" type="text" placeholder="e.g. competitive rock climbing" aria-label="Sport or goal, for recommendations">
-          <div id="rate-help">Used only if you ask for training advice.</div>
+          <div id="note-help">Used only if you ask for training advice.</div>
         </div>
         <button id="clear-history"><svg class="icon"><use href="#i-trash"/></svg><span>Clear all history</span></button>
       </div>
@@ -463,7 +463,7 @@
       </div>
     </div>
 
-    <div id="thread">
+    <div id="thread" role="log" aria-label="Conversation" aria-live="polite">
       <div id="empty-state">
         <div>
           <h1>Ask about a recording</h1>
@@ -482,7 +482,7 @@
         <button id="attach-btn" title="Attach a CSV" aria-label="Attach a CSV"><svg class="icon"><use href="#i-paperclip"/></svg></button>
         <input id="file-input" type="file" accept=".csv" class="hidden">
         <input id="q-input" type="text" placeholder="Ask about a subject, or attach your own EMG recording" aria-label="Your question">
-        <button id="send-btn" class="disabled" aria-label="Send"><svg class="icon"><use href="#i-arrow-up"/></svg></button>
+        <button id="send-btn" class="disabled" aria-label="Send" disabled><svg class="icon"><use href="#i-arrow-up"/></svg></button>
       </div>
       <div id="composer-help">Answers use the real classifier and, when available, a local model for the written reply. Press <span class="narrow">Enter</span> to send.</div>
     </div>
@@ -794,7 +794,7 @@
         input.style.borderColor = "var(--border)"; input.style.background = "var(--bg-2)";
         icon.setAttribute("href", "#i-gauge");
         $("rate-label").style.color = "var(--text-3)";
-        help.textContent = "How many readings per second the recording holds.";
+        help.textContent = "Required for signal-only CSVs. Two-column CSVs use time in seconds to infer the rate.";
       }
       return;
     }
@@ -886,6 +886,7 @@
       section.appendChild(label);
       byGroup[g].forEach(function (c) {
         var row = document.createElement("button");
+        row.disabled = STATE.busy;
         row.className = "chat-item" + (c.id === STATE.activeChatId ? " active" : "");
         row.innerHTML = '<span class="bar"></span><span class="t"></span>';
         row.querySelector(".t").textContent = c.title;
@@ -1051,6 +1052,7 @@
   function renderLoading(text) {
     var wrap = document.createElement("div");
     wrap.className = "msg-wrap msg-loading";
+    wrap.setAttribute("role", "status");
     wrap.innerHTML =
       '<div class="row"><span class="dot"></span><span></span></div>' +
       '<div class="sweep-track"><span class="sweep-bar"></span></div>';
@@ -1107,12 +1109,14 @@
       if (btn.disabled) return;
       btn.disabled = true;
       btn.textContent = "Drawing the graph…";
+      var chartChatId = STATE.activeChatId;
       var fd = new FormData();
-      fd.append("session_id", STATE.activeChatId || "default");
+      fd.append("session_id", chartChatId || "default");
       fd.append("source", ref.source || "dataset");
       if (ref.subject != null) fd.append("subject", ref.subject);
       if (ref.t_start != null) fd.append("t_start", ref.t_start);
       if (ref.side) fd.append("side", ref.side);
+      if (ref.upload_id) fd.append("upload_id", ref.upload_id);
       fd.append("theme", STATE.theme || "light");
       openPane();
       figLoading();
@@ -1120,10 +1124,12 @@
         if (!r.ok) throw new Error("chart request failed");
         return r.json();
       }).then(function (j) {
+        if (STATE.activeChatId !== chartChatId || !btn.isConnected) return;
         var gid = figShowHtml(j.chart_html, caption, null, null, windowInfo);
         STATE.activeChartRef = {ref: ref, caption: caption, windowInfo: windowInfo, groupId: gid};
         btn.textContent = "Graph shown";
       }).catch(function () {
+        if (STATE.activeChatId !== chartChatId || !btn.isConnected) return;
         figClearPending();
         figRestoreStatus();
         btn.disabled = false;
@@ -1359,6 +1365,7 @@
     if (info.ref.subject != null) fd.append("subject", info.ref.subject);
     if (info.ref.t_start != null) fd.append("t_start", info.ref.t_start);
     if (info.ref.side) fd.append("side", info.ref.side);
+    if (info.ref.upload_id) fd.append("upload_id", info.ref.upload_id);
     fd.append("theme", STATE.theme || "light");
     fetch(API + "/chart", {method: "POST", body: fd}).then(function (r) {
       if (!r.ok) throw new Error("chart request failed");
@@ -1478,7 +1485,7 @@
     if (file) fd.append("file", file);
     return fetch(API + "/turn", { method: "POST", body: fd }).then(function (r) {
       if (!r.ok) return r.json().catch(function () { return {}; })
-        .then(function (j) { throw { detail: j.detail || ("request failed (" + r.status + ")") }; });
+        .then(function (j) { throw { detail: (typeof j.detail === "string" ? j.detail : "Please check the upload settings and try again.") || ("request failed (" + r.status + ")") }; });
       return r.json();
     });
   }
@@ -1523,6 +1530,7 @@
   }
 
   function newChat() {
+    if (STATE.busy) return;
     STATE.activeChatId = null;
     STATE.pendingFile = null;
     clearAttachChip();
@@ -1536,6 +1544,7 @@
   $("new-chat").addEventListener("click", newChat);
 
   function openChat(id) {
+    if (STATE.busy) return;
     var c = STATE.chats.filter(function (x) { return x.id === id; })[0];
     if (!c) return;
     STATE.activeChatId = id;
@@ -1611,10 +1620,19 @@
     // model takes. The panel is only touched when "Show graph" is pressed.
 
     STATE.busy = true;
+    var startedAt = Date.now();
+    var progressTimer = setInterval(function () {
+      var elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      loadingRow.querySelector(".row span:last-child").textContent =
+        "Preparing your answer · " + elapsed + "s" +
+        (elapsed >= 20 ? ". The local model may still be loading." : "");
+    }, 1000);
     updateSendState();
     apiTurn(chatId, text, file).then(function (final) {
+      clearInterval(progressTimer);
       STATE.busy = false;
       updateSendState();
+      $("q-input").focus();
       loadingRow.remove();
       renderAnswer(final);
       upsertChat(chatId, null, {
@@ -1631,8 +1649,10 @@
                     final.forecast_chart_caption, final.window);
       }
     }).catch(function (err) {
+      clearInterval(progressTimer);
       STATE.busy = false;
       updateSendState();
+      $("q-input").focus();
       loadingRow.remove();
       renderFailure(null, (err && err.detail) ||
         "The model server did not respond. Check that `python models/serve.py` is running, then retry.",
@@ -1650,6 +1670,15 @@
     $("send-btn").classList.toggle("enabled", canSend);
     $("send-btn").classList.toggle("disabled", !canSend);
     $("q-input").disabled = STATE.busy;
+    $("send-btn").disabled = !canSend;
+    $("attach-btn").disabled = STATE.busy;
+    $("new-chat").disabled = STATE.busy;
+    $("rail-new-chat").disabled = STATE.busy;
+    $("clear-history").disabled = STATE.busy;
+    document.querySelectorAll(".chat-item").forEach(function (button) {
+      button.disabled = STATE.busy;
+    });
+    $("thread").setAttribute("aria-busy", String(STATE.busy));
   }
   function submitQuery() {
     if (STATE.busy) return;   // previous turn still awaiting its answer
@@ -1669,7 +1698,7 @@
   }
 
   $("send-btn").addEventListener("click", function () { if ($("send-btn").classList.contains("enabled")) submitQuery(); });
-  $("q-input").addEventListener("keydown", function (e) { if (e.key === "Enter") submitQuery(); });
+  $("q-input").addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submitQuery(); } });
   $("q-input").addEventListener("input", updateSendState);
   $("q-input").addEventListener("focus", function () { $("input-row").classList.add("focused"); });
   $("q-input").addEventListener("blur", function () { $("input-row").classList.remove("focused"); });
@@ -1678,6 +1707,11 @@
   $("file-input").addEventListener("change", function () {
     var f = $("file-input").files[0];
     if (!f) return;
+    if (f.size > 20 * 1024 * 1024) {
+      $("file-input").value = "";
+      renderGuidance("CSV uploads must be 20 MB or smaller. Choose a smaller recording.");
+      return;
+    }
     STATE.pendingFile = f;
     $("attach-row").classList.remove("hidden");
     $("attach-row").innerHTML = "";
@@ -1693,7 +1727,7 @@
       $("q-input").placeholder = "Ask about a subject, or attach your own EMG recording";
     });
     $("attach-row").appendChild(chip);
-    $("q-input").placeholder = "How many seconds in? (optional, defaults to the start)";
+    $("q-input").placeholder = "How many seconds in? (optional, defaults to the end)";
     updateSendState();
   });
 

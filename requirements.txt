@@ -20,6 +20,7 @@ requests>=2.31         # Ollama HTTP calls (frontend/llm.py)
 # function calling, and that path still works. See README.
 fastapi>=0.110
 uvicorn>=0.27
+python-multipart>=0.0.9  # FastAPI form fields and CSV uploads
 
 # Not pip-installable, needed at runtime:
 #   - Ollama running locally with a chat model pulled (default llama3.2:3b)

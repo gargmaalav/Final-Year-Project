@@ -174,7 +174,7 @@ def render_chart_ref(session: dict, ref: dict, theme: str | None = None) -> str 
         return None
     theme = theme or session.get("theme", "dark")
     if ref.get("source") == "upload":
-        cache = session["uploads"].get(session["last_upload"])
+        cache = session["uploads"].get(ref.get("upload_id"))
         return _upload_chart(cache, theme) if cache else None
     try:
         return _cached_chart(int(ref["subject"]), float(ref["t_start"]),
@@ -741,7 +741,7 @@ def _upload_key(f) -> str:
 
 
 def _upload_turn(session: dict, user_text: str, uploaded_file) -> dict:
-    key = _upload_key(uploaded_file)
+    key = f"{_upload_key(uploaded_file)}:fs={session['sample_rate']}"
     cache = session["uploads"].get(key)
     if cache is None:
         try:
@@ -753,7 +753,7 @@ def _upload_turn(session: dict, user_text: str, uploaded_file) -> dict:
             return {"content": f"Couldn't read that file ({type(e).__name__}: {e})"}
         fs = int(getattr(seg, "eff_fs", 250))
         cache = {"seg": seg, "fs": fs, "baseline": None, "name": uploaded_file.name,
-                 "scan": None}
+                 "scan": None, "upload_id": key}
         session["uploads"][key] = cache
 
     session["last_upload"] = key
@@ -795,7 +795,7 @@ def _upload_compare(user_text: str, cache: dict, intent) -> dict:
 
     return {**_comparison_answer(comparison),
             "facts": compare_facts(comparison), "user_text": user_text,
-            "chart_ref": {"source": "upload"},
+            "chart_ref": {"source": "upload", "upload_id": cache["upload_id"]},
             "window": {"source": "upload", "name": cache["name"],
                        "kind": "compare"}}
 
@@ -822,7 +822,7 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
         rendered = render_onset_answer(summary)
         if rendered:
             return {"content": rendered, "facts": onset_facts(summary),
-                    "user_text": user_text, "chart_ref": {"source": "upload"},
+                    "user_text": user_text, "chart_ref": {"source": "upload", "upload_id": cache["upload_id"]},
                     "window": window}
     facts = (onset_facts(summary) if kind == intent_router.ONSET
              else overview_facts(summary))
@@ -837,7 +837,7 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
     return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
                                          instruction),
             "facts": facts, "user_text": user_text,
-            "chart_ref": {"source": "upload"}, "window": window}
+            "chart_ref": {"source": "upload", "upload_id": cache["upload_id"]}, "window": window}
 
 
 def _upload_chart(cache: dict, theme: str = "dark"):
@@ -878,7 +878,7 @@ def _upload_reading(user_text: str, cache: dict, theme: str = "dark") -> dict:
                              "This recording")
 
     return {"features": result, "reading": reading,
-            "chart_ref": {"source": "upload"},
+            "chart_ref": {"source": "upload", "upload_id": cache["upload_id"]},
             "chart_caption": _UPLOAD_CHART_CAPTION,
             "forecast": forecast, "forecast_chart_html": forecast_chart_html,
             "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
