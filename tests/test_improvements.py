@@ -89,6 +89,12 @@ class BrowserDelivery(unittest.TestCase):
         self.assertIn('immutable', response.headers['cache-control'])
         self.assertEqual(response.text, _plotly_basic_js())
 
+    def test_missing_dataset_summary_returns_actionable_answer(self):
+        with patch.object(turn, '_cached_scan', side_effect=FileNotFoundError('missing trial')):
+            response = self.client.post('/turn', data={'session_id': 'missing-recording', 'user_text': 'Summarise subject 7'})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('missing from the local dataset', response.json()['content'])
+
     def test_chart_endpoint_passes_upload_identity(self):
         with patch.object(turn, 'render_chart_ref', return_value='<div>chart</div>') as render:
             response = self.client.post('/chart', data={'session_id': 'regression', 'source': 'upload', 'upload_id': 'first'})

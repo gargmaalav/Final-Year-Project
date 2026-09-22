@@ -1085,7 +1085,7 @@
     var card = document.createElement("div");
     card.className = "msg-failure";
     card.innerHTML =
-      '<div class="failure-title"><svg class="icon"><use href="#i-octagon-alert"/></svg><span>Classifier unreachable</span></div>' +
+      '<div class="failure-title"><svg class="icon"><use href="#i-octagon-alert"/></svg><span>Couldn’t complete the request</span></div>' +
       '<p class="failure-body"></p>' +
       '<div class="failure-actions"><button class="retry-btn"><svg class="icon"><use href="#i-rotate-ccw"/></svg>Retry</button><div class="failure-meta narrow"></div></div>';
     card.querySelector(".failure-body").textContent = detail || "The model server did not respond, so nothing was classified. Your question is still here — check that models/serve.py is running, then retry.";
@@ -1485,7 +1485,7 @@
     if (file) fd.append("file", file);
     return fetch(API + "/turn", { method: "POST", body: fd }).then(function (r) {
       if (!r.ok) return r.json().catch(function () { return {}; })
-        .then(function (j) { throw { detail: (typeof j.detail === "string" ? j.detail : "Please check the upload settings and try again.") || ("request failed (" + r.status + ")") }; });
+        .then(function (j) { throw { detail: typeof j.detail === "string" ? j.detail : (r.status === 422 ? "Some request fields are invalid. Check your question and recording settings." : "The server could not complete this request (HTTP " + r.status + "). Please retry; if it keeps failing, check the server log.") }; });
       return r.json();
     });
   }

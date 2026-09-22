@@ -91,3 +91,14 @@ serialization, and repeated runtime storage, not figure construction time.
   alignment fix, the browser confirmed both graph and answer report 60.8 Hz.
 - Full classifier test stopped on missing subject-11 trial-5 data. No claim of
   improved model accuracy or a complete dataset-backed validation is made.
+
+## Follow-up: missing dataset recordings
+
+The subject-7 summary exposed an uncaught missing-file exception. Restored 12
+missing biceps trial CSVs from the existing local dataset archive (raw data
+remains gitignored). Added a regression test for missing summary recordings and
+replaced the misleading upload-settings fallback for HTTP 500 responses.
+The full classifier suite now passes, including 94.7% agreement between fresh
+upload calibration and stored calibration across subjects 11–13. Forecast-model
+checks that require trained forecast weights still report their own skips.
+All 9 API/upload/chart regression tests pass.

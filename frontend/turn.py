@@ -609,7 +609,13 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
                                       subjects=intent.subjects)
 
     if intent.kind != intent_router.READING:
-        return _analysis_turn(user_text, intent, previous)
+        try:
+            return _analysis_turn(user_text, intent, previous)
+        except FileNotFoundError:
+            return {"content": "The recording needed for this analysis is missing from "
+                               "the local dataset. Restore the biceps trial CSVs in "
+                               "zenodo_biceps/sEMG_data and ask again. "
+                               "Your upload settings do not need to change."}
 
     subjects = _subjects()
     provisional = intent.subjects[0] if intent.subjects else (previous or {}).get("subject")
