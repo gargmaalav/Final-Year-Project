@@ -190,7 +190,46 @@ def turn_endpoint(session_id: str = Form(...), user_text: str = Form(""),
     # numpy scalars the model already used to build chart_html and content,
     # so the UI has no need of them raw and they aren't JSON-serialisable
     # as-is.
+    #
+    # stage: "done" is today's whole answer, unchanged. "prose_pending" means
+    # `content` is a fast, LLM-free placeholder (the verdict, or the measured
+    # facts) and the UI must follow up with POST /turn_prose using turn_id to
+    # get the actual written explanation -- see turn.py's handle_turn.
     return {
+        "stage": final.get("stage", "done"),
+        "turn_id": final.get("turn_id"),
+        "content": final.get("content"),
+        "chart_ref": final.get("chart_ref"),
+        "chart_caption": final.get("chart_caption"),
+        "forecast_chart_html": _browser_chart(final.get("forecast_chart_html")),
+        "forecast_chart_caption": final.get("forecast_chart_caption"),
+        "recommendation": final.get("recommendation"),
+        "provenance": final.get("provenance"),
+        "suggestions": final.get("suggestions"),
+        "window": final.get("window"),
+    }
+
+
+@app.post("/turn_prose")
+def turn_prose_endpoint(turn_id: str = Form(...)):
+    """Stage 2 of a "prose_pending" /turn response: run the actual chat()
+    call and finish the session bookkeeping /turn deferred -- see
+    turn.py's finish_turn_prose.
+
+    No session_id: the turn_id alone identifies which session's pending entry
+    to resolve (issued once, per turn, by handle_turn), so there is nothing
+    here for a caller to get wrong by passing the wrong session.
+    """
+    try:
+        final = turn_engine.finish_turn_prose(turn_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=(
+            "That answer is no longer pending -- it may already have been "
+            "delivered, or this chat was reloaded before it finished. Ask "
+            "again."))
+    return {
+        "stage": "done",
+        "turn_id": turn_id,
         "content": final.get("content"),
         "chart_ref": final.get("chart_ref"),
         "chart_caption": final.get("chart_caption"),

@@ -1002,6 +1002,16 @@
   // directly, but frontend/turn.py's _finalize() (and interpret.py inside
   // it) already owns all of that now.
   function renderAnswer(final) {
+    var wrap = buildAnswerNode(final);
+    appendToThread(wrap);
+    return wrap;
+  }
+
+  // Split out of renderAnswer so a two-stage turn (placeholder now, prose a
+  // few seconds later -- see /turn's "prose_pending" stage) can build a fresh
+  // node and swap it in for the placeholder via .replaceWith(), instead of
+  // duplicating this whole layout inline.
+  function buildAnswerNode(final) {
     var wrap = document.createElement("div");
     wrap.className = "msg-wrap msg-reading";
 
@@ -1055,7 +1065,6 @@
       wrap.appendChild(sugWrap);
     }
 
-    appendToThread(wrap);
     return wrap;
   }
 
@@ -1500,6 +1509,18 @@
     });
   }
 
+  // Stage 2 of a "prose_pending" /turn answer -- runs the LLM call and
+  // returns the finished content. See models/serve.py's POST /turn_prose.
+  function apiTurnProse(turnId) {
+    var fd = new FormData();
+    fd.append("turn_id", turnId);
+    return fetch(API + "/turn_prose", { method: "POST", body: fd }).then(function (r) {
+      if (!r.ok) return r.json().catch(function () { return {}; })
+        .then(function (j) { throw { detail: typeof j.detail === "string" ? j.detail : "The written explanation could not be finished (HTTP " + r.status + ")." }; });
+      return r.json();
+    });
+  }
+
   // ================= markdown (server prose only -- **bold**, _italic_, "- " lists) =================
   function mdToHtml(text) {
     var escaped = escapeHtml(text || "");
@@ -1649,26 +1670,76 @@
         (elapsed >= 20 ? ". The local model may still be loading." : "");
     }, 1000);
     updateSendState();
-    apiTurn(chatId, text, file).then(function (final) {
-      clearInterval(progressTimer);
-      STATE.busy = false;
-      updateSendState();
-      $("q-input").focus();
-      loadingRow.remove();
-      renderAnswer(final);
+    function persistAnswer(full) {
       upsertChat(chatId, null, {
-        role: "assistant", content: final.content, recommendation: final.recommendation,
-        provenance: final.provenance, chart_ref: final.chart_ref, chart_caption: final.chart_caption,
-        forecast_chart_html: final.forecast_chart_html, forecast_chart_caption: final.forecast_chart_caption,
-        window: final.window
+        role: "assistant", content: full.content, recommendation: full.recommendation,
+        provenance: full.provenance, chart_ref: full.chart_ref, chart_caption: full.chart_caption,
+        forecast_chart_html: full.forecast_chart_html, forecast_chart_caption: full.forecast_chart_caption,
+        window: full.window
       });
-      if (final.forecast_chart_html) {
+      if (full.forecast_chart_html) {
         // Forecast charts are still built with the answer: they are only made
         // when a horizon was actually asked for, and at 380px they are a
         // fraction of the reading chart's size and cost.
-        figShowHtml(null, null, final.forecast_chart_html,
-                    final.forecast_chart_caption, final.window);
+        figShowHtml(null, null, full.forecast_chart_html,
+                    full.forecast_chart_caption, full.window);
       }
+    }
+
+    apiTurn(chatId, text, file).then(function (final) {
+      clearInterval(progressTimer);
+      loadingRow.remove();
+
+      if (final.stage === "prose_pending") {
+        // The verdict/chart are real and final already -- only the written
+        // explanation is still coming. Show them now, keep the composer
+        // locked (STATE.busy stays true), and fill the prose in place when
+        // stage 2 lands, instead of holding the whole answer back for it.
+        var answerWrap = renderAnswer(final);
+        var proseRow = renderLoading("Writing the explanation");
+        var proseStartedAt = Date.now();
+        var proseTimer = setInterval(function () {
+          var elapsed = Math.floor((Date.now() - proseStartedAt) / 1000);
+          proseRow.querySelector(".row span:last-child").textContent =
+            "Writing the explanation · " + elapsed + "s" +
+            (elapsed >= 20 ? ". The local model may still be loading." : "");
+        }, 1000);
+
+        apiTurnProse(final.turn_id).then(function (full) {
+          clearInterval(proseTimer);
+          proseRow.remove();
+          STATE.busy = false;
+          updateSendState();
+          $("q-input").focus();
+          var filledWrap = buildAnswerNode(full);
+          answerWrap.replaceWith(filledWrap);
+          persistAnswer(full);
+        }).catch(function (err) {
+          clearInterval(proseTimer);
+          proseRow.remove();
+          STATE.busy = false;
+          updateSendState();
+          $("q-input").focus();
+          // The placeholder above is a real, safe answer (verdict/measured
+          // facts) on its own -- stage 2 failing only means no written
+          // explanation arrived. Note that inline rather than discarding it
+          // with a failure card.
+          var note = document.createElement("div");
+          note.className = "reading-provenance";
+          note.textContent = "The written explanation didn't come through" +
+            (err && err.detail ? " (" + err.detail + ")" : "") +
+            ". The reading above is unaffected.";
+          answerWrap.appendChild(note);
+          persistAnswer(final);
+        });
+        return;
+      }
+
+      STATE.busy = false;
+      updateSendState();
+      $("q-input").focus();
+      renderAnswer(final);
+      persistAnswer(final);
     }).catch(function (err) {
       clearInterval(progressTimer);
       STATE.busy = false;
