@@ -623,7 +623,14 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         # enough to stack title above buttons above plot, so revealing the
         # buttons no longer covers the title telling you what you're looking at.
         title=dict(text=_title(k0), yref="container", y=0.975, yanchor="top"),
-        margin=dict(t=150 if animate else 90, b=60),
+        # Fixed left margin, automargin off per row below: Plotly's default
+        # automargin sizes each row's own left inset from that row's own tick
+        # label width (row 1's "-0.001" vs row 2's "60" vs row 3's "0.2"), so
+        # the three plot areas drifted out of vertical alignment -- row 1's
+        # longer decimal ticks pushed its plot area further right than rows 2
+        # and 3. One shared margin, sized for the widest tick label across all
+        # three rows, keeps every row's plot area starting at the same x pixel.
+        margin=dict(t=150 if animate else 90, b=60, l=80),
         # box-select defaults to a horizontal (time) band for select-to-inspect
         # on the MDF panel; scroll-zoom stays available so select mode does not
         # cost the user zoom.
@@ -633,11 +640,14 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     # than assuming the reader already knows it -- the panel titles above still
     # carry the precise terms for anyone who wants them.
     fig.update_xaxes(title_text="Time in window (s)", range=[0, WIN_SEC], row=1, col=1)
-    fig.update_yaxes(title_text="Signal strength (a.u.)", range=[ylo, yhi], row=1, col=1)
+    fig.update_yaxes(title_text="Signal strength (a.u.)", range=[ylo, yhi],
+                     automargin=False, row=1, col=1)
     fig.update_xaxes(title_text="Time (s)", range=[float(t[0]), float(t[-1])], row=2, col=1)
-    fig.update_yaxes(title_text="Median frequency (Hz)", range=[mlo, mhi], row=2, col=1)
+    fig.update_yaxes(title_text="Median frequency (Hz)", range=[mlo, mhi],
+                     automargin=False, row=2, col=1)
     fig.update_xaxes(title_text="Frequency (Hz)", range=[0, fmax], row=3, col=1)
-    fig.update_yaxes(title_text="Signal strength (normalised)", range=[0, 1.05], row=3, col=1)
+    fig.update_yaxes(title_text="Signal strength (normalised)", range=[0, 1.05],
+                     automargin=False, row=3, col=1)
 
     # Persistent "asked: t_start" marker on the MDF panel: a fixed vertical line
     # + label at the exact time the user asked about. Added as layout shapes/

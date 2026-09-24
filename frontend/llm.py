@@ -17,10 +17,15 @@ OLLAMA_BASE = "http://localhost:11434"
 # Python, and strip_verdict_echo drops the inverted opener), but the answer was
 # one phrasing away from contradicting the verdict printed above it, and its
 # prose was measurably worse -- one answer misused the confidence figure in a
-# way 3b does not. Speed is being bought elsewhere instead: see KEEP_ALIVE and
-# NUM_PREDICT below, prompt.build_prompt's cacheable-prefix ordering, and
-# turn.py's _cached_chart.
-MODEL = "llama3.2:3b"
+# way 3b does not.
+#
+# Demo/recording speed swap (2026-09-24, Ray's call): qwen2.5:0.5b for wording
+# speed. The fatigue verdict itself is unaffected either way -- it comes from
+# classify(), not this model -- and the same inverted-opener risk the 1b test
+# found is still caught by strip_verdict_echo before anything reaches the
+# screen. Revert to llama3.2:3b if prose quality matters more than speed for a
+# given recording session.
+MODEL = "qwen2.5:0.5b"
 
 # Ollama drops a model from memory 5 minutes after its last request, and
 # reloading llama3.2 off disk measured 6.7 s. Questions in a demo arrive
