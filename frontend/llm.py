@@ -19,13 +19,17 @@ OLLAMA_BASE = "http://localhost:11434"
 # prose was measurably worse -- one answer misused the confidence figure in a
 # way 3b does not.
 #
-# Demo/recording speed swap (2026-09-24, Ray's call): qwen2.5:0.5b for wording
-# speed. The fatigue verdict itself is unaffected either way -- it comes from
-# classify(), not this model -- and the same inverted-opener risk the 1b test
-# found is still caught by strip_verdict_echo before anything reaches the
-# screen. Revert to llama3.2:3b if prose quality matters more than speed for a
-# given recording session.
-MODEL = "qwen2.5:0.5b"
+# Tried and reverted 2026-09-24 (Ray's call): qwen2.5:0.5b for wording speed
+# (18s -> 2s). Reverted the same day after live testing turned up two fresh
+# failures the 1b test above didn't even need to look for: a follow-up "why?"
+# that returned "They have now said: why?" (not a sentence, not an inversion,
+# just garbled), and a "not fatigued" verdict's follow-up hedging with "can be
+# attributed to fatigue or other factors" -- reads as contradicting the bold
+# verdict line above it even though nothing wrong reached the verdict itself.
+# 0.5b is smaller than the 1b already rejected above; worse quality tracks.
+# If speed matters more than prose reliability for a specific recording
+# session, that's a live call to make then, not a standing default.
+MODEL = "llama3.2:3b"
 
 # Ollama drops a model from memory 5 minutes after its last request, and
 # reloading llama3.2 off disk measured 6.7 s. Questions in a demo arrive
