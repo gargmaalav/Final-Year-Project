@@ -669,10 +669,17 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     _lab_anchor = "right" if _late else "left"
     _lab_shift = -3 if _late else 3
 
+    # bgcolor/bordercolor: the MDF panel's fatigue-coloured dots cluster near
+    # the top of the y-range too, and a plain-text label at y=mhi can land
+    # right on top of them (readable in isolation, unreadable over a green/
+    # orange/red dot). A themed pill behind the text keeps it legible
+    # regardless of what data happens to sit underneath it.
     fig.add_annotation(x=t_start, y=mhi, text=f"asked: {t_start:.0f}s",
                        showarrow=False, xanchor=_lab_anchor, yanchor="top",
                        xshift=_lab_shift, yshift=-2,
-                       font=dict(color=ASK_COLOR, size=11), row=2, col=1)
+                       font=dict(color=ASK_COLOR, size=11),
+                       bgcolor=th["key_bg"], bordercolor=ASK_COLOR, borderwidth=1,
+                       borderpad=2, row=2, col=1)
 
     # auto_play=False: rest at the opening frame (nearest t_start) until the
     # user hits Play. Plotly's to_html defaults auto_play=True, which fires
