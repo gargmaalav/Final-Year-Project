@@ -81,7 +81,11 @@
   .chat-item.active { background: var(--bg-2); color: var(--text-1); }
   .chat-item .bar { width: 2px; height: 15px; border-radius: 1px; flex: none; background: transparent; }
   .chat-item.active .bar { background: var(--accent); }
-  .chat-item .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-item .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .chat-item .del { flex: none; display: none; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 4px; color: var(--text-3); background: transparent; border: none; padding: 0; cursor: pointer; }
+  .chat-item .del svg { font-size: 13px; display: block; }
+  .chat-item:hover .del { display: inline-flex; }
+  .chat-item .del:hover { color: var(--error); background: rgba(127,127,127,0.16); }
   .chat-empty-hint { padding: 14px 10px; font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
 
   #sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 10px; position: relative; }
@@ -888,10 +892,16 @@
         var row = document.createElement("button");
         row.disabled = STATE.busy;
         row.className = "chat-item" + (c.id === STATE.activeChatId ? " active" : "");
-        row.innerHTML = '<span class="bar"></span><span class="t"></span>';
+        row.innerHTML = '<span class="bar"></span><span class="t"></span>'
+          + '<span class="del" title="Delete chat" aria-label="Delete chat">'
+          + '<svg class="icon"><use href="#i-trash"/></svg></span>';
         row.querySelector(".t").textContent = c.title;
         row.title = c.title + " · " + fmtAgo(c.ts);
         row.addEventListener("click", function () { openChat(c.id); });
+        row.querySelector(".del").addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          deleteChat(c.id);
+        });
         section.appendChild(row);
       });
       wrap.appendChild(section);
@@ -1574,6 +1584,17 @@
       figShowHtml(null, null,
         m.forecast_chart_html, m.forecast_chart_caption, m.window);
     });
+  }
+
+  function deleteChat(id) {
+    if (STATE.busy) return;
+    var c = STATE.chats.filter(function (x) { return x.id === id; })[0];
+    if (!c) return;
+    if (!window.confirm('Delete "' + c.title + '"? This can\'t be undone.')) return;
+    STATE.chats = STATE.chats.filter(function (x) { return x.id !== id; });
+    saveChats();
+    if (STATE.activeChatId === id) newChat();
+    else renderChatGroups();
   }
 
   function clearAttachChip() {
