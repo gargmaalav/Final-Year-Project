@@ -66,10 +66,10 @@ def _numeric_column(df, index: int, label: str) -> np.ndarray:
             f"the {label} column contains no numbers -- this does not look "
             "like an EMG recording. Expected either 'time_s, signal' or a "
             "single column of signal values.")
-    if not np.isfinite(col).all():
-        n_bad = int((~np.isfinite(col)).sum())
+    if np.isnan(col).any():
+        n_bad = int(np.isnan(col).sum())
         raise UploadError(
-            f"the {label} column has {n_bad} value(s) that aren't finite numbers "
+            f"the {label} column has {n_bad} value(s) that aren't numbers "
             "(blank rows, text, or units mixed into the data?)")
     return col
 
@@ -81,17 +81,10 @@ def parse_uploaded_csv(file, sample_rate_hz: float | None) -> tuple[np.ndarray, 
     if df.shape[1] == 0 or df.shape[0] < 2:
         raise UploadError("the file has no usable rows")
 
-    if df.shape[1] > 2:
-        raise UploadError("expected one signal column or two columns (time_s, signal); "
-                          "select the intended channel before uploading")
-
-    if df.shape[1] == 2:
+    if df.shape[1] >= 2:
         t = _numeric_column(df, 0, "time")
         x = _numeric_column(df, 1, "signal")
-        intervals = np.diff(t)
-        if not np.all(intervals > 0):
-            raise UploadError("timestamps must increase strictly, without duplicates or resets")
-        dt = np.median(intervals)
+        dt = np.median(np.diff(t))
         if not np.isfinite(dt) or dt <= 0:
             raise UploadError("the first column doesn't look like an "
                               "increasing time-in-seconds column")
@@ -112,7 +105,7 @@ def parse_uploaded_csv(file, sample_rate_hz: float | None) -> tuple[np.ndarray, 
     # where the rig is 1259 Hz builds a slightly different resampling grid from
     # loader.load_biceps_segment's, which drifts ~13 samples over 218 s and
     # moved one MDF reading by 4 Hz between the two paths.
-    if round(fs_native) > 0 and abs(fs_native - round(fs_native)) / fs_native < 0.01:
+    if abs(fs_native - round(fs_native)) / fs_native < 0.01:
         fs_native = float(round(fs_native))
 
     return t, x, fs_native

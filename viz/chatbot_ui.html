@@ -81,11 +81,7 @@
   .chat-item.active { background: var(--bg-2); color: var(--text-1); }
   .chat-item .bar { width: 2px; height: 15px; border-radius: 1px; flex: none; background: transparent; }
   .chat-item.active .bar { background: var(--accent); }
-  .chat-item .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
-  .chat-item .del { flex: none; display: none; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 4px; color: var(--text-3); background: transparent; border: none; padding: 0; cursor: pointer; }
-  .chat-item .del svg { font-size: 13px; display: block; }
-  .chat-item:hover .del { display: inline-flex; }
-  .chat-item .del:hover { color: var(--error); background: rgba(127,127,127,0.16); }
+  .chat-item .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chat-empty-hint { padding: 14px 10px; font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
 
   #sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 10px; position: relative; }
@@ -100,7 +96,7 @@
   #rate-unit { font-size: 11px; color: var(--text-3); }
   #sample-rate, #athlete-note { background: var(--bg-2); border: 1px solid var(--border); border-radius: 2px; padding: 8px 10px; font-size: 13px; color: var(--text-1); outline: none; width: 100%; }
   #sample-rate:focus, #athlete-note:focus { border-color: var(--accent); }
-  #rate-help, #note-help { font-size: 11.5px; line-height: 1.55; color: var(--text-2); }
+  #rate-help { font-size: 11.5px; line-height: 1.55; color: var(--text-2); }
   #note-field { display: flex; flex-direction: column; gap: 5px; }
   #clear-history { border-top: 1px solid var(--border); padding-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); transition: color 120ms ease; width: 100%; }
   #clear-history:hover { color: var(--error); }
@@ -438,12 +434,12 @@
             <div id="rate-unit" class="narrow">Hz</div>
           </div>
           <input id="sample-rate" class="narrow" type="number" placeholder="enter a value" min="1" step="1" aria-label="Sample rate in hertz">
-          <div id="rate-help">Required for signal-only CSVs. Two-column CSVs use time in seconds to infer the rate.</div>
+          <div id="rate-help">How many readings per second the recording holds.</div>
         </div>
         <div id="note-field">
           <div class="note-label"><svg class="icon"><use href="#i-activity"/></svg><span>Sport / goal (optional)</span></div>
           <input id="athlete-note" type="text" placeholder="e.g. competitive rock climbing" aria-label="Sport or goal, for recommendations">
-          <div id="note-help">Used only if you ask for training advice.</div>
+          <div id="rate-help">Used only if you ask for training advice.</div>
         </div>
         <button id="clear-history"><svg class="icon"><use href="#i-trash"/></svg><span>Clear all history</span></button>
       </div>
@@ -467,7 +463,7 @@
       </div>
     </div>
 
-    <div id="thread" role="log" aria-label="Conversation" aria-live="polite">
+    <div id="thread">
       <div id="empty-state">
         <div>
           <h1>Ask about a recording</h1>
@@ -486,7 +482,7 @@
         <button id="attach-btn" title="Attach a CSV" aria-label="Attach a CSV"><svg class="icon"><use href="#i-paperclip"/></svg></button>
         <input id="file-input" type="file" accept=".csv" class="hidden">
         <input id="q-input" type="text" placeholder="Ask about a subject, or attach your own EMG recording" aria-label="Your question">
-        <button id="send-btn" class="disabled" aria-label="Send" disabled><svg class="icon"><use href="#i-arrow-up"/></svg></button>
+        <button id="send-btn" class="disabled" aria-label="Send"><svg class="icon"><use href="#i-arrow-up"/></svg></button>
       </div>
       <div id="composer-help">Answers use the real classifier and, when available, a local model for the written reply. Press <span class="narrow">Enter</span> to send.</div>
     </div>
@@ -798,7 +794,7 @@
         input.style.borderColor = "var(--border)"; input.style.background = "var(--bg-2)";
         icon.setAttribute("href", "#i-gauge");
         $("rate-label").style.color = "var(--text-3)";
-        help.textContent = "Required for signal-only CSVs. Two-column CSVs use time in seconds to infer the rate.";
+        help.textContent = "How many readings per second the recording holds.";
       }
       return;
     }
@@ -890,18 +886,11 @@
       section.appendChild(label);
       byGroup[g].forEach(function (c) {
         var row = document.createElement("button");
-        row.disabled = STATE.busy;
         row.className = "chat-item" + (c.id === STATE.activeChatId ? " active" : "");
-        row.innerHTML = '<span class="bar"></span><span class="t"></span>'
-          + '<span class="del" title="Delete chat" aria-label="Delete chat">'
-          + '<svg class="icon"><use href="#i-trash"/></svg></span>';
+        row.innerHTML = '<span class="bar"></span><span class="t"></span>';
         row.querySelector(".t").textContent = c.title;
         row.title = c.title + " · " + fmtAgo(c.ts);
         row.addEventListener("click", function () { openChat(c.id); });
-        row.querySelector(".del").addEventListener("click", function (ev) {
-          ev.stopPropagation();
-          deleteChat(c.id);
-        });
         section.appendChild(row);
       });
       wrap.appendChild(section);
@@ -1002,16 +991,6 @@
   // directly, but frontend/turn.py's _finalize() (and interpret.py inside
   // it) already owns all of that now.
   function renderAnswer(final) {
-    var wrap = buildAnswerNode(final);
-    appendToThread(wrap);
-    return wrap;
-  }
-
-  // Split out of renderAnswer so a two-stage turn (placeholder now, prose a
-  // few seconds later -- see /turn's "prose_pending" stage) can build a fresh
-  // node and swap it in for the placeholder via .replaceWith(), instead of
-  // duplicating this whole layout inline.
-  function buildAnswerNode(final) {
     var wrap = document.createElement("div");
     wrap.className = "msg-wrap msg-reading";
 
@@ -1065,13 +1044,13 @@
       wrap.appendChild(sugWrap);
     }
 
+    appendToThread(wrap);
     return wrap;
   }
 
   function renderLoading(text) {
     var wrap = document.createElement("div");
     wrap.className = "msg-wrap msg-loading";
-    wrap.setAttribute("role", "status");
     wrap.innerHTML =
       '<div class="row"><span class="dot"></span><span></span></div>' +
       '<div class="sweep-track"><span class="sweep-bar"></span></div>';
@@ -1104,7 +1083,7 @@
     var card = document.createElement("div");
     card.className = "msg-failure";
     card.innerHTML =
-      '<div class="failure-title"><svg class="icon"><use href="#i-octagon-alert"/></svg><span>Couldn’t complete the request</span></div>' +
+      '<div class="failure-title"><svg class="icon"><use href="#i-octagon-alert"/></svg><span>Classifier unreachable</span></div>' +
       '<p class="failure-body"></p>' +
       '<div class="failure-actions"><button class="retry-btn"><svg class="icon"><use href="#i-rotate-ccw"/></svg>Retry</button><div class="failure-meta narrow"></div></div>';
     card.querySelector(".failure-body").textContent = detail || "The model server did not respond, so nothing was classified. Your question is still here — check that models/serve.py is running, then retry.";
@@ -1128,14 +1107,12 @@
       if (btn.disabled) return;
       btn.disabled = true;
       btn.textContent = "Drawing the graph…";
-      var chartChatId = STATE.activeChatId;
       var fd = new FormData();
-      fd.append("session_id", chartChatId || "default");
+      fd.append("session_id", STATE.activeChatId || "default");
       fd.append("source", ref.source || "dataset");
       if (ref.subject != null) fd.append("subject", ref.subject);
       if (ref.t_start != null) fd.append("t_start", ref.t_start);
       if (ref.side) fd.append("side", ref.side);
-      if (ref.upload_id) fd.append("upload_id", ref.upload_id);
       fd.append("theme", STATE.theme || "light");
       openPane();
       figLoading();
@@ -1143,12 +1120,10 @@
         if (!r.ok) throw new Error("chart request failed");
         return r.json();
       }).then(function (j) {
-        if (STATE.activeChatId !== chartChatId || !btn.isConnected) return;
         var gid = figShowHtml(j.chart_html, caption, null, null, windowInfo);
         STATE.activeChartRef = {ref: ref, caption: caption, windowInfo: windowInfo, groupId: gid};
         btn.textContent = "Graph shown";
       }).catch(function () {
-        if (STATE.activeChatId !== chartChatId || !btn.isConnected) return;
         figClearPending();
         figRestoreStatus();
         btn.disabled = false;
@@ -1384,7 +1359,6 @@
     if (info.ref.subject != null) fd.append("subject", info.ref.subject);
     if (info.ref.t_start != null) fd.append("t_start", info.ref.t_start);
     if (info.ref.side) fd.append("side", info.ref.side);
-    if (info.ref.upload_id) fd.append("upload_id", info.ref.upload_id);
     fd.append("theme", STATE.theme || "light");
     fetch(API + "/chart", {method: "POST", body: fd}).then(function (r) {
       if (!r.ok) throw new Error("chart request failed");
@@ -1504,19 +1478,7 @@
     if (file) fd.append("file", file);
     return fetch(API + "/turn", { method: "POST", body: fd }).then(function (r) {
       if (!r.ok) return r.json().catch(function () { return {}; })
-        .then(function (j) { throw { detail: typeof j.detail === "string" ? j.detail : (r.status === 422 ? "Some request fields are invalid. Check your question and recording settings." : "The server could not complete this request (HTTP " + r.status + "). Please retry; if it keeps failing, check the server log.") }; });
-      return r.json();
-    });
-  }
-
-  // Stage 2 of a "prose_pending" /turn answer -- runs the LLM call and
-  // returns the finished content. See models/serve.py's POST /turn_prose.
-  function apiTurnProse(turnId) {
-    var fd = new FormData();
-    fd.append("turn_id", turnId);
-    return fetch(API + "/turn_prose", { method: "POST", body: fd }).then(function (r) {
-      if (!r.ok) return r.json().catch(function () { return {}; })
-        .then(function (j) { throw { detail: typeof j.detail === "string" ? j.detail : "The written explanation could not be finished (HTTP " + r.status + ")." }; });
+        .then(function (j) { throw { detail: j.detail || ("request failed (" + r.status + ")") }; });
       return r.json();
     });
   }
@@ -1561,7 +1523,6 @@
   }
 
   function newChat() {
-    if (STATE.busy) return;
     STATE.activeChatId = null;
     STATE.pendingFile = null;
     clearAttachChip();
@@ -1575,7 +1536,6 @@
   $("new-chat").addEventListener("click", newChat);
 
   function openChat(id) {
-    if (STATE.busy) return;
     var c = STATE.chats.filter(function (x) { return x.id === id; })[0];
     if (!c) return;
     STATE.activeChatId = id;
@@ -1605,17 +1565,6 @@
       figShowHtml(null, null,
         m.forecast_chart_html, m.forecast_chart_caption, m.window);
     });
-  }
-
-  function deleteChat(id) {
-    if (STATE.busy) return;
-    var c = STATE.chats.filter(function (x) { return x.id === id; })[0];
-    if (!c) return;
-    if (!window.confirm('Delete "' + c.title + '"? This can\'t be undone.')) return;
-    STATE.chats = STATE.chats.filter(function (x) { return x.id !== id; });
-    saveChats();
-    if (STATE.activeChatId === id) newChat();
-    else renderChatGroups();
   }
 
   function clearAttachChip() {
@@ -1662,89 +1611,28 @@
     // model takes. The panel is only touched when "Show graph" is pressed.
 
     STATE.busy = true;
-    var startedAt = Date.now();
-    var progressTimer = setInterval(function () {
-      var elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      loadingRow.querySelector(".row span:last-child").textContent =
-        "Preparing your answer · " + elapsed + "s" +
-        (elapsed >= 20 ? ". The local model may still be loading." : "");
-    }, 1000);
     updateSendState();
-    function persistAnswer(full) {
+    apiTurn(chatId, text, file).then(function (final) {
+      STATE.busy = false;
+      updateSendState();
+      loadingRow.remove();
+      renderAnswer(final);
       upsertChat(chatId, null, {
-        role: "assistant", content: full.content, recommendation: full.recommendation,
-        provenance: full.provenance, chart_ref: full.chart_ref, chart_caption: full.chart_caption,
-        forecast_chart_html: full.forecast_chart_html, forecast_chart_caption: full.forecast_chart_caption,
-        window: full.window
+        role: "assistant", content: final.content, recommendation: final.recommendation,
+        provenance: final.provenance, chart_ref: final.chart_ref, chart_caption: final.chart_caption,
+        forecast_chart_html: final.forecast_chart_html, forecast_chart_caption: final.forecast_chart_caption,
+        window: final.window
       });
-      if (full.forecast_chart_html) {
+      if (final.forecast_chart_html) {
         // Forecast charts are still built with the answer: they are only made
         // when a horizon was actually asked for, and at 380px they are a
         // fraction of the reading chart's size and cost.
-        figShowHtml(null, null, full.forecast_chart_html,
-                    full.forecast_chart_caption, full.window);
+        figShowHtml(null, null, final.forecast_chart_html,
+                    final.forecast_chart_caption, final.window);
       }
-    }
-
-    apiTurn(chatId, text, file).then(function (final) {
-      clearInterval(progressTimer);
-      loadingRow.remove();
-
-      if (final.stage === "prose_pending") {
-        // The verdict/chart are real and final already -- only the written
-        // explanation is still coming. Show them now, keep the composer
-        // locked (STATE.busy stays true), and fill the prose in place when
-        // stage 2 lands, instead of holding the whole answer back for it.
-        var answerWrap = renderAnswer(final);
-        var proseRow = renderLoading("Writing the explanation");
-        var proseStartedAt = Date.now();
-        var proseTimer = setInterval(function () {
-          var elapsed = Math.floor((Date.now() - proseStartedAt) / 1000);
-          proseRow.querySelector(".row span:last-child").textContent =
-            "Writing the explanation · " + elapsed + "s" +
-            (elapsed >= 20 ? ". The local model may still be loading." : "");
-        }, 1000);
-
-        apiTurnProse(final.turn_id).then(function (full) {
-          clearInterval(proseTimer);
-          proseRow.remove();
-          STATE.busy = false;
-          updateSendState();
-          $("q-input").focus();
-          var filledWrap = buildAnswerNode(full);
-          answerWrap.replaceWith(filledWrap);
-          persistAnswer(full);
-        }).catch(function (err) {
-          clearInterval(proseTimer);
-          proseRow.remove();
-          STATE.busy = false;
-          updateSendState();
-          $("q-input").focus();
-          // The placeholder above is a real, safe answer (verdict/measured
-          // facts) on its own -- stage 2 failing only means no written
-          // explanation arrived. Note that inline rather than discarding it
-          // with a failure card.
-          var note = document.createElement("div");
-          note.className = "reading-provenance";
-          note.textContent = "The written explanation didn't come through" +
-            (err && err.detail ? " (" + err.detail + ")" : "") +
-            ". The reading above is unaffected.";
-          answerWrap.appendChild(note);
-          persistAnswer(final);
-        });
-        return;
-      }
-
-      STATE.busy = false;
-      updateSendState();
-      $("q-input").focus();
-      renderAnswer(final);
-      persistAnswer(final);
     }).catch(function (err) {
-      clearInterval(progressTimer);
       STATE.busy = false;
       updateSendState();
-      $("q-input").focus();
       loadingRow.remove();
       renderFailure(null, (err && err.detail) ||
         "The model server did not respond. Check that `python models/serve.py` is running, then retry.",
@@ -1762,15 +1650,6 @@
     $("send-btn").classList.toggle("enabled", canSend);
     $("send-btn").classList.toggle("disabled", !canSend);
     $("q-input").disabled = STATE.busy;
-    $("send-btn").disabled = !canSend;
-    $("attach-btn").disabled = STATE.busy;
-    $("new-chat").disabled = STATE.busy;
-    $("rail-new-chat").disabled = STATE.busy;
-    $("clear-history").disabled = STATE.busy;
-    document.querySelectorAll(".chat-item").forEach(function (button) {
-      button.disabled = STATE.busy;
-    });
-    $("thread").setAttribute("aria-busy", String(STATE.busy));
   }
   function submitQuery() {
     if (STATE.busy) return;   // previous turn still awaiting its answer
@@ -1790,7 +1669,7 @@
   }
 
   $("send-btn").addEventListener("click", function () { if ($("send-btn").classList.contains("enabled")) submitQuery(); });
-  $("q-input").addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submitQuery(); } });
+  $("q-input").addEventListener("keydown", function (e) { if (e.key === "Enter") submitQuery(); });
   $("q-input").addEventListener("input", updateSendState);
   $("q-input").addEventListener("focus", function () { $("input-row").classList.add("focused"); });
   $("q-input").addEventListener("blur", function () { $("input-row").classList.remove("focused"); });
@@ -1799,11 +1678,6 @@
   $("file-input").addEventListener("change", function () {
     var f = $("file-input").files[0];
     if (!f) return;
-    if (f.size > 20 * 1024 * 1024) {
-      $("file-input").value = "";
-      renderGuidance("CSV uploads must be 20 MB or smaller. Choose a smaller recording.");
-      return;
-    }
     STATE.pendingFile = f;
     $("attach-row").classList.remove("hidden");
     $("attach-row").innerHTML = "";
@@ -1819,7 +1693,7 @@
       $("q-input").placeholder = "Ask about a subject, or attach your own EMG recording";
     });
     $("attach-row").appendChild(chip);
-    $("q-input").placeholder = "How many seconds in? (optional, defaults to the end)";
+    $("q-input").placeholder = "How many seconds in? (optional, defaults to the start)";
     updateSendState();
   });
 
