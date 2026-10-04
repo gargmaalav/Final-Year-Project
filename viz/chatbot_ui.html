@@ -276,7 +276,9 @@
      chart. Previously the whole pane scrolled as one. */
   #fig-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 18px; }
 
-  .fig-block { display: flex; flex-direction: column; gap: 10px; align-self: center; max-width: 100%; }
+  /* Full width by default (the loading placeholder has no chart to size it);
+     figScaleThumbs sets a real figure's block to its scaled width. */
+  .fig-block { display: flex; flex-direction: column; gap: 10px; align-self: center; width: 100%; max-width: 100%; }
 
   /* One group per charted answer. The header names which reading the figures
      under it belong to -- with several stacked, "Subject 11 · 60s · right" is
