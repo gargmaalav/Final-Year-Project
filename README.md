@@ -66,7 +66,6 @@ python frontend/test_answers.py       # the facts handed to the model say the ri
 python frontend/test_understanding.py # a question resolves to the right intent/window
 python models/test_classify.py        # classify() contract + calibration guards
 python viz/test_render_window.py      # chart rendering
-python -m unittest discover -s tests -v # API/upload/chart regression tests (requires httpx)
 ```
 
 `models/CALIBRATION_VALIDATION.md` documents how an athlete with no stored
@@ -83,6 +82,3 @@ no change (−28% at 30 s, −51% at 60 s).
 
 Zenodo 14182446 — 13 subjects, biceps brachii sEMG, 1259 Hz.
 Download and place at `zenodo_biceps/sEMG_data/` (gitignored — not committed).
-
-See [the improvement review](docs/IMPROVEMENT_REVIEW.md) for implemented UI and
-performance changes, measurements, and remaining quality-evaluation priorities.
