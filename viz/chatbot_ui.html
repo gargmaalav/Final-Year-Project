@@ -251,14 +251,6 @@
      cursor and the drag feels broken rather than smooth. */
   #fig-pane.resizing { transition: none; user-select: none; }
 
-  /* Fullscreen was a dead class: the JS toggled it (applyLayout) and set the
-     button's icon, but no rule ever matched, so "fullscreen" only meant the
-     panel grew from 452px to 760px and the sidebar's own controls stayed
-     covered. Now it's a real overlay over the whole app -- and because the
-     header (with the exit button) is inside the pane, the way out travels
-     with it. Escape also exits, wired further down. */
-  #fig-pane.fullscreen { position: fixed; inset: 0; margin: 0; width: auto !important; border-radius: 0; border: none; z-index: 60; }
-
   /* Drag-to-resize, like an artifact panel's divider: charts here are laid
      out at a fixed 1100px (see FIG_SIZES in the script), so how much you can
      see at a glance is worth putting under the reader's control rather than
@@ -266,7 +258,6 @@
   #fig-resize { position: absolute; left: -3px; top: 0; bottom: 0; width: 9px; cursor: col-resize; z-index: 2; }
   #fig-resize::after { content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 3px; height: 36px; border-radius: 2px; background: var(--border-strong); opacity: 0; transition: opacity 140ms ease; }
   #fig-resize:hover::after, #fig-pane.resizing #fig-resize::after { opacity: .8; }
-  #fig-pane.fullscreen #fig-resize { display: none; }
 
   #fig-pane-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: none; padding: 13px 10px 13px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); }
   #fig-pane-header .left { display: flex; align-items: center; gap: 9px; min-width: 0; }
@@ -285,7 +276,7 @@
      chart. Previously the whole pane scrolled as one. */
   #fig-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 18px; }
 
-  .fig-block { display: flex; flex-direction: column; gap: 10px; }
+  .fig-block { display: flex; flex-direction: column; gap: 10px; align-self: center; max-width: 100%; }
 
   /* One group per charted answer. The header names which reading the figures
      under it belong to -- with several stacked, "Subject 11 · 60s · right" is
@@ -328,17 +319,24 @@
      second thing to forget to update. */
 
   /* ---------- figure modal (click a thumbnail to read it properly) ---------- */
-  #fig-modal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(8,10,14,0.62); animation: emg-in 160ms ease both; }
+  #fig-modal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(8,10,14,0.62); animation: fig-scrim-in 180ms ease both; }
+  @keyframes fig-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes fig-card-in { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
   #fig-modal.hidden { display: none; }
-  #fig-modal-card { display: flex; flex-direction: column; width: 100%; height: 100%; max-width: 1180px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  #fig-modal-card { animation: fig-card-in 220ms cubic-bezier(.25,1,.3,1) both; display: flex; flex-direction: column; width: 100%; height: 100%; max-width: 1180px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
   #fig-modal-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 10px 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); }
   #fig-modal-header .heading { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
   #fig-modal-header .title { font-size: 13.5px; font-weight: 600; color: var(--text-1); }
   #fig-modal-header .status { font-size: 11.5px; color: var(--text-3); }
-  /* Scrolls both ways at natural size: this is the "read it properly" view,
-     so the chart is never scaled down here, even on a small window. */
-  #fig-modal-body { flex: 1; min-height: 0; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; background: var(--bg-0); }
-  #fig-modal-body iframe { border: none; display: block; background: var(--grid-bg); border-radius: 10px; flex: none; }
+  /* The "read it properly" view: every figure is scaled (figScaleModal) to
+     fit the visible body whole -- width AND height -- and centred both ways,
+     so nothing needs a scroll to see and nothing hugs a corner. All figures
+     in a group share one scale, so they come out the same width and stack on
+     one centre line. Unlike the panel thumbnails they stay interactive:
+     Play / scrub / zoom all work through the CSS transform. */
+  #fig-modal-body { flex: 1; min-height: 0; overflow: auto; padding: 16px; display: flex; flex-direction: column; align-items: center; justify-content: safe center; gap: 16px; background: var(--bg-0); }
+  .fig-modal-frame { flex: none; position: relative; border-radius: 10px; overflow: hidden; background: var(--grid-bg); }
+  .fig-modal-frame iframe { border: none; display: block; background: var(--grid-bg); transform-origin: top left; }
   .fig-caption { font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
   .fig-grid-placeholder { height: 340px; border-radius: 10px; background: repeating-linear-gradient(0deg, var(--grid) 0 1px, var(--grid-bg) 1px 30px), repeating-linear-gradient(90deg, var(--grid) 0 1px, var(--grid-bg) 1px 52px); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; }
   .fig-grid-placeholder.small { height: 180px; }
@@ -390,7 +388,6 @@
 <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0-8.94 10"/><path d="M20.94 13A9 9 0 0 0 12 3"/><path d="M12 12L16 8"/></symbol>
 <symbol id="i-file-spreadsheet" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14,2 14,8 20,8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="12" y1="13" x2="12" y2="21"/></symbol>
 <symbol id="i-maximize" viewBox="0 0 24 24"><polyline points="15,3 21,3 21,9"/><polyline points="9,21 3,21 3,15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></symbol>
-<symbol id="i-minimize" viewBox="0 0 24 24"><polyline points="4,14 10,14 10,20"/><polyline points="20,10 14,10 14,4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></symbol>
 </defs>
 </svg>
 
@@ -504,7 +501,6 @@
         </div>
       </div>
       <div class="right">
-        <button id="fig-fullscreen" class="icon-btn" title="Fullscreen" aria-label="Fullscreen"><svg class="icon"><use href="#i-maximize"/></svg></button>
         <button id="fig-to-rail" class="icon-btn" title="Collapse to rail" aria-label="Collapse figures panel"><svg class="icon"><use href="#i-panel-right-close"/></svg></button>
         <button id="fig-close" class="icon-btn" title="Hide panel" aria-label="Hide figures panel"><svg class="icon"><use href="#i-x"/></svg></button>
       </div>
@@ -547,7 +543,6 @@
     // a third of the window to say "No figure yet". It opens on that click
     // and stays open from then on.
     pane: "hidden",    // open | rail | hidden
-    full: false,
     vw: window.innerWidth,
     search: "",
     chats: [],
@@ -623,34 +618,20 @@
       "hidden", STATE.pane !== "hidden" || !(FIG_GROUPS || []).length);
 
     if (STATE.pane === "open") {
-      $("fig-pane").classList.toggle("fullscreen", STATE.full);
-      var targetW = STATE.full ? STATE.vw : null;
-      // Fullscreen is an overlay pinned to the viewport, so it must not carry
-      // an inline width -- an inline style beats the class rule, and the panel
-      // would sit at 760px in the corner of a "fullscreen" backdrop. Clearing
-      // it lets the .fullscreen rule own the geometry outright.
-      if (STATE.full) {
-        $("fig-pane").style.width = "";
-      } else {
-        var sideW = STATE.sidebar === "open" ? 272 : (STATE.sidebar === "rail" ? 52 : 0);
-        var avail = STATE.vw - sideW - 340;
-        var w = Math.min(STATE.paneW, Math.max(PANE_MIN, avail));
-        $("fig-pane").style.width = w + "px";
-        targetW = w;
-        // structural guard: never let sidebar+thread-floor+panel-min overflow
-        if (STATE.sidebar === "open" && sideW + 340 + PANE_MIN > STATE.vw) {
-          STATE.sidebar = "rail";
-          $("settings-popover").classList.add("hidden");
-          applyLayout();
-          return;
-        }
+      var sideW = STATE.sidebar === "open" ? 272 : (STATE.sidebar === "rail" ? 52 : 0);
+      var avail = STATE.vw - sideW - 340;
+      var w = Math.min(STATE.paneW, Math.max(PANE_MIN, avail));
+      $("fig-pane").style.width = w + "px";
+      // structural guard: never let sidebar+thread-floor+panel-min overflow
+      if (STATE.sidebar === "open" && sideW + 340 + PANE_MIN > STATE.vw) {
+        STATE.sidebar = "rail";
+        $("settings-popover").classList.add("hidden");
+        applyLayout();
+        return;
       }
-      figScaleThumbs(targetW);
+      figScaleThumbs(w);
     }
-    $("fig-fullscreen").title = STATE.full ? "Exit fullscreen" : "Fullscreen";
-    $("fig-fullscreen").setAttribute("aria-label", STATE.full ? "Exit fullscreen" : "Fullscreen");
-    $("fig-fullscreen").querySelector("use").setAttribute("href", STATE.full ? "#i-minimize" : "#i-maximize");
-    $("fig-fullscreen").classList.toggle("active", STATE.full);
+    if (figModalOpen()) figScaleModal();
   }
 
   function onResize() {
@@ -671,13 +652,7 @@
 
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    // Innermost layer first: with the modal open over a fullscreen panel, one
-    // Escape should close the modal and leave the panel as it was.
-    if (figModalOpen()) { figCloseModal(); return; }
-    if (STATE.full) {
-      STATE.full = false;
-      applyLayout();
-    }
+    if (figModalOpen()) figCloseModal();
   });
 
   $("sidebar-collapse").addEventListener("click", function () { sidebarByUser = true; STATE.sidebar = "rail"; $("settings-popover").classList.add("hidden"); applyLayout(); });
@@ -685,13 +660,12 @@
   $("rail-new-chat").addEventListener("click", function () { sidebarByUser = true; STATE.sidebar = "open"; applyLayout(); newChat(); });
 
   function openPane() { paneByUser = true; STATE.pane = "open"; applyLayout(); }
-  function railPane() { paneByUser = true; STATE.pane = "rail"; STATE.full = false; applyLayout(); }
-  function hidePane() { paneByUser = true; STATE.pane = "hidden"; STATE.full = false; applyLayout(); }
+  function railPane() { paneByUser = true; STATE.pane = "rail"; applyLayout(); }
+  function hidePane() { paneByUser = true; STATE.pane = "hidden"; applyLayout(); }
   $("fig-rail").addEventListener("click", openPane);
   $("show-figures-btn").addEventListener("click", openPane);
   $("fig-to-rail").addEventListener("click", railPane);
   $("fig-close").addEventListener("click", hidePane);
-  $("fig-fullscreen").addEventListener("click", function () { STATE.full = !STATE.full; applyLayout(); });
   // Safety net for the width transition: whatever target applyLayout passed,
   // re-measure once the panel has actually settled there.
   $("fig-pane").addEventListener("transitionend", function (e) {
@@ -715,7 +689,6 @@
     }
 
     handle.addEventListener("pointerdown", function (e) {
-      if (STATE.full) return;
       dragging = true; startX = e.clientX; startW = $("fig-pane").offsetWidth;
       handle.setPointerCapture(e.pointerId);
       $("fig-pane").classList.add("resizing");
@@ -1201,23 +1174,28 @@
   // (560) and forecast chart (380). These have to track the Python: a height
   // that is too small crops the figure, too large leaves dead space under it,
   // and either way the thumbnail scale is computed off the wrong number.
-  var FIG_SIZES = {reading: [1100, 920], upload: [1100, 560], forecast: [700, 380]};
+  // The forecast chart is width-responsive (no fixed Plotly width), so it is
+  // laid out at the same 1100px as the reading chart: equal natural widths
+  // scale to equal on-screen widths, and the two plot areas share one left
+  // edge (both use a 92px left margin) instead of the forecast sitting
+  // narrower and off to one side.
+  var FIG_SIZES = {reading: [1100, 920], upload: [1100, 560], forecast: [1100, 380]};
 
   // Fit a figure's natural pixel size into the space the panel actually has.
-  // Never scales past 1: in fullscreen (or a wide dragged-out panel) there is
+  // Never scales past 1: in a wide dragged-out panel there is
   // room for the real thing, and blowing a chart up past 100% would just
   // soften the text.
   // `paneWidth` is the width the panel is heading for, not the one it has:
   // #fig-pane animates its width over 240ms, so reading clientWidth here
-  // during a resize or a fullscreen toggle samples a value still in flight and
+  // during a resize samples a value still in flight and
   // scales every thumbnail to a size the panel is about to stop being. Callers
   // pass the target; a transitionend listener re-runs it as a safety net.
   function figScaleThumbs(paneWidth) {
     var content = $("fig-content");
     if (!content) return;
     var paneW = paneWidth || $("fig-pane").clientWidth;
-    // 32 = #fig-content's 16px padding each side.
-    var avail = paneW - 32 - (STATE.full ? 0 : 2);  // 2 = the card's l/r border
+    // 32 = #fig-content's 16px padding each side, 2 = the card's l/r border.
+    var avail = paneW - 32 - 2;
     if (avail <= 0) return;
     content.querySelectorAll(".fig-frame-wrap").forEach(function (wrap) {
       var frame = wrap.querySelector("iframe");
@@ -1230,6 +1208,10 @@
       // not change layout size, so without this the tile keeps reserving the
       // full 900px and leaves a tall empty gap under a 360px thumbnail.
       wrap.style.height = Math.round(natH * scale) + "px";
+      // The block (tile + caption) takes the scaled width and centres, so a
+      // chart narrower than the panel sits in the middle with its caption
+      // aligned under it, not hugging the left edge with dead space beside it.
+      wrap.parentElement.style.width = Math.round(natW * scale) + "px";
       wrap.classList.toggle("thumb", scale < 1);
       wrap.setAttribute("tabindex", scale < 1 ? "0" : "-1");
     });
@@ -1382,6 +1364,8 @@
     var body = $("fig-modal-body");
     body.innerHTML = "";
     group.figs.forEach(function (f) {
+      var wrap = document.createElement("div");
+      wrap.className = "fig-modal-frame";
       var frame = document.createElement("iframe");
       frame.sandbox = "allow-scripts";
       frame.style.width = f.w + "px";
@@ -1389,11 +1373,37 @@
       frame.dataset.w = f.w;
       frame.dataset.h = f.h;
       frame.srcdoc = withHiddenButtons(f.html);
-      body.appendChild(frame);
+      wrap.appendChild(frame);
+      body.appendChild(wrap);
     });
     $("fig-modal-status").textContent = group.title;
     $("fig-modal").classList.remove("hidden");
+    figScaleModal();
     $("fig-modal-close").focus();
+  }
+  // One scale for the whole group: the largest that lets every figure fit the
+  // body on its own (so each one is fully visible without scrolling to it),
+  // capped at 1 so text never gets blown up soft. Shared, rather than per
+  // figure, so a tall reading chart and a short forecast come out the same
+  // width and line up edge to edge.
+  function figScaleModal() {
+    var body = $("fig-modal-body");
+    var frames = body.querySelectorAll(".fig-modal-frame iframe");
+    if (!frames.length) return;
+    // clientWidth/Height include the 16px padding each side.
+    var availW = body.clientWidth - 32, availH = body.clientHeight - 32;
+    if (availW <= 0 || availH <= 0) return;
+    var scale = 1;
+    frames.forEach(function (frame) {
+      var w = parseFloat(frame.dataset.w), h = parseFloat(frame.dataset.h);
+      if (w && h) scale = Math.min(scale, availW / w, availH / h);
+    });
+    frames.forEach(function (frame) {
+      var w = parseFloat(frame.dataset.w), h = parseFloat(frame.dataset.h);
+      frame.style.transform = scale < 1 ? "scale(" + scale + ")" : "";
+      frame.parentElement.style.width = Math.round(w * scale) + "px";
+      frame.parentElement.style.height = Math.round(h * scale) + "px";
+    });
   }
   function figCloseModal() {
     $("fig-modal").classList.add("hidden");
@@ -1453,6 +1463,7 @@
       frames[i].dataset.h = h;
       frames[i].style.height = h + "px";
       figScaleThumbs();
+      if (figModalOpen()) figScaleModal();
       return;
     }
   });

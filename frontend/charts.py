@@ -53,10 +53,18 @@ def raw_and_mdf_figure(seg, mdf_t, mdf_v, title: str = "Uploaded recording",
                              marker=dict(size=5), name="MDF"), row=2, col=1)
     fig.update_xaxes(title_text="Time (s)", row=1, col=1)
     fig.update_xaxes(title_text="Time (s)", row=2, col=1)
-    fig.update_yaxes(title_text="EMG (a.u.)", row=1, col=1)
-    fig.update_yaxes(title_text="MDF (Hz)", row=2, col=1)
+    # Y titles pinned to one x pixel (same scheme as viz/render_window.py's
+    # Y_TITLE_SHIFT), so the EMG row's wider ticks don't push its title out of
+    # line with the MDF row's.
+    fig.update_yaxes(automargin=False, row=1, col=1)
+    fig.update_yaxes(automargin=False, row=2, col=1)
+    for row, text in ((1, "EMG (a.u.)"), (2, "MDF (Hz)")):
+        fig.add_annotation(text=text, textangle=-90, showarrow=False,
+                           xref="paper", x=0, xanchor="center", xshift=-72,
+                           yref="y domain" if row == 1 else "y2 domain",
+                           y=0.5, yanchor="middle", font=dict(size=14))
     fig.update_layout(template=_TEMPLATE.get(theme, "plotly_dark"), height=560,
-                      title=title, showlegend=False, margin=dict(t=60, b=40))
+                      title=title, showlegend=False, margin=dict(t=60, b=40, l=92))
     return _to_html(fig)
 
 
@@ -89,7 +97,20 @@ def forecast_figure(forecast: dict, title: str = "Fatigue trend forecast",
                              mode="lines", name="forecast",
                              line=dict(color="#a78bfa", width=2, dash="dash")))
     fig.update_layout(template=_TEMPLATE.get(theme, "plotly_dark"), height=380,
-                      title=title, xaxis_title="Time (s)", yaxis_title="MDF (Hz)",
-                      margin=dict(t=50, b=30),
-                      legend=dict(orientation="h", y=1.15))
+                      # Title pinned to the top edge and the legend on its own
+                      # row just above the plot: with both left in the default
+                      # top-margin band, the horizontal legend ran straight
+                      # over the title text.
+                      title=dict(text=title, yref="container", y=0.97, yanchor="top"),
+                      xaxis_title="Time (s)",
+                      # Same left margin + title x as the reading chart above
+                      # it in the figures panel, so both plot areas and both
+                      # y titles start on one vertical line.
+                      yaxis=dict(automargin=False),
+                      margin=dict(t=84, b=30, l=92),
+                      legend=dict(orientation="h", x=0, xanchor="left",
+                                  y=1.02, yanchor="bottom"))
+    fig.add_annotation(text="MDF (Hz)", textangle=-90, showarrow=False,
+                       xref="paper", x=0, xanchor="center", xshift=-72,
+                       yref="y domain", y=0.5, yanchor="middle", font=dict(size=14))
     return _to_html(fig)

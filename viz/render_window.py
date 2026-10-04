@@ -87,6 +87,13 @@ ALL_SUBJECTS = list(range(1, 14))
 # line -- change it here rather than at either call site.
 BUTTON_Y = 1.10
 
+# Left margin and y-axis title position for the 3-panel chart. The widest tick
+# label ("-0.0005" on row 1) needs ~55px left of the plot area, so the titles
+# sit at 72px out, clear of it, and the 92px margin leaves room for their
+# ~16px line height. Same x for all three rows = one straight left edge.
+Y_MARGIN_L = 92
+Y_TITLE_SHIFT = -72
+
 # Open WebUI embeds tool HTML in a sandboxed iframe with no `allow-same-origin`
 # (open_webui frontend: FullHeightIframe.svelte), so its own same-origin
 # content.scrollHeight measurement always throws and silently no-ops - the
@@ -620,7 +627,9 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         # enough to stack title above buttons above plot, so revealing the
         # buttons no longer covers the title telling you what you're looking at.
         title=dict(text=_title(k0), yref="container", y=0.975, yanchor="top"),
-        margin=dict(t=150 if animate else 90, b=60),
+        # Fixed left margin: Y_TITLE_SHIFT below parks every y-axis title at the
+        # same pixel inside it, so the margin must not grow per figure.
+        margin=dict(t=150 if animate else 90, b=60, l=Y_MARGIN_L),
         # box-select defaults to a horizontal (time) band for select-to-inspect
         # on the MDF panel; scroll-zoom stays available so select mode does not
         # cost the user zoom.
@@ -630,11 +639,22 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     # than assuming the reader already knows it -- the panel titles above still
     # carry the precise terms for anyone who wants them.
     fig.update_xaxes(title_text="Time in window (s)", range=[0, WIN_SEC], row=1, col=1)
-    fig.update_yaxes(title_text="Signal strength (a.u.)", range=[ylo, yhi], row=1, col=1)
+    fig.update_yaxes(range=[ylo, yhi], automargin=False, row=1, col=1)
     fig.update_xaxes(title_text="Time (s)", range=[float(t[0]), float(t[-1])], row=2, col=1)
-    fig.update_yaxes(title_text="Median frequency (Hz)", range=[mlo, mhi], row=2, col=1)
+    fig.update_yaxes(range=[mlo, mhi], automargin=False, row=2, col=1)
     fig.update_xaxes(title_text="Frequency (Hz)", range=[0, fmax], row=3, col=1)
-    fig.update_yaxes(title_text="Signal strength (normalised)", range=[0, 1.05], row=3, col=1)
+    fig.update_yaxes(range=[0, 1.05], automargin=False, row=3, col=1)
+    # Y-axis titles as annotations pinned to one x pixel, not Plotly axis
+    # titles: an axis title sits just left of that row's own tick labels, so
+    # row 1's wide "-0.0005" ticks pushed its title ~55px further left than
+    # row 2's "70" ticks and the three titles read as a ragged left edge.
+    for _row, _text in ((1, "Signal strength (a.u.)"), (2, "Median frequency (Hz)"),
+                        (3, "Signal strength (normalised)")):
+        _yref = "y domain" if _row == 1 else f"y{_row} domain"
+        fig.add_annotation(text=_text, textangle=-90, showarrow=False,
+                           xref="paper", x=0, xanchor="center", xshift=Y_TITLE_SHIFT,
+                           yref=_yref, y=0.5, yanchor="middle",
+                           font=dict(size=14))
 
     # Persistent "asked: t_start" marker on the MDF panel: a fixed vertical line
     # + label at the exact time the user asked about. Added as layout shapes/
