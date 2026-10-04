@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 
 import numpy as np
 import torch
@@ -38,23 +39,26 @@ DATA_ROOT = os.path.join(ZB, "sEMG_data")
 
 _BUNDLE = None
 _MODEL = None
+_LOAD_LOCK = threading.Lock()
 
 
 def _load():
     """Load the saved model + metadata once and cache it."""
     global _BUNDLE, _MODEL
-    if _MODEL is None:
-        if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(
-                f"{MODEL_PATH} missing -- run `python models/train_model.py` first")
-        _BUNDLE = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
-        a = _BUNDLE["arch"]
-        _MODEL = lstm.LSTMClassifier(
-            n_features=a["n_features"], hidden_size=a["hidden_size"],
-            num_layers=a["num_layers"], n_classes=a["n_classes"],
-            dropout=a["dropout"])
-        _MODEL.load_state_dict(_BUNDLE["state_dict"])
-        _MODEL.eval()
+    with _LOAD_LOCK:
+        if _MODEL is None:
+            if not os.path.exists(MODEL_PATH):
+                raise FileNotFoundError(
+                    f"{MODEL_PATH} missing -- run `python models/train_model.py` first")
+            bundle = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
+            a = bundle["arch"]
+            model = lstm.LSTMClassifier(
+                n_features=a["n_features"], hidden_size=a["hidden_size"],
+                num_layers=a["num_layers"], n_classes=a["n_classes"],
+                dropout=a["dropout"])
+            model.load_state_dict(bundle["state_dict"])
+            model.eval()
+            _BUNDLE, _MODEL = bundle, model
     return _BUNDLE, _MODEL
 
 

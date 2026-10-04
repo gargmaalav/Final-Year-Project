@@ -407,16 +407,20 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     # hand-rolled reimpl). t_centers/mdf_v drive every per-frame value so the
     # FFT marker, MDF cursor and window all refer to the same window.
     mdf_t, mdf_v, _ = loader.mdf_trend(seg, fs=fs, win_sec=WIN_SEC, step_sec=STEP_SEC)
-    if mdf_t.size:
-        mdf_labels = np.array([_dominant_label(tc, lab_t, lab_v) for tc in mdf_t])
+    # classify() interprets t_start as a window START; mdf_trend returns
+    # window CENTERS. Include the exact query window, even off the 2 s grid.
+    asked_start = int(np.clip(np.searchsorted(t, t_start), 0, x.size - win))
+    asked_center = float(t[asked_start] + WIN_SEC / 2.0)
+    nearby = np.flatnonzero(np.isclose(mdf_t, asked_center, rtol=0, atol=0.25 / fs))
+    asked_mdf = core.median_frequency(x[asked_start:asked_start + win], fs=fs)
+    if nearby.size:
+        k0 = int(nearby[0])
+        mdf_v[k0] = asked_mdf
     else:
-        # degenerate case: every window gapped, so mdf_trend found none.
-        # Synthesise one window at t_start so the chart still renders.
-        s0 = int(np.clip(np.searchsorted(t, t_start), 0, x.size - win))
-        tc0 = float(t[s0] + WIN_SEC / 2.0)
-        mdf_t = np.array([tc0])
-        mdf_v = np.array([core.median_frequency(x[s0:s0 + win], fs=fs)])
-        mdf_labels = np.array([_dominant_label(tc0, lab_t, lab_v)])
+        k0 = int(np.searchsorted(mdf_t, asked_center))
+        mdf_t = np.insert(mdf_t, k0, asked_center)
+        mdf_v = np.insert(mdf_v, k0, asked_mdf)
+    mdf_labels = np.array([_dominant_label(tc, lab_t, lab_v) for tc in mdf_t])
 
     freqs = np.fft.rfftfreq(win, 1.0 / fs)
     fmax = min(500.0, fs / 2.0)
@@ -438,8 +442,8 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     _amp = float(np.max(np.abs(x))) or 1e-12
     _emg_dp = int(np.clip(4 - np.floor(np.log10(_amp)), 4, 10))
     frame_emg, frame_spec = [], []
-    for tc in mdf_t:
-        s = _window_start(float(tc))
+    for k, tc in enumerate(mdf_t):
+        s = asked_start if k == k0 else _window_start(float(tc))
         w = x[s:s + win]
         spec = np.abs(np.fft.rfft(w * np.hanning(win))) ** 2
         spec = spec / (spec.max() + 1e-12)
@@ -448,9 +452,7 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     frame_mdf = [round(float(v), 2) for v in mdf_v]
     frame_label = [int(l) for l in mdf_labels]
 
-    # opening frame = the one nearest the query's t_start, so the chart agrees
-    # with the LLM's t_start-grounded text (not frame 0 at t=0).
-    k0 = int(np.argmin(np.abs(mdf_t - t_start)))
+    # k0 is the exact query window, not the nearest center on the trend grid.
     n_frames = len(mdf_t)
     animate = n_frames >= 2
 
@@ -544,7 +546,8 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         # the dot colours (Fresh/Transition/Fatigued), and the model's own verdict
         # is delivered in the chatbot's text answer, not on the chart.
         return (f"EMG Fatigue Progression - Subject {subject} ({side} Biceps) | "
-                f"t={mdf_t[k]:.0f}s, window MDF={frame_mdf[k]:.1f} Hz")
+                f"window start={float(t[asked_start]) if k == k0 else float(mdf_t[k] - WIN_SEC / 2):.2f}s, "
+                f"window MDF={frame_mdf[k]:.1f} Hz")
 
     if animate:
         frames = []
@@ -620,7 +623,14 @@ def _single_subject_html(subject: int, t_start: float, side: str,
         # enough to stack title above buttons above plot, so revealing the
         # buttons no longer covers the title telling you what you're looking at.
         title=dict(text=_title(k0), yref="container", y=0.975, yanchor="top"),
-        margin=dict(t=150 if animate else 90, b=60),
+        # Fixed left margin, automargin off per row below: Plotly's default
+        # automargin sizes each row's own left inset from that row's own tick
+        # label width (row 1's "-0.001" vs row 2's "60" vs row 3's "0.2"), so
+        # the three plot areas drifted out of vertical alignment -- row 1's
+        # longer decimal ticks pushed its plot area further right than rows 2
+        # and 3. One shared margin, sized for the widest tick label across all
+        # three rows, keeps every row's plot area starting at the same x pixel.
+        margin=dict(t=150 if animate else 90, b=60, l=80),
         # box-select defaults to a horizontal (time) band for select-to-inspect
         # on the MDF panel; scroll-zoom stays available so select mode does not
         # cost the user zoom.
@@ -630,11 +640,14 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     # than assuming the reader already knows it -- the panel titles above still
     # carry the precise terms for anyone who wants them.
     fig.update_xaxes(title_text="Time in window (s)", range=[0, WIN_SEC], row=1, col=1)
-    fig.update_yaxes(title_text="Signal strength (a.u.)", range=[ylo, yhi], row=1, col=1)
+    fig.update_yaxes(title_text="Signal strength (a.u.)", range=[ylo, yhi],
+                     automargin=False, row=1, col=1)
     fig.update_xaxes(title_text="Time (s)", range=[float(t[0]), float(t[-1])], row=2, col=1)
-    fig.update_yaxes(title_text="Median frequency (Hz)", range=[mlo, mhi], row=2, col=1)
+    fig.update_yaxes(title_text="Median frequency (Hz)", range=[mlo, mhi],
+                     automargin=False, row=2, col=1)
     fig.update_xaxes(title_text="Frequency (Hz)", range=[0, fmax], row=3, col=1)
-    fig.update_yaxes(title_text="Signal strength (normalised)", range=[0, 1.05], row=3, col=1)
+    fig.update_yaxes(title_text="Signal strength (normalised)", range=[0, 1.05],
+                     automargin=False, row=3, col=1)
 
     # Persistent "asked: t_start" marker on the MDF panel: a fixed vertical line
     # + label at the exact time the user asked about. Added as layout shapes/
@@ -656,10 +669,17 @@ def _single_subject_html(subject: int, t_start: float, side: str,
     _lab_anchor = "right" if _late else "left"
     _lab_shift = -3 if _late else 3
 
+    # bgcolor/bordercolor: the MDF panel's fatigue-coloured dots cluster near
+    # the top of the y-range too, and a plain-text label at y=mhi can land
+    # right on top of them (readable in isolation, unreadable over a green/
+    # orange/red dot). A themed pill behind the text keeps it legible
+    # regardless of what data happens to sit underneath it.
     fig.add_annotation(x=t_start, y=mhi, text=f"asked: {t_start:.0f}s",
                        showarrow=False, xanchor=_lab_anchor, yanchor="top",
                        xshift=_lab_shift, yshift=-2,
-                       font=dict(color=ASK_COLOR, size=11), row=2, col=1)
+                       font=dict(color=ASK_COLOR, size=11),
+                       bgcolor=th["key_bg"], bordercolor=ASK_COLOR, borderwidth=1,
+                       borderpad=2, row=2, col=1)
 
     # auto_play=False: rest at the opening frame (nearest t_start) until the
     # user hits Play. Plotly's to_html defaults auto_play=True, which fires

@@ -17,9 +17,18 @@ OLLAMA_BASE = "http://localhost:11434"
 # Python, and strip_verdict_echo drops the inverted opener), but the answer was
 # one phrasing away from contradicting the verdict printed above it, and its
 # prose was measurably worse -- one answer misused the confidence figure in a
-# way 3b does not. Speed is being bought elsewhere instead: see KEEP_ALIVE and
-# NUM_PREDICT below, prompt.build_prompt's cacheable-prefix ordering, and
-# turn.py's _cached_chart.
+# way 3b does not.
+#
+# Tried and reverted 2026-09-24 (Ray's call): qwen2.5:0.5b for wording speed
+# (18s -> 2s). Reverted the same day after live testing turned up two fresh
+# failures the 1b test above didn't even need to look for: a follow-up "why?"
+# that returned "They have now said: why?" (not a sentence, not an inversion,
+# just garbled), and a "not fatigued" verdict's follow-up hedging with "can be
+# attributed to fatigue or other factors" -- reads as contradicting the bold
+# verdict line above it even though nothing wrong reached the verdict itself.
+# 0.5b is smaller than the 1b already rejected above; worse quality tracks.
+# If speed matters more than prose reliability for a specific recording
+# session, that's a live call to make then, not a standing default.
 MODEL = "llama3.2:3b"
 
 # Ollama drops a model from memory 5 minutes after its last request, and

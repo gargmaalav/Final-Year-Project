@@ -31,6 +31,7 @@ import os
 import re
 import sys
 import time
+import uuid
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (os.path.join(_REPO_ROOT, "models"),
@@ -174,7 +175,7 @@ def render_chart_ref(session: dict, ref: dict, theme: str | None = None) -> str 
         return None
     theme = theme or session.get("theme", "dark")
     if ref.get("source") == "upload":
-        cache = session["uploads"].get(session["last_upload"])
+        cache = session["uploads"].get(ref.get("upload_id"))
         return _upload_chart(cache, theme) if cache else None
     try:
         return _cached_chart(int(ref["subject"]), float(ref["t_start"]),
@@ -609,7 +610,13 @@ def _dataset_turn(session: dict, user_text: str, previous: dict | None) -> dict:
                                       subjects=intent.subjects)
 
     if intent.kind != intent_router.READING:
-        return _analysis_turn(user_text, intent, previous)
+        try:
+            return _analysis_turn(user_text, intent, previous)
+        except FileNotFoundError:
+            return {"content": "The recording needed for this analysis is missing from "
+                               "the local dataset. Restore the biceps trial CSVs in "
+                               "zenodo_biceps/sEMG_data and ask again. "
+                               "Your upload settings do not need to change."}
 
     subjects = _subjects()
     provisional = intent.subjects[0] if intent.subjects else (previous or {}).get("subject")
@@ -741,7 +748,7 @@ def _upload_key(f) -> str:
 
 
 def _upload_turn(session: dict, user_text: str, uploaded_file) -> dict:
-    key = _upload_key(uploaded_file)
+    key = f"{_upload_key(uploaded_file)}:fs={session['sample_rate']}"
     cache = session["uploads"].get(key)
     if cache is None:
         try:
@@ -753,7 +760,7 @@ def _upload_turn(session: dict, user_text: str, uploaded_file) -> dict:
             return {"content": f"Couldn't read that file ({type(e).__name__}: {e})"}
         fs = int(getattr(seg, "eff_fs", 250))
         cache = {"seg": seg, "fs": fs, "baseline": None, "name": uploaded_file.name,
-                 "scan": None}
+                 "scan": None, "upload_id": key}
         session["uploads"][key] = cache
 
     session["last_upload"] = key
@@ -795,7 +802,7 @@ def _upload_compare(user_text: str, cache: dict, intent) -> dict:
 
     return {**_comparison_answer(comparison),
             "facts": compare_facts(comparison), "user_text": user_text,
-            "chart_ref": {"source": "upload"},
+            "chart_ref": {"source": "upload", "upload_id": cache["upload_id"]},
             "window": {"source": "upload", "name": cache["name"],
                        "kind": "compare"}}
 
@@ -822,7 +829,7 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
         rendered = render_onset_answer(summary)
         if rendered:
             return {"content": rendered, "facts": onset_facts(summary),
-                    "user_text": user_text, "chart_ref": {"source": "upload"},
+                    "user_text": user_text, "chart_ref": {"source": "upload", "upload_id": cache["upload_id"]},
                     "window": window}
     facts = (onset_facts(summary) if kind == intent_router.ONSET
              else overview_facts(summary))
@@ -837,7 +844,7 @@ def _upload_analysis(user_text: str, cache: dict, kind: str) -> dict:
     return {"prompt": build_facts_prompt("Measured results:", facts, user_text,
                                          instruction),
             "facts": facts, "user_text": user_text,
-            "chart_ref": {"source": "upload"}, "window": window}
+            "chart_ref": {"source": "upload", "upload_id": cache["upload_id"]}, "window": window}
 
 
 def _upload_chart(cache: dict, theme: str = "dark"):
@@ -878,7 +885,7 @@ def _upload_reading(user_text: str, cache: dict, theme: str = "dark") -> dict:
                              "This recording")
 
     return {"features": result, "reading": reading,
-            "chart_ref": {"source": "upload"},
+            "chart_ref": {"source": "upload", "upload_id": cache["upload_id"]},
             "chart_caption": _UPLOAD_CHART_CAPTION,
             "forecast": forecast, "forecast_chart_html": forecast_chart_html,
             "forecast_chart_caption": _FORECAST_CHART_CAPTION if forecast_chart_html else None,
@@ -905,7 +912,78 @@ def _forecast(seg, fs: int, user_text: str, t_start: float | None = None,
         return forecast, None
 
 
-def _finalize(session: dict, turn: dict) -> dict:
+# Turns awaiting their prose stage (handle_turn returned a placeholder,
+# finish_turn_prose has not yet been called). Keyed by a fresh id per turn so
+# a stray duplicate call, a page reload, or a client that never asks for the
+# prose can never resolve into someone ELSE's answer -- see _needs_prose and
+# handle_turn below for how a turn lands here.
+#
+# This is process memory on a local single-user demo server, same trust model
+# as SESSIONS in models/serve.py. Entries are popped on the one successful
+# finish_turn_prose call; _PROSE_TTL_SEC exists only to bound an abandoned
+# entry (closed tab, dropped connection) that is never claimed at all.
+_PENDING_PROSE: dict[str, dict] = {}
+_PROSE_TTL_SEC = 10 * 60
+
+
+def _sweep_pending_prose() -> None:
+    now = time.time()
+    stale = [k for k, v in _PENDING_PROSE.items() if now - v["stashed_at"] > _PROSE_TTL_SEC]
+    for k in stale:
+        del _PENDING_PROSE[k]
+
+
+def _needs_prose(turn: dict) -> bool:
+    """Whether this turn's answer requires an LLM call at all.
+
+    Mirrors _finalize_prose's own two chat()-calling branches exactly: a
+    turn either carries a ready-made "prompt" (follow-up/recommendation/
+    analysis paths) or "features" (a reading), or it is already a terminal,
+    fully-formed answer (an error message, a catalogue listing, a ranking) --
+    see the two early returns at the top of _finalize_prose.
+    """
+    return "prompt" in turn or "features" in turn
+
+
+def _placeholder_final(turn: dict) -> dict:
+    """What to show the instant a turn is known to need prose, before the LLM
+    has run at all -- the same measured content _finalize_prose falls back to
+    on an LLMError, minus the "couldn't phrase this" caveat, since nothing
+    has failed here. Every field is already known: it comes from classify()
+    and the deterministic analysis functions, never from chat().
+    """
+    if "prompt" in turn:
+        lines = readable_facts(turn.get("facts") or [])
+        content = "\n".join(f"- {line}" for line in lines)
+        return {"content": content, "chart_ref": turn.get("chart_ref"),
+                "chart_caption": turn.get("chart_caption"),
+                "forecast_chart_html": None, "forecast_chart_caption": None,
+                "recommendation": None, "facts": turn.get("facts"),
+                "user_text": turn.get("user_text"), "window": turn.get("window")}
+
+    reading = turn.get("reading")
+    verdict = (reading or {}).get("verdict")
+    if verdict:
+        content = verdict
+    elif reading and reading.get("lines"):
+        content = "\n".join(f"- {line}" for line in reading["lines"])
+    else:
+        features = turn["features"]
+        content = (f"{features['fatigue_state']} "
+                  f"(median frequency {features['mdf_hz']:.1f} Hz, "
+                  f"confidence {features['confidence'] * 100:.1f}%)")
+    return {"content": content, "chart_ref": turn.get("chart_ref"),
+            "chart_caption": turn.get("chart_caption"),
+            "forecast_chart_html": turn.get("forecast_chart_html"),
+            "forecast_chart_caption": turn.get("forecast_chart_caption"),
+            "recommendation": None,
+            "provenance": _provenance(turn.get("window"), turn["features"], reading),
+            "features": turn["features"], "reading": reading,
+            "forecast": turn.get("forecast"), "user_text": turn["user_text"],
+            "window": turn.get("window")}
+
+
+def _finalize_prose(session: dict, turn: dict) -> dict:
     # Only the reading path starts a background chart, and it is joined at the
     # very end of that path -- after the model call it was launched to overlap.
     # Every other path resolves it here, immediately, so those turns behave
@@ -1219,16 +1297,55 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
         cache = _followup_upload(session, user_text)
         turn = (_upload_question(user_text, cache, session.get("theme", "dark")) if cache
                 else _dataset_turn(session, user_text, session["last_params"]))
-    final = _finalize(session, turn)
-    # A single choke point for every path through _finalize, rather than
-    # editing each rendered f-string in turn.py/prompt.py/recommend.py one at
-    # a time -- see interpret.strip_em_dashes. Also catches anything the
-    # model itself writes with a dash, which no per-string edit could.
+
+    # Two-stage split (2026-09-24): a turn needing an LLM call returns a
+    # placeholder immediately (the same measured content _finalize_prose
+    # falls back to on an LLMError) and stashes what finish_turn_prose needs
+    # to run the actual chat() call later, on a separate request. Every
+    # session-state write below (last_turn_context, last_answer, ...) still
+    # runs exactly once, from _finish_turn, but only once the REAL content is
+    # known -- a stage-1 placeholder never touches session state, so a
+    # follow-up can never see a half-finished answer. This is safe because
+    # the UI keeps the composer locked across both stages (see
+    # chatbot_ui.html's runTurn): nothing else can reach this session before
+    # finish_turn_prose runs.
+    _sweep_pending_prose()
+    if not _needs_prose(turn):
+        final = _finalize_prose(session, turn)
+        final = _finish_turn(session, turn, final, user_text, display_text,
+                             uploaded_file is None)
+        final["stage"] = "done"
+        return final
+
+    placeholder = _placeholder_final(turn)
+    turn_id = uuid.uuid4().hex
+    _PENDING_PROSE[turn_id] = {
+        "session": session, "turn": turn, "user_text": user_text,
+        "display_text": display_text, "uploaded_file_is_none": uploaded_file is None,
+        "stashed_at": time.time(),
+    }
+    placeholder["stage"] = "prose_pending"
+    placeholder["turn_id"] = turn_id
+    return placeholder
+
+
+def _finish_turn(session: dict, turn: dict, final: dict, user_text: str,
+                 display_text: str, uploaded_file_is_none: bool) -> dict:
+    """Session-state bookkeeping that used to live at the tail of handle_turn,
+    unchanged -- just shared between the no-LLM path (runs immediately) and
+    finish_turn_prose (runs once the LLM call actually completes), so a
+    follow-up's "last answer" is never the placeholder half of a two-stage
+    turn. See handle_turn's comment on why that split is safe.
+    """
+    # A single choke point for every finished turn, rather than editing each
+    # rendered f-string in turn.py/prompt.py/recommend.py one at a time --
+    # see interpret.strip_em_dashes. Also catches anything the model itself
+    # writes with a dash, which no per-string edit could.
     if final.get("content"):
         final["content"] = interpret.strip_em_dashes(final["content"])
     if final.get("recommendation"):
         final["recommendation"] = interpret.strip_em_dashes(final["recommendation"])
-    if uploaded_file is None:
+    if uploaded_file_is_none:
         _note_unanswered(user_text, final)
 
     session["last_turn_context"] = final if "features" in final else None
@@ -1266,4 +1383,23 @@ def handle_turn(session: dict, user_text: str, uploaded_file=None) -> dict:
             "subject": window.get("subject", prev.get("subject")),
             "t_start": window.get("t_start", prev.get("t_start")),
             "side": window.get("side", prev.get("side", "R"))}
+    return final
+
+
+def finish_turn_prose(turn_id: str) -> dict:
+    """Stage 2: run the actual chat() call a placeholder deferred, and finish
+    the same session bookkeeping handle_turn's no-LLM path runs immediately.
+
+    Raises KeyError if turn_id is unknown -- already claimed, expired past
+    _PROSE_TTL_SEC, or never issued (a stale/forged id). models/serve.py turns
+    that into a 404 rather than a 500: an unclaimed turn is an expected
+    outcome (a closed tab, a slow client), not a server bug.
+    """
+    entry = _PENDING_PROSE.pop(turn_id)
+    final = _finalize_prose(entry["session"], entry["turn"])
+    final = _finish_turn(entry["session"], entry["turn"], final,
+                         entry["user_text"], entry["display_text"],
+                         entry["uploaded_file_is_none"])
+    final["stage"] = "done"
+    final["turn_id"] = turn_id
     return final

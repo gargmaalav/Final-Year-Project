@@ -32,9 +32,9 @@ import os
 import sys
 import threading
 
-import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.middleware.gzip import GZipMiddleware
 import uvicorn
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,6 +44,7 @@ from classify import classify  # noqa: E402  our contract function
 import turn as turn_engine     # noqa: E402  frontend/turn.py
 
 app = FastAPI(title="EMG Fatigue classify() API")
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=4)
 
 _STATE = {0: "non-fatigue", 1: "fatigue", 2: "fatigue"}
 _UI_PATH = os.path.join(REPO_ROOT, "viz", "chatbot_ui.html")
@@ -126,6 +127,26 @@ def chatbot_ui():
                         headers={"Cache-Control": "no-store, must-revalidate"})
 
 
+# Keep standalone chart exports self-contained, but let the browser cache the
+# shared runtime when figures travel through the API.
+_PLOTLY_NAME = "plotly-basic-3.7.0.min.js"
+
+
+def _browser_chart(html: str | None) -> str | None:
+    if not html:
+        return html
+    from render_window import _plotly_basic_js
+    return html.replace(f"<script>{_plotly_basic_js()}</script>",
+                        f'<script src="/assets/{_PLOTLY_NAME}"></script>', 1)
+
+
+@app.get("/assets/plotly-basic-3.7.0.min.js")
+def plotly_asset():
+    return FileResponse(os.path.join(REPO_ROOT, "viz", "vendor", _PLOTLY_NAME),
+                        media_type="application/javascript",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
 @app.get("/models")
 def list_models_endpoint():
     """Ollama models available for the chat answer, for the UI's model picker."""
@@ -144,7 +165,9 @@ def turn_endpoint(session_id: str = Form(...), user_text: str = Form(""),
 
     uploaded = None
     if file is not None and file.filename:
-        raw = _run_sync(file.read())
+        raw = file.file.read(20 * 1024 * 1024 + 1)
+        if len(raw) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="CSV uploads must be 20 MB or smaller.")
         uploaded = _UploadShim(file.filename, raw)
 
     # Everything that reads or writes this session's state, serialised per
@@ -167,11 +190,18 @@ def turn_endpoint(session_id: str = Form(...), user_text: str = Form(""),
     # numpy scalars the model already used to build chart_html and content,
     # so the UI has no need of them raw and they aren't JSON-serialisable
     # as-is.
+    #
+    # stage: "done" is today's whole answer, unchanged. "prose_pending" means
+    # `content` is a fast, LLM-free placeholder (the verdict, or the measured
+    # facts) and the UI must follow up with POST /turn_prose using turn_id to
+    # get the actual written explanation -- see turn.py's handle_turn.
     return {
+        "stage": final.get("stage", "done"),
+        "turn_id": final.get("turn_id"),
         "content": final.get("content"),
         "chart_ref": final.get("chart_ref"),
         "chart_caption": final.get("chart_caption"),
-        "forecast_chart_html": final.get("forecast_chart_html"),
+        "forecast_chart_html": _browser_chart(final.get("forecast_chart_html")),
         "forecast_chart_caption": final.get("forecast_chart_caption"),
         "recommendation": final.get("recommendation"),
         "provenance": final.get("provenance"),
@@ -180,20 +210,44 @@ def turn_endpoint(session_id: str = Form(...), user_text: str = Form(""),
     }
 
 
-def _run_sync(coro):
-    """FastAPI's sync def endpoints run in a threadpool, off the event loop,
-    so a plain asyncio.run() here (rather than `async def` + `await`) is
-    safe and keeps turn_endpoint a normal blocking function like the rest of
-    frontend/turn.py's call chain."""
-    import asyncio
-    return asyncio.run(coro)
+@app.post("/turn_prose")
+def turn_prose_endpoint(turn_id: str = Form(...)):
+    """Stage 2 of a "prose_pending" /turn response: run the actual chat()
+    call and finish the session bookkeeping /turn deferred -- see
+    turn.py's finish_turn_prose.
+
+    No session_id: the turn_id alone identifies which session's pending entry
+    to resolve (issued once, per turn, by handle_turn), so there is nothing
+    here for a caller to get wrong by passing the wrong session.
+    """
+    try:
+        final = turn_engine.finish_turn_prose(turn_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=(
+            "That answer is no longer pending -- it may already have been "
+            "delivered, or this chat was reloaded before it finished. Ask "
+            "again."))
+    return {
+        "stage": "done",
+        "turn_id": turn_id,
+        "content": final.get("content"),
+        "chart_ref": final.get("chart_ref"),
+        "chart_caption": final.get("chart_caption"),
+        "forecast_chart_html": _browser_chart(final.get("forecast_chart_html")),
+        "forecast_chart_caption": final.get("forecast_chart_caption"),
+        "recommendation": final.get("recommendation"),
+        "provenance": final.get("provenance"),
+        "suggestions": final.get("suggestions"),
+        "window": final.get("window"),
+    }
 
 
 @app.post("/chart")
 def chart_endpoint(session_id: str = Form(...), source: str = Form("dataset"),
                    subject: int | None = Form(None),
                    t_start: float | None = Form(None),
-                   side: str = Form("R"), theme: str = Form("")):
+                   side: str = Form("R"), theme: str = Form(""),
+                   upload_id: str = Form("")):
     """Draw one figure, on request.
 
     Charts used to be rendered for every reading whether or not anyone looked
@@ -206,8 +260,8 @@ def chart_endpoint(session_id: str = Form(...), source: str = Form("dataset"),
     pressed.
     """
     ref = {"source": source, "subject": subject, "t_start": t_start,
-           "side": side}
-    # render_chart_ref reads session["uploads"]/session["last_upload"] for an
+           "side": side, "upload_id": upload_id}
+    # render_chart_ref reads the referenced entry in session["uploads"] for an
     # upload chart_ref, which /turn also writes under _session_lock -- take
     # the same lock here so a concurrent /turn for this session_id can't be
     # read mid-write (see _SESSION_LOCKS' comment above).
@@ -216,8 +270,8 @@ def chart_endpoint(session_id: str = Form(...), source: str = Form("dataset"),
             _session(session_id), ref, theme if theme in ("light", "dark") else None)
     if html is None:
         raise HTTPException(status_code=404,
-                            detail="That figure could not be drawn.")
-    return {"chart_html": html}
+                            detail="That recording is no longer available. Reattach the CSV or request a new dataset reading.")
+    return {"chart_html": _browser_chart(html)}
 
 
 @app.get("/classify")
